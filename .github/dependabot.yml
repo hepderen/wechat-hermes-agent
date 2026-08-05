@@ -13,6 +13,10 @@ updates:
           - minor
           - patch
     ignore:
+      # These versions are a tested compatibility pair enforced by the
+      # cloud installer contract tests. Upgrade them together after review.
+      - dependency-name: "mcp"
+      - dependency-name: "starlette"
       - dependency-name: "*"
         update-types:
           - version-update:semver-major
