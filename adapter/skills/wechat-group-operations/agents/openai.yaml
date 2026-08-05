@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeChat Group Operations"
+  short_description: "Run and deliver WeChat group tasks"
+  default_prompt: "Use $wechat-group-operations to execute, track, and deliver this WeChat group task."

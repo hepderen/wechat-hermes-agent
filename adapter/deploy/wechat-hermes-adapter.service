@@ -1,0 +1,49 @@
+[Unit]
+Description=WeChat Hermes API Adapter
+After=network-online.target hermes-worker.service wechat-chat-api.service
+Wants=network-online.target
+Requires=hermes-worker.service wechat-chat-api.service
+
+[Service]
+Type=simple
+User=wechat-hermes
+Group=wechat-hermes
+SupplementaryGroups=wechat-hermes-runtime
+WorkingDirectory=/opt/wechat-hermes-adapter
+Environment=HOME=/var/lib/wechat-hermes/home
+EnvironmentFile=/etc/wechat-hermes/adapter.env
+ExecStart=/opt/wechat-hermes-adapter/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${HERMES_WECHAT_PORT}
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+MemoryMax=1G
+CPUQuota=100%
+TasksMax=256
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wechat-hermes/adapter-data /var/lib/wechat-hermes/artifacts /var/lib/wechat-hermes/skill-trust /var/lib/wechat-hermes/workspace/home/.hermes /var/lib/wechat-hermes/home
+InaccessiblePaths=/opt/wechat-ai-bot/data /home/ubuntu/linux-wechat-bot /home/ubuntu/.cache/wechat-chat-api /home/ubuntu/xwechat_files
+InaccessiblePaths=-/etc/wechat-hermes/hermes.env -/etc/wechat-hermes/chat-api.env -/etc/wechat-hermes/bridge.env -/home/ubuntu/.ssh -/root/.ssh -/run/docker.sock -/var/run/docker.sock
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=169.254.0.0/16
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

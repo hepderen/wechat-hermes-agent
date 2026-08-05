@@ -1,0 +1,4 @@
+-r adapter/requirements-dev.txt
+-r adapter/requirements-mcp.txt
+pycryptodome==3.23.0
+zstandard==0.25.0

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Douyin Video Production"
+  short_description: "Produce and deliver Douyin videos"
+  default_prompt: "Use $douyin-video-production to produce a Douyin video from brief to verified export."

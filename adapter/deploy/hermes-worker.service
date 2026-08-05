@@ -1,0 +1,54 @@
+[Unit]
+Description=Hermes Agent API Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wechat-hermes-runner
+Group=wechat-hermes-runtime
+WorkingDirectory=/var/lib/wechat-hermes/workspace
+Environment=HOME=/var/lib/wechat-hermes/workspace/home
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/wechat-hermes/hermes.env
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills-lock.json
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/creative/creative-ideation/SKILL.md
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/media/douyin-video-production/SKILL.md
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/productivity/wechat-group-operations/SKILL.md
+ExecStart=/opt/hermes-runtime/venv/bin/hermes gateway run --replace --accept-hooks
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGINT
+MemoryMax=4G
+CPUQuota=200%
+TasksMax=512
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wechat-hermes/workspace /var/lib/wechat-hermes/artifacts
+InaccessiblePaths=-/var/lib/wechat-hermes/adapter-data -/var/lib/wechat-hermes/adapter.db -/var/lib/wechat-hermes/adapter.db-wal -/var/lib/wechat-hermes/adapter.db-shm
+InaccessiblePaths=/opt/wechat-ai-bot/data /home/ubuntu/linux-wechat-bot /home/ubuntu/.cache/wechat-chat-api /home/ubuntu/xwechat_files
+InaccessiblePaths=-/etc/wechat-hermes/adapter.env -/etc/wechat-hermes/chat-api.env -/etc/wechat-hermes/bridge.env -/home/ubuntu/.ssh -/root/.ssh -/run/docker.sock -/var/run/docker.sock
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=169.254.0.0/16
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

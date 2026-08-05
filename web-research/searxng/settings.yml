@@ -1,0 +1,56 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - 360search
+      - bing
+      - bing news
+      - baidu
+      - quark
+      - sogou
+
+engines:
+  - name: 360search
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: bing news
+    disabled: false
+  - name: baidu
+    disabled: false
+  - name: quark
+    disabled: false
+  - name: sogou
+    disabled: false
+
+general:
+  debug: false
+  instance_name: "WeChat Hermes Search"
+  enable_metrics: true
+
+search:
+  safe_search: 1
+  default_lang: auto
+  autocomplete: ""
+  favicon_resolver: ""
+  ban_time_on_fail: 10
+  max_ban_time_on_fail: 300
+  formats:
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+valkey:
+  url: false
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 20
+  pool_maxsize: 10
+  enable_http2: true

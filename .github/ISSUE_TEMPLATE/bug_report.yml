@@ -1,0 +1,53 @@
+name: Bug report
+description: Report reproducible behavior using synthetic data
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach production messages, tokens, databases, keys, logs or real identifiers.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or release
+      placeholder: main@COMMIT
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Adapter
+        - Chat API
+        - Structured Bridge
+        - Hermes integration
+        - Web Research
+        - Deployment
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Use fake room IDs, wxids and message content.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Relevant test output
+      description: Remove paths, IDs and secrets before posting.

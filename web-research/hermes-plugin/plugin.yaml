@@ -1,0 +1,7 @@
+name: wechat-cloud-web
+version: "1.0.0"
+description: "Loopback SearXNG search with guarded first-party page extraction for WeChat Hermes."
+author: local-production
+kind: backend
+provides_web_providers:
+  - wechat-cloud

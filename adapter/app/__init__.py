@@ -1,0 +1,1 @@
+"""Hermes-backed WeChat adapter."""

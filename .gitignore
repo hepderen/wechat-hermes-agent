@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+all_keys.json
+all_keys.*.json
+chat-api/config.json
+chat-api/db-config.json
+
+# Runtime state and private data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.log.*
+**/state.json
+**/*-state.json
+**/*-state.backup.json
+**/.db-pending/
+artifacts/
+browser-downloads/
+request_dumps/
+logs/
+
+# Build and release output
+dist/
+build/
+*.egg-info/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+MANIFEST.sha256

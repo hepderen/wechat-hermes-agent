@@ -1,0 +1,40 @@
+[Unit]
+Description=Loopback SearXNG for WeChat Hermes
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wechat-hermes/searxng.env
+ExecStartPre=-/usr/bin/docker rm -f wechat-searxng
+ExecStart=/usr/bin/docker run --rm --name wechat-searxng \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 160 \
+  --memory 384m \
+  --memory-swap 512m \
+  --cpus 0.75 \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+  --tmpfs /var/cache/searxng:rw,noexec,nosuid,nodev,size=64m,uid=977,gid=977 \
+  -p 127.0.0.1:8651:8080 \
+  -e SEARXNG_SECRET \
+  -e SEARXNG_BASE_URL=http://127.0.0.1:8651/ \
+  -e SEARXNG_BIND_ADDRESS=0.0.0.0 \
+  -e SEARXNG_PORT=8080 \
+  -e SEARXNG_LIMITER=false \
+  -e SEARXNG_PUBLIC_INSTANCE=false \
+  -v /etc/wechat-hermes/searxng/settings.yml:/etc/searxng/settings.yml:ro \
+  docker.m.daocloud.io/searxng/searxng@sha256:268fdb05efbb7b4fdc5957a20c42389bfb1b1b27b5eddeb98f75ec80c45b960f
+ExecStop=/usr/bin/docker stop --time 15 wechat-searxng
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

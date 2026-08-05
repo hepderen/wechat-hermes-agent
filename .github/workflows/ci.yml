@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            adapter/requirements*.txt
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-ci.txt
+
+      - name: Check Python syntax
+        run: python -m compileall -q adapter chat-api web-research
+
+      - name: Check shell syntax
+        run: find adapter web-research -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: Test Adapter
+        working-directory: adapter
+        run: python -m pytest -q
+
+      - name: Test Chat API and Bridge
+        working-directory: chat-api
+        run: python -m pytest -q
+
+      - name: Test Web Research
+        working-directory: web-research
+        run: python -m pytest -q
+
+      - name: Run fake end-to-end stack
+        if: matrix.python-version == '3.11'
+        run: python adapter/scripts/live_fake_stack.py
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository with Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

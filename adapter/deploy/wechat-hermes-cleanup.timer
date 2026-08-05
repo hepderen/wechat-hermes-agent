@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily WeChat Hermes cleanup
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

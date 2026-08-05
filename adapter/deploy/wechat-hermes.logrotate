@@ -1,0 +1,11 @@
+/var/lib/wechat-hermes/workspace/home/.hermes/logs/*.log /var/lib/wechat-hermes/workspace/home/.hermes/skill-audit.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+    create 0600 wechat-hermes-runner wechat-hermes-runtime
+}

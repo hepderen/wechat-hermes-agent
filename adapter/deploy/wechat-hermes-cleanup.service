@@ -1,0 +1,39 @@
+[Unit]
+Description=Clean expired WeChat Hermes artifacts and audit records
+
+[Service]
+Type=oneshot
+User=wechat-hermes
+Group=wechat-hermes
+SupplementaryGroups=wechat-hermes-runtime
+WorkingDirectory=/opt/wechat-hermes-adapter
+Environment=HOME=/var/lib/wechat-hermes/home
+EnvironmentFile=/etc/wechat-hermes/adapter.env
+ExecStart=/opt/wechat-hermes-adapter/.venv/bin/python /opt/wechat-hermes-adapter/cleanup.py --artifact-root ${HERMES_WECHAT_ARTIFACT_ROOT} --database ${HERMES_WECHAT_DB_PATH} --hermes-home ${HERMES_HOME} --status-file ${HERMES_WECHAT_CLEANUP_STATUS_PATH} --artifact-days ${HERMES_WECHAT_ARTIFACT_RETENTION_DAYS} --record-days ${HERMES_WECHAT_AUDIT_RETENTION_DAYS}
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=128
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wechat-hermes/adapter-data /var/lib/wechat-hermes/artifacts /var/lib/wechat-hermes/workspace/home
+InaccessiblePaths=/opt/wechat-ai-bot/data /home/ubuntu/linux-wechat-bot /home/ubuntu/.cache/wechat-chat-api /home/ubuntu/xwechat_files
+InaccessiblePaths=-/etc/wechat-hermes/hermes.env -/etc/wechat-hermes/chat-api.env -/home/ubuntu/.ssh -/root/.ssh -/run/docker.sock -/var/run/docker.sock
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
