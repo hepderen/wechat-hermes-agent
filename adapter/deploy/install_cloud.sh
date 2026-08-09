@@ -529,6 +529,30 @@ harden_hermes_skill_reload() {
     --root "$HERMES_ROOT"
 }
 
+ensure_cleanup_runtime_directories() {
+  local home="$RUNTIME_HOME"
+  local hermes_home="$home/.hermes"
+  local path
+
+  for path in \
+    "$hermes_home" \
+    "$hermes_home/logs" \
+    "$hermes_home/sessions" \
+    "$home/.npm" \
+    "$home/.npm/_logs"; do
+    [[ ! -L "$path" ]] ||
+      fail "cleanup runtime directory must not be a symbolic link: $path"
+  done
+  install -d -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 2770 \
+    "$hermes_home" \
+    "$hermes_home/logs" \
+    "$hermes_home/sessions"
+  install -d -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 2750 \
+    "$home/.npm"
+  install -d -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 2770 \
+    "$home/.npm/_logs"
+}
+
 install_hermes_home() {
   local home="$RUNTIME_HOME"
   local hermes_home="$home/.hermes"
@@ -555,7 +579,7 @@ install_hermes_home() {
   [[ ! -e "$pending_release" && ! -e "$release" ]] ||
     fail "Hermes Skill release already exists"
 
-  install -d -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 2770 "$hermes_home"
+  ensure_cleanup_runtime_directories
   install -d -o "$ADAPTER_USER" -g "$ADAPTER_USER" -m 0700 \
     "$stage_root" \
     "$stage_home" \
@@ -752,7 +776,10 @@ PY
   sudo -u "$RUNTIME_USER" env HOME="$home" \
     git config --global --add safe.directory "$HERMES_ROOT"
 
-  for directory in "$hermes_home/logs" "$hermes_home/sessions"; do
+  for directory in \
+    "$hermes_home/logs" \
+    "$hermes_home/sessions" \
+    "$home/.npm/_logs"; do
     if [[ -d "$directory" ]]; then
       find "$directory" -type f -exec chmod 0600 {} +
     fi

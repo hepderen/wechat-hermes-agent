@@ -376,3 +376,18 @@ def test_cleanup_status_and_upgrade_permissions_are_installed():
     assert "HERMES_WECHAT_CLEANUP_MAX_AGE_SECONDS" in SCRIPT
     assert "normalize_existing_artifact_permissions" in SCRIPT
     assert '-exec chmod g+rwx,o-rwx {} +' in SCRIPT
+
+
+def test_cleanup_runtime_directories_are_group_traversable():
+    assert "ensure_cleanup_runtime_directories" in SCRIPT
+    for path in (
+        '"$hermes_home/logs"',
+        '"$hermes_home/sessions"',
+        '"$home/.npm/_logs"',
+    ):
+        assert SCRIPT.count(path) >= 2
+    assert (
+        'install -d -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 2770'
+        in SCRIPT
+    )
+    assert "cleanup runtime directory must not be a symbolic link" in SCRIPT
