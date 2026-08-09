@@ -15,6 +15,7 @@
 - 完成门禁：模型结束生成不等于任务成功，Verifier 根据工具退出码、来源和 Artifact 元数据判定结果。
 - Artifact 校验：限制任务目录、路径穿越、软链接、真实 MIME、扩展名、大小和 SHA-256。
 - 记忆与 Skills：会话隔离、过期治理、Skill 快照、静态审计和原子启用。
+- 混合人格：默认是轻度嘴贫的可靠损友，真实任务保持证据优先，明确要求锐评时才进入贴吧式吐槽模式。
 - 国内外检索：Bing HTML/RSS、Bing News、可选 SearXNG 合并，以及搜狗、360、百度移动端回退。
 - 可观测性：`/health`、`/metrics`、结构化 ID 日志、清理状态和恢复门禁。
 
@@ -83,7 +84,19 @@ py -3.11 -m venv .venv
 | `web-research/` | Hermes 搜索插件、SearXNG 配置、候选发布与回滚脚本 |
 | `docs/` | 架构、快速开始和生产部署说明 |
 
-仓库仅包含两个本项目自有 Skill：`douyin-video-production` 和 `wechat-group-operations`。其他 Hermes Skills 由部署环境单独安装、审计并生成部署专属完整性锁，不在本仓库复制分发。
+仓库包含三个本项目自有 Skill：`douyin-video-production`、`wechat-group-operations` 和 `wechat-hermes-persona`。人格 Skill 只有 Markdown 规则，没有脚本、网络客户端或直接微信发送能力。其他 Hermes Skills 由部署环境单独安装、审计并生成部署专属完整性锁，不在本仓库复制分发。
+
+### 人格模式
+
+| 信号 | 行为 |
+| --- | --- |
+| 默认 | 自然、直接，带少量损友和贴吧口吻 |
+| 真实任务 | 状态、证据和产物优先，最多一句轻松收尾 |
+| `锐评` / `吐槽` / `阴阳一下` / `贴吧老哥模式` | 先分析事实与逻辑，再输出克制的锐评 |
+| `正常点` / `认真点` / `退出老哥模式` | 立即恢复默认口吻 |
+| 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
+
+社区人格来源只用于审计和风格研究，原始文件不会进入生产 Skill 树。版本、哈希和取舍记录见 [`style-contract.md`](adapter/skills/wechat-hermes-persona/references/style-contract.md)。
 
 ## 生产部署
 

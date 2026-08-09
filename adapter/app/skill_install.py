@@ -619,7 +619,7 @@ class SkillInstaller:
                 or not os.access(self.sandbox_executable, os.X_OK)
             ):
                 raise SkillInstallError("Skill audit sandbox is unavailable")
-            sandbox_home = "/skill-stage"
+            sandbox_home = "/tmp/skill-stage"
             command = [
                 str(self.sandbox_executable),
                 "--die-with-parent",
@@ -634,6 +634,11 @@ class SkillInstaller:
                 "/proc",
                 "--tmpfs",
                 "/tmp",
+                "--dir",
+                sandbox_home,
+                "--bind",
+                str(active_home),
+                sandbox_home,
                 "--tmpfs",
                 "/home",
                 "--tmpfs",
@@ -644,11 +649,6 @@ class SkillInstaller:
                 "/etc/wechat-hermes",
                 "--tmpfs",
                 "/var/lib/wechat-hermes",
-                "--dir",
-                sandbox_home,
-                "--bind",
-                str(active_home),
-                sandbox_home,
                 "--setenv",
                 "HOME",
                 sandbox_home,

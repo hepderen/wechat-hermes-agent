@@ -15,6 +15,7 @@ ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills-l
 ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/creative/creative-ideation/SKILL.md
 ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/media/douyin-video-production/SKILL.md
 ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/productivity/wechat-group-operations/SKILL.md
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/personality/wechat-hermes-persona/SKILL.md
 ExecStart=/opt/hermes-runtime/venv/bin/hermes gateway run --replace --accept-hooks
 Restart=always
 RestartSec=5

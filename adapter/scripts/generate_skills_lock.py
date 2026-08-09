@@ -69,6 +69,13 @@ SELECTED_SKILLS = (
         "source": "local",
         "expected_version": "1.2.0",
     },
+    {
+        "name": "wechat-hermes-persona",
+        "category": "personality",
+        "install_path": "personality/wechat-hermes-persona",
+        "source": "local",
+        "expected_version": "1.0.0",
+    },
 )
 
 SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

@@ -127,9 +127,12 @@ sudo --preserve-env \
 3. 备份并迁移 Adapter SQLite。
 4. 安装版本化 Adapter 和 Hermes runtime。
 5. 应用 Hermes 日志、API scope、工具证据和 Skill reload 加固补丁。
-6. 生成部署专属 Skills 完整性锁。
-7. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
-8. 写入四个隔离环境文件。
+6. 安装 Bubblewrap 专用 AppArmor `userns` 配置并执行非 root 沙箱自检。
+7. 生成部署专属 Skills 完整性锁，其中包含无代码的混合人格 Skill。
+8. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
+9. 写入四个隔离环境文件。
+
+该版本将 `HERMES_WECHAT_SESSION_GENERATION` 设为 `3`，使已有群聊创建带新人格提示词的新 Hermes Session；旧 Session 只保留为历史记录。
 
 脚本固定使用 `/home/ubuntu`、`/opt`、`/var/lib/wechat-hermes` 和 `/etc/wechat-hermes`，路径不同的环境应先修改并重新运行安装契约测试。
 

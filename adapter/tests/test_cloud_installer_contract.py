@@ -96,7 +96,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert '["memory_enabled"] = False' in SCRIPT
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "2"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "3"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
     assert 'compression["target_ratio"] = 0.20' in SCRIPT
@@ -182,7 +182,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=2" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=3" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
@@ -224,6 +224,22 @@ def test_skill_sandbox_is_installed_before_skill_runtime_use():
     assert sandbox_install < hermes_home_install
     assert "apt-get install -y bubblewrap" in SCRIPT
     assert '"HERMES_SKILL_SANDBOX": "/usr/bin/bwrap"' in SCRIPT
+
+
+def test_skill_sandbox_allows_only_bwrap_user_namespaces_on_restricted_ubuntu():
+    profile = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "wechat-hermes-bwrap.apparmor"
+    ).read_text(encoding="utf-8")
+
+    assert "profile wechat-hermes-bwrap /usr/bin/bwrap" in profile
+    assert "flags=(unconfined)" in profile
+    assert "userns," in profile
+    assert "kernel.apparmor_restrict_unprivileged_userns" in SCRIPT
+    assert "apparmor_parser -r /etc/apparmor.d/wechat-hermes-bwrap" in SCRIPT
+    assert 'sudo -u "$ADAPTER_USER" bwrap' in SCRIPT
+    assert "unprivileged Bubblewrap Skill sandbox self-test failed" in SCRIPT
 
 
 def test_deployment_uses_four_separate_credentials_and_scoped_environments():
@@ -338,12 +354,13 @@ def test_hermes_startup_and_install_require_runtime_readable_skills():
         "skills-lock.json",
         "skills/creative/creative-ideation/SKILL.md",
         "skills/media/douyin-video-production/SKILL.md",
+        "skills/personality/wechat-hermes-persona/SKILL.md",
         "skills/productivity/wechat-group-operations/SKILL.md",
     ):
         absolute = "/var/lib/wechat-hermes/skill-trust/active/" + relative_path
         assert f"ExecStartPre=/usr/bin/test -r {absolute}" in worker
         assert f'"$SKILL_TRUST_ROOT/active/{relative_path}"' in SCRIPT
-    assert SCRIPT.count('sudo -u "$RUNTIME_USER" test -r') >= 4
+    assert SCRIPT.count('sudo -u "$RUNTIME_USER" test -r') >= 5
 
 
 def test_mcp_dependencies_keep_fastapi_starlette_compatible():

@@ -160,6 +160,41 @@ def test_identifier_accepts_only_fixed_registry_identifiers():
             validate_skill_identifier(invalid)
 
 
+def test_bubblewrap_stage_is_bound_before_protected_state_is_hidden(
+    tmp_path,
+    monkeypatch,
+):
+    installer, _skills, _lock_path, _integrity = make_installer(tmp_path)
+    sandbox = tmp_path / "bwrap"
+    sandbox.write_text("placeholder", encoding="utf-8")
+    sandbox.chmod(0o700)
+    installer.sandbox_executable = sandbox
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr("app.skill_install.subprocess.run", fake_run)
+    installer._run("skills", "search", "persona", allow_network=True)
+
+    command = captured["command"]
+    assert command[0] == str(sandbox)
+    assert "/tmp/skill-stage" in command
+    assert "--share-net" in command
+    bind_index = command.index("--bind")
+    hidden_state_index = next(
+        index
+        for index, value in enumerate(command[:-1])
+        if value == "--tmpfs" and command[index + 1] == "/var/lib/wechat-hermes"
+    )
+    assert command[bind_index + 1] == str(installer.hermes_home)
+    assert command[bind_index + 2] == "/tmp/skill-stage"
+    assert bind_index < hidden_state_index
+    assert captured["kwargs"]["cwd"] is None
+
+
 def test_frontmatter_accepts_block_scalars_and_object_lists(tmp_path):
     manifest = tmp_path / "SKILL.md"
     manifest.write_text(

@@ -478,13 +478,31 @@ PY
 }
 
 install_skill_sandbox_dependency() {
-  if command -v bwrap >/dev/null 2>&1; then
-    return
+  local restrict_userns=0
+  if ! command -v bwrap >/dev/null 2>&1; then
+    env DEBIAN_FRONTEND=noninteractive apt-get update
+    env DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
   fi
-  env DEBIAN_FRONTEND=noninteractive apt-get update
-  env DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
   command -v bwrap >/dev/null 2>&1 ||
     fail "bubblewrap installation did not provide bwrap"
+
+  restrict_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || printf 0)
+  if [[ "$restrict_userns" == "1" ]]; then
+    command -v apparmor_parser >/dev/null 2>&1 ||
+      fail "AppArmor parser is required for the Skill sandbox"
+    install -o root -g root -m 0644 \
+      "$ADAPTER_ROOT/deploy/wechat-hermes-bwrap.apparmor" \
+      /etc/apparmor.d/wechat-hermes-bwrap
+    apparmor_parser -r /etc/apparmor.d/wechat-hermes-bwrap
+  fi
+
+  sudo -u "$ADAPTER_USER" bwrap \
+    --die-with-parent \
+    --new-session \
+    --unshare-all \
+    --ro-bind / / \
+    -- /bin/true ||
+    fail "unprivileged Bubblewrap Skill sandbox self-test failed"
 }
 
 harden_hermes_logging() {
@@ -555,6 +573,7 @@ install_hermes_home() {
 
   install -d -o "$ADAPTER_USER" -g "$ADAPTER_USER" -m 0755 \
     "$stage_skills/media" \
+    "$stage_skills/personality" \
     "$stage_skills/productivity"
   rsync -a --delete \
     "$ADAPTER_ROOT/skills/douyin-video-production/" \
@@ -562,6 +581,9 @@ install_hermes_home() {
   rsync -a --delete \
     "$ADAPTER_ROOT/skills/wechat-group-operations/" \
     "$stage_skills/productivity/wechat-group-operations/"
+  rsync -a --delete \
+    "$ADAPTER_ROOT/skills/wechat-hermes-persona/" \
+    "$stage_skills/personality/wechat-hermes-persona/"
 
   if [[ -f "$hermes_home/config.yaml" ]]; then
     config_source="$hermes_home/config.yaml"
@@ -641,6 +663,7 @@ PY
     -e 'd:\' \
     -e 'e:\' \
     "$stage_skills/media/douyin-video-production" \
+    "$stage_skills/personality/wechat-hermes-persona" \
     "$stage_skills/productivity/wechat-group-operations"; then
     fail "custom Skill cloud-only scan failed"
   fi
@@ -656,6 +679,10 @@ PY
     HOME="$stage_home" \
     HERMES_HOME="$stage_hermes" \
     "$HERMES_ROOT/venv/bin/hermes" curator pin douyin-video-production
+  sudo -u "$ADAPTER_USER" env \
+    HOME="$stage_home" \
+    HERMES_HOME="$stage_hermes" \
+    "$HERMES_ROOT/venv/bin/hermes" curator pin wechat-hermes-persona
 
   "$HERMES_ROOT/venv/bin/python" \
     "$ADAPTER_ROOT/scripts/generate_skills_lock.py" \
@@ -713,6 +740,9 @@ PY
   sudo -u "$RUNTIME_USER" test -r \
     "$SKILL_TRUST_ROOT/active/skills/productivity/wechat-group-operations/SKILL.md" ||
     fail "Hermes runtime cannot read wechat-group-operations"
+  sudo -u "$RUNTIME_USER" test -r \
+    "$SKILL_TRUST_ROOT/active/skills/personality/wechat-hermes-persona/SKILL.md" ||
+    fail "Hermes runtime cannot read wechat-hermes-persona"
   install -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 0640 \
     "$stage_hermes/config.yaml" "$hermes_home/config.yaml"
   chown "$RUNTIME_USER:$RUNTIME_GROUP" "$hermes_home"
@@ -1061,7 +1091,7 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "2",
+    "HERMES_WECHAT_SESSION_GENERATION": "3",
     "HERMES_CLI_PATH": "/opt/hermes-runtime/venv/bin/hermes",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
     "HERMES_SKILL_TRUST_ROOT": "/var/lib/wechat-hermes/skill-trust",

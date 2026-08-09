@@ -40,6 +40,7 @@ from .policy import (
     stable_diagnostic_session_id,
     stable_session_id,
 )
+from .persona import PERSONA_SYSTEM_PROMPT
 from .process_lock import AdapterProcessLock
 from .security import exception_summary, redact_sensitive_text
 from .skill_install import SkillInstallError, SkillInstaller
@@ -71,6 +72,9 @@ RESTRICTED_SESSION_SYSTEM_PROMPT = """你是微信中的 Hermes 问答助手。
 安装、发送或完成任何外部工作；遇到执行型请求，应明确说明需要到已授权微信
 群中发起。回答自然、准确、简洁。
 """
+
+SESSION_SYSTEM_PROMPT += "\n\n" + PERSONA_SYSTEM_PROMPT
+RESTRICTED_SESSION_SYSTEM_PROMPT += "\n\n" + PERSONA_SYSTEM_PROMPT
 
 
 def log_event(event: str, **fields: Any) -> None:

@@ -1,0 +1,11 @@
+# Allow only Bubblewrap itself to create the user namespace used by the
+# unprivileged Skill audit sandbox on Ubuntu hosts that restrict userns.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile wechat-hermes-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/wechat-hermes-bwrap>
+}

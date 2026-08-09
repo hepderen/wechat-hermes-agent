@@ -378,6 +378,7 @@ async def main() -> int:
         for required in (
             "douyin-video-production",
             "wechat-group-operations",
+            "wechat-hermes-persona",
             "creative-ideation",
         ):
             if required not in skill_text:
