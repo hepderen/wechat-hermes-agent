@@ -58,6 +58,16 @@ def test_hermes_runtime_logging_is_hardened_during_install():
     assert "deploy/harden_hermes_logging.py" in SCRIPT
 
 
+def test_hermes_home_mode_is_hardened_during_install():
+    assert "harden_hermes_home_mode()" in SCRIPT
+    runtime_install = SCRIPT.index("  install_hermes_runtime\n")
+    hardening = SCRIPT.index("  harden_hermes_home_mode\n")
+    home_install = SCRIPT.index("  install_hermes_home\n")
+
+    assert runtime_install < hardening < home_install
+    assert "deploy/harden_hermes_home_mode.py" in SCRIPT
+
+
 def test_hermes_session_chat_scope_is_hardened_during_install():
     assert "harden_hermes_api_scopes()" in SCRIPT
     runtime_install = SCRIPT.index("  install_hermes_runtime\n")
@@ -96,7 +106,8 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert '["memory_enabled"] = False' in SCRIPT
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "3"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "4"' in SCRIPT
+    assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
     assert 'compression["target_ratio"] = 0.20' in SCRIPT
@@ -182,7 +193,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=3" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=4" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
@@ -196,6 +207,11 @@ def test_environment_examples_match_production_generation_and_budget():
             "HERMES_SKILL_TRUST_ROOT=/var/lib/wechat-hermes/skill-trust"
             in example
         )
+
+    hermes_example = (root / "deploy/hermes.env.example").read_text(
+        encoding="utf-8"
+    )
+    assert "HERMES_HOME_MODE=2770" in hermes_example
 
 
 def test_release_permissions_preserve_runtime_and_skill_executables():
@@ -380,6 +396,7 @@ def test_cleanup_status_and_upgrade_permissions_are_installed():
 
 def test_cleanup_runtime_directories_are_group_traversable():
     assert "ensure_cleanup_runtime_directories" in SCRIPT
+    assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     for path in (
         '"$hermes_home/logs"',
         '"$hermes_home/sessions"',

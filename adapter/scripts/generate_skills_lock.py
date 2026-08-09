@@ -74,7 +74,7 @@ SELECTED_SKILLS = (
         "category": "personality",
         "install_path": "personality/wechat-hermes-persona",
         "source": "local",
-        "expected_version": "1.0.0",
+        "expected_version": "2.0.0",
     },
 )
 

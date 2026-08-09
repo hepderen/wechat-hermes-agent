@@ -511,6 +511,12 @@ harden_hermes_logging() {
     --root "$HERMES_ROOT"
 }
 
+harden_hermes_home_mode() {
+  python3 \
+    "$ADAPTER_ROOT/deploy/harden_hermes_home_mode.py" \
+    --root "$HERMES_ROOT"
+}
+
 harden_hermes_api_scopes() {
   python3 \
     "$ADAPTER_ROOT/deploy/harden_hermes_api_scopes.py" \
@@ -1118,7 +1124,7 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "3",
+    "HERMES_WECHAT_SESSION_GENERATION": "4",
     "HERMES_CLI_PATH": "/opt/hermes-runtime/venv/bin/hermes",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
     "HERMES_SKILL_TRUST_ROOT": "/var/lib/wechat-hermes/skill-trust",
@@ -1149,6 +1155,7 @@ hermes.update({
     "API_SERVER_HOST": "127.0.0.1",
     "API_SERVER_PORT": "8642",
     "API_SERVER_KEY": api_key,
+    "HERMES_HOME_MODE": "2770",
     "HERMES_WECHAT_INTERNAL_TOKEN": internal_token,
     "HERMES_WECHAT_ADAPTER_URL": "http://127.0.0.1:8000",
     "HERMES_WECHAT_ARTIFACT_ROOT": "/var/lib/wechat-hermes/artifacts",
@@ -1259,6 +1266,7 @@ main() {
   install_skill_sandbox_dependency
   install_hermes_runtime
   harden_hermes_logging
+  harden_hermes_home_mode
   harden_hermes_api_scopes
   harden_hermes_run_evidence
   harden_hermes_skill_reload

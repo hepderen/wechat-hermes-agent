@@ -94,9 +94,11 @@ def test_persona_skill_is_prompt_only_versioned_and_quality_gated():
     frontmatter = yaml.safe_load(text.split("---", 2)[1])
 
     assert frontmatter["name"] == "wechat-hermes-persona"
-    assert frontmatter["metadata"]["hermes"]["version"] == "1.0.0"
+    assert frontmatter["metadata"]["hermes"]["version"] == "2.0.0"
     assert "Explicit Roast Mode" in text
-    assert "Give the useful answer first" in text
+    assert "Default Sharpness" in text
+    assert "Machine Tone Filter" in text
+    assert "Make the first sentence a useful judgment" in text
     assert "no executable code" in text
     assert not any(
         path.suffix.lower() in {".py", ".sh", ".ps1", ".bat", ".cmd", ".exe"}

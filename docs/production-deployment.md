@@ -132,7 +132,9 @@ sudo --preserve-env \
 8. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
 9. 写入四个隔离环境文件。
 
-该版本将 `HERMES_WECHAT_SESSION_GENERATION` 设为 `3`，使已有群聊创建带新人格提示词的新 Hermes Session；旧 Session 只保留为历史记录。
+该版本将 `HERMES_WECHAT_SESSION_GENERATION` 设为 `4`，使已有群聊创建带 v2 人格提示词的新 Hermes Session；旧 Session 只保留为历史记录。
+
+Hermes 环境同时固定 `HERMES_HOME_MODE=2770`。Hermes 每次启动都会维持运行目录的组访问权限，使独立清理用户能够执行日志和 Session 保留策略；文件本身继续使用私有权限。
 
 脚本固定使用 `/home/ubuntu`、`/opt`、`/var/lib/wechat-hermes` 和 `/etc/wechat-hermes`，路径不同的环境应先修改并重新运行安装契约测试。
 
