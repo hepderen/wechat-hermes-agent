@@ -33,6 +33,7 @@ all_keys.json
 all_keys.*.json
 chat-api/config.json
 chat-api/db-config.json
+hermes-model-secret*.json
 
 # Runtime state and private data
 *.db

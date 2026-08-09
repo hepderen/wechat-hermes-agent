@@ -201,4 +201,57 @@ sudo WECHAT_PID=PID \
 
 ## 密钥轮换
 
-发现泄露时，先在对应服务两端同时写入新值，再按依赖顺序重启。模型供应商、GitHub、搜索或云密钥还应在供应商控制台撤销旧值。历史 Git 中出现过的密钥应视为已公开，仅删除当前文件不构成轮换。
+模型供应商凭据使用 `rotate_hermes_model.py` 轮换。脚本只接受权限为
+`0600` 的 JSON 文件，不接受命令行 Key；默认仅执行模型列表查询和最小聊天
+预检，不修改配置。模型别名只有在供应商 `/models` 返回唯一匹配时才会解析，
+例如 `5.6sol` 可以解析到唯一的 `gpt-5.6-sol`，歧义或未命中都会终止。
+
+先在仓库外创建一次性文件：
+
+```bash
+sudo install -d -m 0700 /root/wechat-hermes-secrets
+sudo install -m 0600 /dev/stdin \
+  /root/wechat-hermes-secrets/hermes-model-secret.json <<'JSON'
+{"api_key":"PROVIDER_KEY","model":"MODEL_OR_ALIAS"}
+JSON
+```
+
+记录配置哈希并执行只读预检：
+
+```bash
+CONFIG=/var/lib/wechat-hermes/workspace/home/.hermes/config.yaml
+SECRET=/root/wechat-hermes-secrets/hermes-model-secret.json
+EXPECTED_SHA256=$(sudo sha256sum "$CONFIG" | awk '{print $1}')
+
+sudo /opt/hermes-runtime/venv/bin/python \
+  adapter/scripts/rotate_hermes_model.py \
+  --config "$CONFIG" \
+  --secret-file "$SECRET"
+```
+
+确认输出中的 `chat_status=200` 等价字段、解析后的模型 ID 和配置哈希后，使用
+相同哈希执行原子替换：
+
+```bash
+sudo /opt/hermes-runtime/venv/bin/python \
+  adapter/scripts/rotate_hermes_model.py \
+  --config "$CONFIG" \
+  --secret-file "$SECRET" \
+  --expected-sha256 "$EXPECTED_SHA256" \
+  --apply
+
+sudo systemctl restart hermes-worker.service
+sudo /opt/wechat-hermes-adapter/.venv/bin/python \
+  /opt/wechat-hermes-adapter/scripts/smoke_cloud.py --read-only
+sudo rm -f -- "$SECRET"
+```
+
+每次成功替换都会在 `/var/backups/wechat-hermes/model-rotation-*` 创建权限为
+`0600` 的旧配置和无密钥 manifest。`wechat-hermes-adapter.service` 依赖 Hermes，
+因此重启 Worker 时 Adapter 会被 systemd 有序重启；微信、Chat API 和 Bridge
+不在该重启事务中。切换后应再次核对微信 PID、受保护文件 inode/hash、三个
+健康端点以及同步 Session 和异步 Run。
+
+其他服务令牌应在持有双方写入新值后按依赖顺序重启。模型供应商、GitHub、
+搜索或云密钥还应在供应商控制台撤销旧值。历史 Git 中出现过的密钥应视为已
+公开，仅删除当前文件不构成轮换。
