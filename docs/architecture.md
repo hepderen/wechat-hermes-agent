@@ -19,6 +19,7 @@
 - 按数据库游标读取 Chat API，不读取屏幕，不调用 OCR。
 - 生成稳定的 `request_id`，并携带 `room_id`、`sender_id`、`source_local_id`、`msg_svr_id`、`mentions_bot` 和 `reply_to_bot`。
 - 触发顺序为控制命令、任务命令、结构化 `@`、引用机器人消息、忽略。
+- 微信可能在正文落库后才补写原生 `@` XML；Bridge 对可见 mention 候选保留短暂稳定窗口，等可信元数据补齐后再判定。候选布尔值本身不参与授权或触发。
 - 同步回复由 Bridge 发送；异步任务的最终交付由 Adapter Outbox 发送。
 
 ### Adapter

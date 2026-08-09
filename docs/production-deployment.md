@@ -44,7 +44,7 @@
 | `bot_wxid` | 机器人真实 wxid |
 | `window_*` / `*_point` | 当前微信版本和分辨率下的发送 UI 参数 |
 
-`db-config.json` 放在 Bridge 工作目录，配置 Chat API URL、群 ID、轮询和文字分块。结构化 Bridge 没有 OCR 路径。
+`db-config.json` 放在 Bridge 工作目录，配置 Chat API URL、群 ID、轮询和文字分块。`chat_structured_metadata_wait_seconds` 默认是 `2.0`，用于等待同一数据库记录补齐原生 `@` 或引用 XML；取值限制在 `0-10` 秒，设为 `0` 可关闭等待。可见 mention 只用于决定是否等待，不能触发 Agent。结构化 Bridge 没有 OCR 路径。
 
 ### 四类令牌
 

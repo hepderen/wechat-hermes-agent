@@ -494,6 +494,169 @@ class BridgeV2IngressTests(unittest.TestCase):
         self.assertFalse(self.bridge.trusted_mentions_bot(body_injection))
         self.assertFalse(self.bridge.should_handle(body_injection))
 
+    def test_delayed_native_mention_metadata_is_processed_once(self):
+        incomplete = self.message(11, "do work", native_mention=False)
+        incomplete.update(
+            {
+                "mentions_bot": False,
+                "visible_mention_candidate": True,
+                "mention_source": "",
+            }
+        )
+        complete = self.message(11, "do work")
+        complete["visible_mention_candidate"] = True
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        snapshots = iter(([incomplete], [complete], []))
+        sent = []
+
+        with mock.patch.object(
+            self.bridge,
+            "get_messages",
+            side_effect=lambda after: next(snapshots),
+        ), mock.patch.object(
+            self.bridge,
+            "process_priority_controls",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "ask_ai",
+            return_value="answer",
+        ) as ask, mock.patch.object(
+            self.bridge,
+            "send_text",
+            side_effect=lambda text, request_id, **metadata: sent.append(request_id),
+        ), mock.patch.object(self.bridge, "atomic_save_state"):
+            self.bridge.run_once(state)
+            self.assertEqual(state["last_local_id"], 10)
+            ask.assert_not_called()
+
+            self.bridge.run_once(state)
+            self.bridge.run_once(state)
+
+        ask.assert_called_once()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(state["last_local_id"], 11)
+
+    def test_visible_mention_without_native_metadata_expires_without_trigger(self):
+        display_only = self.message(11, "do work", native_mention=False)
+        display_only.update(
+            {
+                "mentions_bot": False,
+                "visible_mention_candidate": True,
+                "mention_source": "",
+            }
+        )
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+
+        with mock.patch.object(
+            self.bridge,
+            "get_messages",
+            return_value=[display_only],
+        ), mock.patch.object(
+            self.bridge,
+            "process_priority_controls",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "ask_ai",
+        ) as ask, mock.patch.object(
+            self.bridge,
+            "send_text",
+        ) as send, mock.patch.object(self.bridge, "atomic_save_state"):
+            self.bridge.run_once(state)
+            self.assertEqual(state["last_local_id"], 10)
+            state["metadata_wait"]["expires_at"] = 0
+            self.bridge.run_once(state)
+
+        ask.assert_not_called()
+        send.assert_not_called()
+        self.assertEqual(state["last_local_id"], 11)
+        self.assertIsNone(state["metadata_wait"])
+
+    def test_stop_bypasses_metadata_wait_and_invalidates_older_candidate(self):
+        display_only = self.message(11, "do work", native_mention=False)
+        display_only.update(
+            {
+                "mentions_bot": False,
+                "visible_mention_candidate": True,
+                "mention_source": "",
+            }
+        )
+        stop = self.message(12, "\u505c\u6b62", native_mention=False)
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        sent = []
+
+        with mock.patch.object(
+            self.bridge,
+            "get_messages",
+            side_effect=self.pages([display_only, stop]),
+        ), mock.patch.object(
+            self.bridge,
+            "ask_ai",
+            return_value={"text": "stopped", "status": "canceled"},
+        ) as ask, mock.patch.object(
+            self.bridge,
+            "send_text",
+            side_effect=lambda text, request_id, **metadata: sent.append(text),
+        ), mock.patch.object(self.bridge, "atomic_save_state"):
+            self.bridge.run_once(state)
+
+        ask.assert_called_once()
+        self.assertEqual(sent, ["stopped"])
+        self.assertEqual(state["last_local_id"], 12)
+        self.assertIsNone(state.get("metadata_wait"))
+
+    def test_delayed_native_metadata_race_repeats_without_loss(self):
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        sent = []
+
+        with mock.patch.object(
+            self.bridge,
+            "ask_ai",
+            return_value="answer",
+        ) as ask, mock.patch.object(
+            self.bridge,
+            "process_priority_controls",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "send_text",
+            side_effect=lambda text, request_id, **metadata: sent.append(request_id),
+        ), mock.patch.object(self.bridge, "atomic_save_state"):
+            for local_id in range(11, 111):
+                incomplete = self.message(local_id, "same", native_mention=False)
+                incomplete.update(
+                    {
+                        "mentions_bot": False,
+                        "visible_mention_candidate": True,
+                        "mention_source": "",
+                    }
+                )
+                complete = self.message(local_id, "same")
+                complete["visible_mention_candidate"] = True
+
+                self.assertTrue(
+                    self.bridge.should_wait_for_structured_metadata(
+                        state,
+                        incomplete,
+                        now=float(local_id),
+                    )
+                )
+                self.assertFalse(
+                    self.bridge.should_wait_for_structured_metadata(
+                        state,
+                        complete,
+                        now=float(local_id),
+                    )
+                )
+                self.bridge.handle_message(state, complete)
+                self.bridge.handle_message(state, complete)
+
+        self.assertEqual(ask.call_count, 100)
+        self.assertEqual(len(sent), 100)
+        self.assertEqual(len(set(sent)), 100)
+        self.assertEqual(state["last_local_id"], 110)
+
     def test_native_at_metadata_and_real_reply_are_trusted(self):
         native = self.message(11, "do work", native_mention=False)
         native.update(

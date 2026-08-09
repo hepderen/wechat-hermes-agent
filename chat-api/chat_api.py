@@ -943,6 +943,7 @@ class SnapshotReader:
             "delivery_marker": delivery_marker,
             "mentions_bot": native_mentions_bot,
             "native_mentions_bot": native_mentions_bot,
+            "visible_mention_candidate": visible_mention,
             "native_at_user_list": native_at_user_list,
             "mention_source": (
                 "msg_source_at_user_list" if native_at_user_list else ""

@@ -255,6 +255,7 @@ class MessageParsingTests(unittest.TestCase):
         message = reader._serialize_row(row)
         self.assertFalse(message["mentions_bot"])
         self.assertFalse(message["native_mentions_bot"])
+        self.assertTrue(message["visible_mention_candidate"])
         self.assertEqual(message["native_at_user_list"], [])
         self.assertEqual(message["prompt"], "\u6267\u884c\u4efb\u52a1")
 

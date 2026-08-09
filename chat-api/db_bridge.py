@@ -74,6 +74,13 @@ CONTROL_SCAN_SECONDS = max(
     0.05,
     float(CONFIG.get("chat_control_scan_seconds", 1.0)),
 )
+STRUCTURED_METADATA_WAIT_SECONDS = max(
+    0.0,
+    min(
+        10.0,
+        float(CONFIG.get("chat_structured_metadata_wait_seconds", 2.0)),
+    ),
+)
 PROCESSED_IDENTITY_LIMIT = max(
     256,
     min(8192, int(CONFIG.get("chat_processed_identity_limit", 2048))),
@@ -228,6 +235,21 @@ def validate_state(value):
         raise ValueError("bridge pending state must be an object or null")
     state.setdefault("retry", None)
     state.setdefault("pending", None)
+    metadata_wait = state.get("metadata_wait")
+    if "metadata_wait" in state and metadata_wait is not None:
+        if not isinstance(metadata_wait, dict):
+            raise ValueError("bridge metadata wait state must be an object or null")
+        metadata_wait = dict(metadata_wait)
+        metadata_wait["local_id"] = int(metadata_wait.get("local_id") or 0)
+        metadata_wait["started_at"] = float(metadata_wait.get("started_at") or 0)
+        metadata_wait["expires_at"] = float(metadata_wait.get("expires_at") or 0)
+        if metadata_wait["local_id"] <= 0:
+            raise ValueError("bridge metadata wait local id must be positive")
+        if metadata_wait["started_at"] < 0 or metadata_wait["expires_at"] < 0:
+            raise ValueError("bridge metadata wait timestamps cannot be negative")
+        if metadata_wait["expires_at"] < metadata_wait["started_at"]:
+            raise ValueError("bridge metadata wait deadline is invalid")
+        state["metadata_wait"] = metadata_wait
     state.setdefault("last_reply_at", 0)
     if "stop_before_local_id" in state:
         state["stop_before_local_id"] = int(state["stop_before_local_id"])
@@ -284,6 +306,7 @@ def load_state():
             "last_local_id": 0,
             "retry": None,
             "pending": None,
+            "metadata_wait": None,
             "last_reply_at": 0,
             "stop_before_local_id": 0,
             "control_scan_cursor": 0,
@@ -764,6 +787,56 @@ def should_handle(message):
     )
 
 
+def message_may_have_pending_structured_metadata(message):
+    if (
+        message.get("direction") != "incoming"
+        or int(message.get("origin_source", 0)) != 2
+        or int(message.get("local_type", 0)) not in {1, 49}
+        or not bool(message_sender_id(message))
+        or is_control_message(message)
+        or trusted_mentions_bot(message)
+        or trusted_reply_to_bot(message)
+    ):
+        return False
+    return bool(message.get("visible_mention_candidate")) or not bool(
+        message.get("structured_valid", True)
+    )
+
+
+def should_wait_for_structured_metadata(state, message, now=None):
+    local_id = int(message.get("local_id") or 0)
+    wait = state.get("metadata_wait") or {}
+    same_message = int(wait.get("local_id") or 0) == local_id
+    if not message_may_have_pending_structured_metadata(message):
+        if same_message:
+            state["metadata_wait"] = None
+            LOG.info(
+                "structured metadata settled local_id=%d trigger=%s",
+                local_id,
+                should_handle(message),
+            )
+        return False
+    if STRUCTURED_METADATA_WAIT_SECONDS <= 0:
+        if same_message:
+            state["metadata_wait"] = None
+        return False
+    now = time.time() if now is None else float(now)
+    if same_message:
+        if now < float(wait.get("expires_at") or 0):
+            return True
+        state["metadata_wait"] = None
+        LOG.warning("structured metadata wait expired local_id=%d", local_id)
+        return False
+    state["metadata_wait"] = {
+        "local_id": local_id,
+        "started_at": now,
+        "expires_at": now + STRUCTURED_METADATA_WAIT_SECONDS,
+    }
+    atomic_save_state(state)
+    LOG.info("waiting for structured metadata local_id=%d", local_id)
+    return True
+
+
 def is_control_message(message):
     return bool(control_command_kind(message))
 
@@ -1115,6 +1188,19 @@ def handle_message(state, message):
         LOG.info("old message invalidated by stop local_id=%d", local_id)
         return True
     if not should_handle(message):
+        if message.get("direction") == "incoming":
+            LOG.info(
+                "structured inbound ignored local_id=%d type=%s "
+                "mention=%s reply=%s visible_candidate=%s valid=%s "
+                "sender_present=%s",
+                local_id,
+                message_type(message),
+                trusted_mentions_bot(message),
+                trusted_reply_to_bot(message),
+                bool(message.get("visible_mention_candidate")),
+                bool(message.get("structured_valid", True)),
+                bool(message_sender_id(message)),
+            )
         remember_message_identity(state, message)
         state["last_local_id"] = local_id
         state["retry"] = None
@@ -1302,6 +1388,11 @@ def run_once(state):
         local_id = int(message["local_id"])
         if local_id <= int(state.get("last_local_id", 0)):
             continue
+        if (
+            not message_invalidated_by_stop(state, message)
+            and should_wait_for_structured_metadata(state, message)
+        ):
+            return
         retry = state.get("retry") or {}
         if (
             int(retry.get("local_id", -1)) == local_id
