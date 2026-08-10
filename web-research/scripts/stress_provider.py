@@ -161,7 +161,7 @@ async def run(args) -> dict:
     extracts = []
     for url, minimum_chars in (
         ("https://www.python.org/", 500),
-        ("https://www.gov.cn/", 200),
+        ("https://cloud.tencent.com/document/product/213", 500),
     ):
         started = time.monotonic()
         result = await provider.extract([url])
