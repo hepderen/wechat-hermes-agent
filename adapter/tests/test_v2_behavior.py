@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
+from app import main as main_module
 from app.clients import RemoteAPIError
 from app.evidence import build_execution_plan
 from app.main import create_app, execute_task, terminal_delivery_text
@@ -715,6 +716,47 @@ def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(
     assert [(item["kind"], item["state"]) for item in outbox] == [
         ("text", "prepared")
     ]
+
+
+def test_transient_failed_run_waits_before_requeue(tmp_path, monkeypatch):
+    runtime = make_runtime(tmp_path, max_task_attempts=3)
+    runtime.store.initialize()
+    task = create_planned_task(
+        runtime,
+        "transient-run-backoff",
+        "搜索今天的 AI 新闻并给出来源",
+    )
+    claimed = runtime.store.claim_next()
+
+    async def session_history(_session_id):
+        return []
+
+    async def start_run(*_args, **_kwargs):
+        return "run-rate-limited"
+
+    async def wait_run(*_args, **_kwargs):
+        return {
+            "status": "failed",
+            "output": "",
+            "error": "provider returned HTTP 429",
+        }
+
+    delays = []
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    runtime.hermes.session_history = session_history
+    runtime.hermes.start_run = start_run
+    runtime.hermes.wait_run = wait_run
+    monkeypatch.setattr(main_module.asyncio, "sleep", record_sleep)
+
+    asyncio.run(execute_task(runtime, claimed))
+
+    current = runtime.store.get_task(task["id"])
+    assert current["status"] == "queued"
+    assert current["hermes_run_id"] is None
+    assert delays == [20]
 
 
 def test_failed_run_with_tool_activity_is_not_automatically_replayed(tmp_path):

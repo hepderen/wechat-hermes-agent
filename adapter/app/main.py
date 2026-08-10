@@ -22,6 +22,7 @@ from .clients import (
     HermesClient,
     RemoteAPIError,
     retry_delay_seconds,
+    transient_failure_delay_seconds,
 )
 from .config import Settings
 from .evidence import (
@@ -1762,6 +1763,20 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
             current = runtime.store.get_task(task["id"])
             if current is not None:
                 prepare_task_outbox(runtime, current)
+        elif retry_status == "queued":
+            delay = transient_failure_delay_seconds(
+                run_error,
+                int(task.get("attempts") or 1),
+            )
+            if delay:
+                log_event(
+                    "task_retry_backoff",
+                    task_id=task["id"],
+                    room_id=task["room_id"],
+                    status_code="run_failed",
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)
         log_event(
             "task_finished",
             task_id=task["id"],

@@ -25,14 +25,32 @@ def test_transient_http_errors_are_retryable_with_bounded_backoff():
     )
     assert error.retryable is True
     assert error.retry_after_seconds == 12
-    assert clients.retry_delay_seconds(error, 1) == 12
-    assert clients.retry_delay_seconds(error, 4) == 30
+    assert clients.retry_delay_seconds(error, 1) == 20
+    assert clients.retry_delay_seconds(error, 4) == 60
 
 
 def test_permanent_http_errors_do_not_trigger_backoff():
     error = clients.response_error(Response(400, {}))
     assert error.retryable is False
     assert clients.retry_delay_seconds(error, 1) == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "provider returned HTTP 429",
+        "HTTP status 503",
+        "too many requests",
+        "上游模型限流",
+    ),
+)
+def test_transient_run_failures_use_the_same_bounded_backoff(message):
+    assert clients.transient_failure_delay_seconds(message, 1) == 20
+    assert clients.transient_failure_delay_seconds(message, 2) == 40
+
+
+def test_non_transient_run_failure_does_not_backoff():
+    assert clients.transient_failure_delay_seconds("invalid prompt", 1) == 0
 
 
 def test_wait_run_publishes_sse_tool_events():

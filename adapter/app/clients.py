@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 import time
 import urllib.parse
 from typing import Any, Awaitable, Callable
@@ -12,6 +13,11 @@ import httpx
 
 
 RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+TRANSIENT_FAILURE_RE = re.compile(
+    r"(?:\bHTTP\s*(?:status\s*)?(?:408|425|429|500|502|503|504)\b|"
+    r"rate[ _-]?limit|too many requests|temporarily unavailable|限流)",
+    re.IGNORECASE,
+)
 
 
 class RemoteAPIError(RuntimeError):
@@ -66,8 +72,17 @@ def retry_delay_seconds(error: RemoteAPIError, attempts: int) -> float:
     if not error.retryable:
         return 0.0
     attempt = max(1, int(attempts))
-    exponential = min(30.0, 5.0 * (2 ** (attempt - 1)))
+    exponential = min(60.0, 20.0 * (2 ** (attempt - 1)))
     return min(60.0, max(exponential, error.retry_after_seconds))
+
+
+def transient_failure_delay_seconds(message: str, attempts: int) -> float:
+    if not TRANSIENT_FAILURE_RE.search(str(message or "")):
+        return 0.0
+    return retry_delay_seconds(
+        RemoteAPIError("transient upstream failure", retryable=True),
+        attempts,
+    )
 
 
 class HermesClient:
