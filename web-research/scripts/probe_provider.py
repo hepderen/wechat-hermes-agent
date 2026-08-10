@@ -29,22 +29,35 @@ async def run(args) -> dict:
         raise RuntimeError("provider did not report available")
 
     summaries = []
-    for query in ("OpenAI official documentation", "人工智能 最新新闻"):
+    cases = (
+        ("OpenAI official documentation", 1, ("openai.com",)),
+        ("人工智能 最新新闻", 3, ()),
+    )
+    for query, minimum_results, expected_hosts in cases:
         result = provider.search(query, 5)
         if not result.get("success"):
             raise RuntimeError("live search failed: %s" % result.get("error"))
         rows = result.get("data", {}).get("web", [])
-        if len(rows) < 3:
-            raise RuntimeError("live search returned fewer than three results")
+        if len(rows) < minimum_results:
+            raise RuntimeError(
+                "live search returned fewer than %d results" % minimum_results
+            )
         for row in rows:
             parsed = urlsplit(str(row.get("url") or ""))
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise RuntimeError("search returned a non-public URL shape")
+        hosts = sorted({urlsplit(row["url"]).hostname for row in rows})
+        if expected_hosts and not any(
+            host == expected or host.endswith("." + expected)
+            for host in hosts
+            for expected in expected_hosts
+        ):
+            raise RuntimeError("live search missed the expected official host")
         summaries.append(
             {
                 "query_hash": __import__("hashlib").sha256(query.encode()).hexdigest()[:12],
                 "result_count": len(rows),
-                "hosts": sorted({urlsplit(row["url"]).hostname for row in rows}),
+                "hosts": hosts,
             }
         )
 
@@ -74,7 +87,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", type=Path, required=True)
     parser.add_argument("--search-url", default="http://127.0.0.1:18651")
-    parser.add_argument("--extract-url", default="https://www.baidu.com/")
+    parser.add_argument("--extract-url", default="https://www.python.org/")
     args = parser.parse_args()
     print(json.dumps(asyncio.run(run(args)), ensure_ascii=False, sort_keys=True))
     return 0

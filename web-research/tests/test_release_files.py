@@ -80,6 +80,8 @@ def test_probe_is_read_only_and_does_not_call_wechat():
         assert "unlink(" not in source
     provider_probe = (ROOT / "scripts" / "probe_provider.py").read_text(encoding="utf-8")
     assert "http://169.254.169.254" in provider_probe
+    assert "https://www.python.org/" in provider_probe
+    assert "expected_hosts" in provider_probe
     stress_probe = (ROOT / "scripts" / "stress_provider.py").read_text(
         encoding="utf-8"
     )
