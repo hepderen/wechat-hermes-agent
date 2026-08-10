@@ -138,6 +138,29 @@ Hermes 环境同时固定 `HERMES_HOME_MODE=2770`。Hermes 每次启动都会维
 
 脚本固定使用 `/home/ubuntu`、`/opt`、`/var/lib/wechat-hermes` 和 `/etc/wechat-hermes`，路径不同的环境应先修改并重新运行安装契约测试。
 
+## SSH 管理面加固
+
+公网 SSH 使用密码认证时，持续爆破会占用未认证连接槽并拖高小规格主机负载。仓库提供 `adapter/deploy/sshd-wechat-hermes.conf`，关闭密码、交互式和 root 登录，只允许 `ubuntu` 使用公钥，并收紧 `LoginGraceTime`、`MaxAuthTries` 与 `MaxStartups`。
+
+先保持当前管理会话，在第二个全新会话确认生产密钥有效：
+
+```bash
+ssh -o BatchMode=yes -i KEY ubuntu@HOST true
+```
+
+确认后安装并 reload；reload 不终止已有 SSH 会话：
+
+```bash
+sudo install -o root -g root -m 0644 \
+  adapter/deploy/sshd-wechat-hermes.conf \
+  /etc/ssh/sshd_config.d/00-wechat-hermes.conf
+sudo sshd -t
+sudo systemctl reload ssh.service
+ssh -o BatchMode=yes -i KEY ubuntu@HOST true
+```
+
+若生产管理账户不是 `ubuntu`，先修改配置中的 `AllowUsers`。不要在最后一个可用管理会话内直接套用未经验证的账户或密钥设置。
+
 ## 搜索候选
 
 搜索依赖不直接提交到 Git。构建脚本按哈希锁下载 Trafilatura 及依赖，并创建隔离 Hermes home：

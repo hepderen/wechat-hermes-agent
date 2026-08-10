@@ -999,8 +999,21 @@ def require_stop_effect(state, message, result):
         raise RuntimeError("stop control was not committed")
 
 
+TERMINAL_DELIVERY_OUTCOMES = {
+    409: "uncertain",
+    422: "idempotency_conflict",
+    423: "suppressed",
+}
+
+
+def terminal_delivery_outcome(exc):
+    if not isinstance(exc, RemoteAPIError):
+        return ""
+    return TERMINAL_DELIVERY_OUTCOMES.get(exc.status, "")
+
+
 def is_suppressed_error(exc):
-    return isinstance(exc, RemoteAPIError) and exc.status == 423
+    return terminal_delivery_outcome(exc) == "suppressed"
 
 
 def mark_control_preprocessed(local_id):
@@ -1023,13 +1036,16 @@ def deliver_result(message, result):
     try:
         reply = send_prepared_result(message, prepared)
     except Exception as exc:
-        if not is_suppressed_error(exc):
+        delivery_status = terminal_delivery_outcome(exc)
+        if not delivery_status:
             raise
-        LOG.info(
-            "outbound result suppressed by barrier local_id=%d",
+        LOG.warning(
+            "outbound result reached terminal delivery state "
+            "local_id=%d delivery=%s",
             local_id,
+            delivery_status,
         )
-        return prepared, "suppressed"
+        return prepared, delivery_status
     return prepared, "ignored" if not reply and not prepared.get("chunks") else "sent"
 
 
@@ -1246,11 +1262,14 @@ def handle_message(state, message):
     try:
         reply = send_prepared_result(message, pending["result"])
     except Exception as exc:
-        if not is_suppressed_error(exc):
+        delivery_status = terminal_delivery_outcome(exc)
+        if not delivery_status:
             raise
-        LOG.info(
-            "pending reply suppressed by barrier local_id=%d",
+        LOG.warning(
+            "pending reply reached terminal delivery state "
+            "local_id=%d delivery=%s",
             local_id,
+            delivery_status,
         )
         reply = ""
     LOG.info(
@@ -1309,11 +1328,14 @@ def finish_failed_message(state, message):
             source_local_id=local_id,
         )
     except Exception as exc:
-        if not is_suppressed_error(exc):
+        delivery_status = terminal_delivery_outcome(exc)
+        if not delivery_status:
             raise
-        LOG.info(
-            "failure notice suppressed by barrier local_id=%d",
+        LOG.warning(
+            "failure notice reached terminal delivery state "
+            "local_id=%d delivery=%s",
             local_id,
+            delivery_status,
         )
     clear_pending_result(state, local_id)
     remember_message_identity(state, message)

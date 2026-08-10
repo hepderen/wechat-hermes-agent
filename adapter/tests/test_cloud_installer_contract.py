@@ -5,6 +5,23 @@ from pathlib import Path
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "deploy" / "install_cloud.sh"
 ).read_text(encoding="utf-8")
+SSHD_HARDENING = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "sshd-wechat-hermes.conf"
+).read_text(encoding="utf-8")
+
+
+def test_sshd_hardening_disables_password_and_root_login():
+    assert "PubkeyAuthentication yes" in SSHD_HARDENING
+    assert "PasswordAuthentication no" in SSHD_HARDENING
+    assert "KbdInteractiveAuthentication no" in SSHD_HARDENING
+    assert "AuthenticationMethods publickey" in SSHD_HARDENING
+    assert "PermitRootLogin no" in SSHD_HARDENING
+    assert "AllowUsers ubuntu" in SSHD_HARDENING
+    assert "LoginGraceTime 30" in SSHD_HARDENING
+    assert "MaxAuthTries 3" in SSHD_HARDENING
+    assert "MaxStartups 10:30:30" in SSHD_HARDENING
 
 
 def test_cloud_browser_is_pinned_and_has_a_verified_mirror_fallback():

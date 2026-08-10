@@ -3407,6 +3407,43 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertIsNone(state["retry"])
         self.assertIsNone(state["pending"])
 
+    def test_terminal_delivery_outcomes_match_chat_api_contract(self):
+        bridge = self.load_bridge()
+        expected = {
+            409: "uncertain",
+            422: "idempotency_conflict",
+            423: "suppressed",
+        }
+        for status, outcome in expected.items():
+            with self.subTest(status=status):
+                error = bridge.RemoteAPIError("chat API", status=status)
+                self.assertEqual(bridge.terminal_delivery_outcome(error), outcome)
+        self.assertEqual(bridge.terminal_delivery_outcome(RuntimeError()), "")
+
+    def test_uncertain_reply_is_terminal_and_does_not_retry(self):
+        bridge = self.load_bridge()
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        message = self.message(11, prompt="old request")
+        with mock.patch.object(
+            bridge, "get_messages", return_value=[message]
+        ), mock.patch.object(
+            bridge, "ask_ai", return_value="old result"
+        ) as ask, mock.patch.object(
+            bridge,
+            "send_text",
+            side_effect=bridge.RemoteAPIError("chat API", status=409),
+        ) as send, mock.patch.object(
+            bridge, "atomic_save_state"
+        ):
+            bridge.run_once(state)
+            bridge.run_once(state)
+
+        ask.assert_called_once_with(message, "old request")
+        send.assert_called_once()
+        self.assertEqual(state["last_local_id"], 11)
+        self.assertIsNone(state["retry"])
+        self.assertIsNone(state["pending"])
+
     def test_ignored_adapter_response_sends_no_fallback(self):
         bridge = self.load_bridge()
         state = {"last_local_id": 10, "retry": None, "pending": None}
@@ -3826,6 +3863,31 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertEqual(send.call_count, 2)
         self.assertEqual(state["retry"]["phase"], "failure_notice")
         self.assertEqual(state["last_local_id"], 10)
+
+    def test_uncertain_final_failure_notice_advances_without_resend(self):
+        bridge = self.load_bridge()
+        bridge.MAX_RETRIES = 1
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        message = self.message(11)
+        with mock.patch.object(
+            bridge, "get_messages", return_value=[message]
+        ), mock.patch.object(
+            bridge, "ask_ai", side_effect=RuntimeError("AI unavailable")
+        ) as ask, mock.patch.object(
+            bridge,
+            "send_text",
+            side_effect=bridge.RemoteAPIError("chat API", status=409),
+        ) as send, mock.patch.object(
+            bridge, "atomic_save_state"
+        ):
+            bridge.run_once(state)
+            bridge.run_once(state)
+
+        ask.assert_called_once_with(message, "same")
+        send.assert_called_once()
+        self.assertEqual(state["last_local_id"], 11)
+        self.assertIsNone(state["retry"])
+        self.assertIsNone(state["pending"])
 
     def test_corrupt_primary_state_recovers_from_backup(self):
         bridge = self.load_bridge()
