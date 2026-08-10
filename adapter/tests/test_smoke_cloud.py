@@ -174,9 +174,19 @@ def test_full_smoke_covers_restricted_chat_scopes():
 
     assert "CLOUD_LEGACY_OK" in source
     assert "CLOUD_PRIVATE_OK" in source
+    assert "private_chat_enabled" in source
+    assert 'expected={403}' in source
+    assert 'private_check = "disabled private-chat policy"' in source
     assert "legacy execution request was not blocked locally" in source
     assert "private execution request was not blocked locally" in source
     assert '"disable_tools": "true"' in source
+
+
+def test_smoke_environment_boolean_matches_service_configuration():
+    for value in ("1", "true", "YES", "on"):
+        assert smoke_cloud.env_enabled({"FLAG": value}, "FLAG")
+    for value in ("", "0", "false", "off"):
+        assert not smoke_cloud.env_enabled({"FLAG": value}, "FLAG")
 
 
 def test_scope_validation_session_is_repeatable_and_cleaned_up():

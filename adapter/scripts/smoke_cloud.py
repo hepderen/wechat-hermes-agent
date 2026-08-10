@@ -32,6 +32,15 @@ def env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def env_enabled(environment: dict[str, str], name: str) -> bool:
+    return str(environment.get(name) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def service_env(service_name: str) -> dict[str, str]:
     result = subprocess.run(
         [
@@ -291,6 +300,7 @@ async def main() -> int:
     bridge_token = adapter_env["BRIDGE_TOKEN"]
     internal_token = adapter_env["HERMES_WECHAT_INTERNAL_TOKEN"]
     hermes_token = hermes_env["API_SERVER_KEY"]
+    private_chat_enabled = env_enabled(adapter_env, "ALLOW_PRIVATE_WECHAT_CHAT")
     timeout = httpx.Timeout(connect=10, read=300, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
         await request(client, "GET", f"{hermes_url}/health")
@@ -508,41 +518,65 @@ async def main() -> int:
             raise RuntimeError("legacy execution request was not blocked locally")
 
         private_sender = f"wxid_smoke_private_{time.time_ns()}"
-        await retry_model_probe(
-            "private zero-tool chat",
-            lambda: adapter_exact_reply_probe(
+        if private_chat_enabled:
+            await retry_model_probe(
+                "private zero-tool chat",
+                lambda: adapter_exact_reply_probe(
+                    client,
+                    adapter_url,
+                    bridge_token,
+                    {
+                        "message": (
+                            "Return exactly CLOUD_PRIVATE_OK and do not call tools."
+                        ),
+                        "request_id": f"smoke:private:{time.time_ns()}",
+                        "sender_id": private_sender,
+                    },
+                    "CLOUD_PRIVATE_OK",
+                ),
+            )
+
+            private_blocked = await request(
                 client,
-                adapter_url,
-                bridge_token,
-                {
-                    "message": (
-                        "Return exactly CLOUD_PRIVATE_OK and do not call tools."
-                    ),
-                    "request_id": f"smoke:private:{time.time_ns()}",
+                "POST",
+                f"{adapter_url}/api/chat",
+                headers={"X-Bridge-Token": bridge_token},
+                json={
+                    "message": "搜索网页并下载文件",
+                    "request_id": f"smoke:private-exec:{time.time_ns()}",
                     "sender_id": private_sender,
                 },
-                "CLOUD_PRIVATE_OK",
-            ),
-        )
-
-        private_blocked = await request(
-            client,
-            "POST",
-            f"{adapter_url}/api/chat",
-            headers={"X-Bridge-Token": bridge_token},
-            json={
-                "message": "搜索网页并下载文件",
-                "request_id": f"smoke:private-exec:{time.time_ns()}",
-                "sender_id": private_sender,
-            },
-        )
-        private_blocked_body = private_blocked.json()
-        if (
-            private_blocked_body.get("status") != "failed"
-            or private_blocked_body.get("task_id")
-            or "未执行" not in str(private_blocked_body.get("reply") or "")
-        ):
-            raise RuntimeError("private execution request was not blocked locally")
+            )
+            private_blocked_body = private_blocked.json()
+            if (
+                private_blocked_body.get("status") != "failed"
+                or private_blocked_body.get("task_id")
+                or "未执行" not in str(private_blocked_body.get("reply") or "")
+            ):
+                raise RuntimeError(
+                    "private execution request was not blocked locally"
+                )
+            private_check = "private zero-tool chat and execution blocking"
+        else:
+            for suffix, message in (
+                ("chat", "你好"),
+                ("exec", "搜索网页并下载文件"),
+            ):
+                await request(
+                    client,
+                    "POST",
+                    f"{adapter_url}/api/chat",
+                    headers={"X-Bridge-Token": bridge_token},
+                    expected={403},
+                    json={
+                        "message": message,
+                        "request_id": (
+                            f"smoke:private-disabled:{suffix}:{time.time_ns()}"
+                        ),
+                        "sender_id": private_sender,
+                    },
+                )
+            private_check = "disabled private-chat policy"
 
         await retry_model_probe(
             "asynchronous Hermes run",
@@ -608,7 +642,7 @@ async def main() -> int:
                     "unknown-room policy",
                     "synchronous Session Chat",
                     "legacy three-field compatibility and execution blocking",
-                    "private zero-tool chat and execution blocking",
+                    private_check,
                     "asynchronous Runs",
                     "structured reply-to-bot",
                 ],
