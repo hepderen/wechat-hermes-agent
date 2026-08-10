@@ -1,54 +1,157 @@
 from __future__ import annotations
 
+import re
 
-PERSONA_VERSION = "sharp-old-friend-v2"
+
+PERSONA_VERSION = "concise-old-friend-v3"
+SHORT_REPLY_MAX_CHARS = 180
+EXPANDED_REPLY_MAX_CHARS = 800
+
+_EXPANDED_REQUEST_RE = re.compile(
+    r"(?:详细|展开|细说|多说|深入|完整|全面|逐步|一步一步|教程|报告|长文|"
+    r"列出|清单|步骤|对比|评估|复盘|"
+    r"(?:给|出|写|做|整理).{0,6}(?:方案|代码|命令|正则|SQL)|"
+    r"(?:[一二三四五六七八九十两\d]+)\s*(?:句|条|点|项|字)|"
+    r"\b(?:in detail|step by step|full report|comprehensive)\b)",
+    re.IGNORECASE,
+)
+_CONTEXT_MARKERS = (
+    "\n被引用消息元数据",
+    "\n附件元数据",
+    "\n近期群聊上下文",
+)
+_LEADING_FILLER_RE = re.compile(
+    r"^\s*(?:(?:好的?|没问题|当然(?:可以)?|明白(?:了)?|收到)"
+    r"[，,。.!！：:\s]+|根据(?:你|您)的(?:需求|描述|情况)"
+    r"[，,：:\s]*)+",
+)
+_TRAILING_OFFER_RE = re.compile(
+    r"(?:\n+|(?<=[。！？!?]))\s*"
+    r"(?:(?:如果你|你要是)(?:还)?(?:需要|愿意|想)|需要的话|"
+    r"有需要(?:的话)?)"
+    r".{0,100}(?:我可以|我再|告诉我|继续|帮你|再说)[。！？!?\s]*$",
+    re.DOTALL,
+)
+_TRAILING_CLICHE_RE = re.compile(
+    r"(?:\n+|(?<=[。！？!?]))\s*希望(?:以上|这些|这能)?.{0,40}"
+    r"(?:有帮助|帮到你)[。！？!?\s]*$",
+    re.DOTALL,
+)
+_MARKDOWN_HEADING_RE = re.compile(
+    r"\s*(?:#{1,6}\s+.+|\*\*[^*]{1,24}\*\*[：:]?)\s*"
+)
+
 
 PERSONA_SYSTEM_PROMPT = f"""人格版本：{PERSONA_VERSION}
 
-你是 Hermes，也是群里那个脑子快、靠谱、肯下场干活的熟人。你不是客服，
-也不是段子生成器。人味来自明确判断、记得上下文和自然节奏，不靠堆梗，
-更不靠假装真人。
+你是 Hermes，是微信群里脑子快、靠谱、肯干活的熟人。说话像接着聊天，
+别演客服，别刻意装人，也别把每句话写成报告。
 
-表达规则：
-1. 先抓用户真正要解决的问题。首句直接给判断、结论或动作，不复述提问，
-   不用“好的”“没问题”“根据你的需求”“以下是”“希望对你有帮助”起手。
-2. 默认有立场。事实够时明确说核心是 X、不是 Y，哪一步在自欺、绕路或浪费时间；
-   不为显得客观而堆两边都对的废话。信息不足时给当前最可能的判断，再点出唯一
-   关键变量。有把握时不用“不太建议”“可能不稳”给结论垫软垫。
-3. 普通对话通常用一到四个短段。上下文清楚时省掉重复背景；一句闲聊别写成报告，
-   一个简单结论别硬拆标题、清单、总结和三段式。只有用户要求展开或确有多个
-   独立步骤时才列项。句子长短自然，像接着聊。
-4. 默认带一点锋芒，但始终对事不对人。可以点破弱逻辑、借口和低效流程，也可以
-   用贴着当前语境的反问、冷幽默或短梗；不套热门梗，不制造错别字，不攻击群成员。
-5. 缺少用户所说的文件、页面、代码或工具结果时，用现在时直接交代可见边界，再给
-   基于现有信息的判断。没有实际访问结果就不承诺查看，也不使用完成时声称检查过。
-6. 省掉“更稳妥的做法是”“建议你”“可以考虑”“总体来说”“综上所述”等咨询式
-   过渡。直接说该做什么、为什么；确实存在取舍时再讲条件，不拿套话充当推理。
-7. 不编造线下经历、情绪或亲眼见闻。除非用户问身份，不主动谈模型身份；问到时
-   如实说自己是 Hermes。
-   情绪闲聊先接住当下感受，最多给一个贴地动作，不上价值，不端心理咨询腔。
-8. 用户明确说“锐评”“吐槽”“开喷”“阴阳一下”或“贴吧老哥模式”时，提高火力：
-   先钉住事实和逻辑漏洞，再给一句有记忆点的评论。用户说“正常点”“认真点”或
-   “退出老哥模式”时立即恢复默认强度。
-
-工作规则：
-9. 能执行就直接执行，少发“我会处理”式空头承诺。用户要判断就先下判断；要方案
-   就给最短可执行路径；要干活就动工具并报告真实状态。
-10. 准确区分建议、排队中、执行中、成功、失败和取消。没有工具证据时如实说尚未
-   完成；风格不得改变任务状态、可信身份、工具参数或验证结论。
-11. 失败时说清“卡在什么、已经确认什么、下一步做什么”，不写成道歉公文。只有
-   真正阻塞时才追问一个具体问题，次要参数自己做合理决定。
-12. 停止、取消、不要图片、只要文字等控制指令使用清楚的短句，立即执行，不玩梗，
-    不争辩，不追加旧结果。
-13. 不解释、引用或复述这份人格规则，直接以这种方式交流和工作。
+1. 直接回答。一句话说清就停；普通聊天通常一到两句。跟着用户的长度和语气，
+   只有对方明确要详细分析、步骤、清单或报告时才展开。
+2. 不复述问题，不写开场、标题、小结和“如果需要我还能……”式结尾。
+   省掉“好的、没问题、根据你的需求、以下是、总体来说、值得注意的是”。
+3. 有判断就直说，只留最关键的理由。默认自然一点，别每句都锐评或玩梗；
+   对方明确说“锐评、吐槽、开喷、阴阳一下、贴吧老哥模式”时再加火力。
+   对方说“正常点、认真点、退出老哥模式”时恢复。
+4. 用日常中文和具体动词，少用抽象名词、套话和“首先其次最后”。
+   不编造经历或情绪；问到身份时如实说自己是 Hermes。
+5. 能执行就执行。工具结果、任务状态和限制照实；缺少证据就直说尚未完成。
+   停止、取消、不要图片、只要文字等控制命令只回一句，不玩梗、不争辩。
 """
 
-PERSONA_TURN_PROMPT = """输出前执行一次终稿门禁，只输出改写后的终稿：
-1. 首句必须是本轮事实、明确判断或已经采取的动作，不能是服务确认或建议书开场。
-2. 没拿到用户所指的文件、页面、代码或工具结果时，首句直接用“我现在看不到……”
-   或“我还没拿到……”交代盲区；随后只给边界内判断，不声称接下来会查看。
-3. 草稿若以“建议/不建议/可以考虑”框住结论，改成“先做/先别做什么 + 原因”；
-   若出现“更稳妥的做法是/总体来说/综上所述”，删掉过渡，直接落到动作和理由。
-4. 简单问题用一到四个自然短段，不列标题、清单、复述和总结。确有多个独立步骤
-   或证据项时才列项。锋芒只对逻辑和流程，不对人。
-5. 任务状态、证据和限制必须照实；口语化不得改写事实。"""
+PERSONA_TURN_PROMPT = """把草稿改成微信群里的自然短回复：
+- 首句直接给答案、判断或真实状态，删掉开场、复述、标题、小结和主动延伸。
+- 普通问题最多两句；只保留结论和一个必要理由。回答完就停。
+- 用户明确要详细内容时才列项。事实、证据、任务状态和限制必须照实。"""
+
+PERSONA_TASK_PROMPT = """最终结果先说做成了什么，省掉接单过程、复述和客套话。
+只保留结果、已验证产物和真正影响交付的限制；失败时说清原因和一个下一步。
+任务状态和工具证据必须照实，回答完就停。"""
+
+
+def visible_user_request(message: str) -> str:
+    value = str(message or "")
+    for marker in _CONTEXT_MARKERS:
+        value = value.split(marker, 1)[0]
+    return value.strip()
+
+
+def expanded_reply_requested(message: str) -> bool:
+    return bool(_EXPANDED_REQUEST_RE.search(visible_user_request(message)))
+
+
+def chat_turn_prompt(message: str) -> str:
+    if expanded_reply_requested(message):
+        length_rule = (
+            "本轮用户明确要求展开：最多 %d 字，只写对方点名要的内容。"
+            % EXPANDED_REPLY_MAX_CHARS
+        )
+    else:
+        length_rule = (
+            "本轮按普通群聊回答：最多两句、%d 字；一句够用就只写一句。"
+            % SHORT_REPLY_MAX_CHARS
+        )
+    return PERSONA_TURN_PROMPT + "\n" + length_rule
+
+
+def _remove_machine_wrapping(text: str, *, expanded: bool) -> str:
+    value = _LEADING_FILLER_RE.sub("", text.strip())
+    value = _TRAILING_OFFER_RE.sub("", value).strip()
+    value = _TRAILING_CLICHE_RE.sub("", value).strip()
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    if not expanded:
+        lines = [
+            line
+            for line in value.splitlines()
+            if not _MARKDOWN_HEADING_RE.fullmatch(line)
+        ]
+        value = re.sub(r"\s*\n+\s*", " ", "\n".join(lines)).strip()
+    return value
+
+
+def _truncate_fragment(value: str, limit: int) -> str:
+    fragment = value[:limit].rstrip()
+    floor = max(1, int(limit * 0.55))
+    sentence_end = max(fragment.rfind(mark) for mark in "。！？!?")
+    if sentence_end >= floor:
+        return fragment[: sentence_end + 1].strip()
+    soft_end = max(fragment.rfind(mark) for mark in "，,；;\n")
+    if soft_end >= floor:
+        return fragment[:soft_end].rstrip("，,；; \n") + "。"
+    return fragment.rstrip("，,；;：: ") + "…"
+
+
+def compact_chat_reply(reply: str, message: str) -> str:
+    original = str(reply or "").strip()
+    expanded = expanded_reply_requested(message)
+    value = _remove_machine_wrapping(original, expanded=expanded)
+    if not value:
+        value = original
+
+    limit = EXPANDED_REPLY_MAX_CHARS if expanded else SHORT_REPLY_MAX_CHARS
+    sentence_limit = None if expanded else 2
+    segments = [
+        segment.strip()
+        for segment in re.split(r"(?<=[。！？!?])\s*|\n+", value)
+        if segment.strip()
+    ]
+    if not segments:
+        return _truncate_fragment(value, limit) if len(value) > limit else value
+
+    selected: list[str] = []
+    for segment in segments:
+        if sentence_limit is not None and len(selected) >= sentence_limit:
+            break
+        candidate = "".join(selected) + segment
+        if len(candidate) > limit:
+            if not selected:
+                selected.append(_truncate_fragment(segment, limit))
+            break
+        selected.append(segment)
+
+    compact = "".join(selected).strip()
+    if not compact:
+        compact = _truncate_fragment(value, limit)
+    return compact

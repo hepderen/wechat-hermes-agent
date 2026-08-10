@@ -351,6 +351,40 @@ def test_queued_chat_disables_tools_and_rejects_execution_plan_without_evidence(
     assert "exit code 0" in stored["error"]
 
 
+def test_queued_chat_compacts_verbose_model_output(tmp_path):
+    runtime = make_runtime(tmp_path)
+    runtime.store.initialize()
+    plan = build_execution_plan("普通问题")
+    task = runtime.store.create_task(
+        request_id="queued-chat-compact",
+        request_hash="hash-queued-chat-compact",
+        room_id=ROOM_ID,
+        sender_id="wxid_sender",
+        session_id=stable_session_id(ROOM_ID, "wxid_sender"),
+        kind="chat",
+        prompt="你怎么看",
+        max_attempts=runtime.settings.max_task_attempts,
+        source_local_id=34,
+        plan=plan,
+        delivery_policy=plan["delivery_policy"],
+    )[0]
+    claimed = runtime.store.claim_next()
+
+    async def verbose_chat(*_args, **_kwargs):
+        return (
+            "没问题，核心是先修入口。其他功能都依赖它。"
+            "第三句应该被删掉。",
+            {"input_tokens": 5, "output_tokens": 15},
+        )
+
+    runtime.hermes.chat = verbose_chat
+    asyncio.run(execute_task(runtime, claimed))
+
+    stored = runtime.store.get_task(task["id"])
+    assert stored["status"] == "succeeded"
+    assert stored["output"] == "核心是先修入口。其他功能都依赖它。"
+
+
 def test_run_completed_without_execution_evidence_fails_task(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -803,7 +837,7 @@ def test_terminal_model_failure_preserves_redacted_reason_and_actionable_retry(
     assert "HTTP 503" in failed["error"]
     assert "secret-token-value" not in failed["error"]
     text = terminal_delivery_text(runtime, failed)
-    assert "模型服务恢复后" in text
+    assert "模型恢复后" in text
     assert "重试 %s" % task["id"] in text
 
 

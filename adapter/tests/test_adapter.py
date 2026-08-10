@@ -526,6 +526,36 @@ def test_sync_chat_is_idempotent_and_uses_trusted_metadata(tmp_path):
         assert conflict.status_code == 409
 
 
+def test_sync_chat_compacts_machine_wrapping_before_returning(tmp_path):
+    runtime = make_runtime(tmp_path)
+
+    async def verbose_chat(*_args, **_kwargs):
+        return (
+            "好的，先修消息入口。它决定后面的能力是否可靠。"
+            "然后再讨论别的。\n\n如果你需要，我可以继续展开。",
+            {"input_tokens": 10, "output_tokens": 20},
+        )
+
+    runtime.hermes.chat = verbose_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "先修什么",
+                "request_id": "compact-sync-reply",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 101,
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == (
+        "先修消息入口。它决定后面的能力是否可靠。"
+    )
+
+
 def test_all_room_members_share_one_session(tmp_path):
     runtime = make_runtime(tmp_path)
     app = create_app(runtime, start_worker=False)

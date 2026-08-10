@@ -125,7 +125,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "4"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "5"' in SCRIPT
     assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
@@ -211,7 +211,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=4" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=5" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example

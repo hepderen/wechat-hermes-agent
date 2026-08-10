@@ -40,7 +40,12 @@ from .policy import (
     stable_diagnostic_session_id,
     stable_session_id,
 )
-from .persona import PERSONA_SYSTEM_PROMPT, PERSONA_TURN_PROMPT
+from .persona import (
+    PERSONA_SYSTEM_PROMPT,
+    PERSONA_TASK_PROMPT,
+    chat_turn_prompt,
+    compact_chat_reply,
+)
 from .process_lock import AdapterProcessLock
 from .security import exception_summary, redact_sensitive_text
 from .store import AdapterStore, HERMES_STATUS_MAP
@@ -545,7 +550,7 @@ def trusted_system_message(
         "检索和主动发送。不要计划、承诺或声称读取外部输入；需要这些结果才能判断时，"
         "直接交代当前缺少什么。"
         + "\n"
-        + PERSONA_TURN_PROMPT
+        + chat_turn_prompt(payload.message)
     )
 
 
@@ -580,8 +585,8 @@ def task_confirmation(task: dict[str, Any], created: bool) -> str:
     if not created:
         return format_task(task)
     if task["kind"] == "chat":
-        return "Hermes 当前正在执行其他任务，这条消息已排队为 %s，完成后会自动回复。" % task["id"]
-    return "已接收，任务 %s 正在排队；完成后会把结果和产物发回群里。" % task["id"]
+        return "我正忙着，%s 已排队，轮到就回。" % task["id"]
+    return "%s 排上了，做完发群里。" % task["id"]
 
 
 async def handle_command(
@@ -1196,24 +1201,24 @@ def terminal_delivery_text(
 
     if task["status"] == "succeeded":
         output = sanitized_task_output(runtime, task)
-        lines = ["任务 %s 已完成。" % task["id"]]
+        lines = ["%s 做完了。" % task["id"]]
         if output:
             lines.append(output[:1000])
         if media:
             lines.append(
-                "产物交付：已确认 %d 项，状态不确定 %d 项，失败或已停止 %d 项。"
+                "产物：确认 %d 项，状态不明 %d 项，失败或停止 %d 项。"
                 % (len(confirmed), len(uncertain), len(failed))
             )
         return "\n".join(lines)[:1500]
     if task["status"] == "canceled":
-        return "任务 %s 已取消，旧代次结果已停止发送。" % task["id"]
+        return "%s 已取消，旧结果不再发。" % task["id"]
     error = str(task.get("error") or "未返回可用的失败原因").strip()
     if error.startswith("Hermes 执行失败"):
-        next_step = "模型服务恢复后发送“重试 %s”。" % task["id"]
+        next_step = "模型恢复后发“重试 %s”。" % task["id"]
     else:
-        next_step = "按上述原因处理后发送“重试 %s”。" % task["id"]
+        next_step = "处理后发“重试 %s”。" % task["id"]
     return (
-        "任务 %s 失败。\n原因：%s\n下一步：%s"
+        "%s 没跑成：%s\n%s"
         % (task["id"], error[:900], next_step)
     )[:1500]
 
@@ -1530,7 +1535,7 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
             "执行、创建、检索、发送或完成了任何外部工作。"
             + memory_system_block(memory)
             + "\n"
-            + PERSONA_TURN_PROMPT
+            + chat_turn_prompt(task["prompt"])
         )
         output, usage = await runtime.hermes.chat(
             task["session_id"],
@@ -1549,6 +1554,7 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
             output_text=output,
         )
         clean_output, violations = strip_legacy_delivery_markers(output)
+        clean_output = compact_chat_reply(clean_output, task["prompt"])
         if violations:
             runtime.store.add_task_event(
                 task["id"],
@@ -1588,7 +1594,7 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         "不得输出 MEDIA: 路径，也不得直接向微信发送消息。"
         + memory_system_block(memory)
         + "\n"
-        + PERSONA_TURN_PROMPT
+        + PERSONA_TASK_PROMPT
     )
     tool_call_limit = effective_tool_call_limit(
         task.get("plan") or {},
@@ -2315,16 +2321,25 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                                 memory,
                                 identity.scope,
                             )
-                            reply, usage = await runtime.hermes.chat(
+                            raw_reply, usage = await runtime.hermes.chat(
                                 stable_session,
                                 prompt,
                                 system_message,
                                 timeout_seconds=runtime.settings.sync_chat_timeout_seconds,
                                 disable_tools=True,
                             )
-                            return reply, usage, system_message
+                            reply = compact_chat_reply(
+                                raw_reply,
+                                payload.message,
+                            )
+                            return reply, raw_reply, usage, system_message
 
-                        reply, usage, system_message = await asyncio.wait_for(
+                        (
+                            reply,
+                            raw_reply,
+                            usage,
+                            system_message,
+                        ) = await asyncio.wait_for(
                             run_sync_chat(),
                             timeout=runtime.settings.sync_chat_timeout_seconds,
                         )
@@ -2335,7 +2350,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                             runtime.settings.input_token_cost_per_million,
                             runtime.settings.output_token_cost_per_million,
                             input_text=prompt + "\n" + system_message,
-                            output_text=reply,
+                            output_text=raw_reply,
                         )
                         response = ChatResponse(reply=reply, status="succeeded")
                         log_event(
@@ -2344,6 +2359,8 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                             room_id=room_id,
                             sender_id=sender_id,
                             status="succeeded",
+                            raw_reply_chars=len(raw_reply),
+                            reply_chars=len(reply),
                         )
                     except (
                         RemoteAPIError,
