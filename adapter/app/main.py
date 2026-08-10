@@ -43,7 +43,6 @@ from .policy import (
 from .persona import PERSONA_SYSTEM_PROMPT, PERSONA_TURN_PROMPT
 from .process_lock import AdapterProcessLock
 from .security import exception_summary, redact_sensitive_text
-from .skill_install import SkillInstallError, SkillInstaller
 from .store import AdapterStore, HERMES_STATUS_MAP
 
 
@@ -58,16 +57,15 @@ SESSION_SYSTEM_PROMPT = """你是微信群中的生产级 Hermes 执行型 Agent
 1. 能执行就直接执行。只有缺少真正阻塞的信息时才追问一次；次要参数采用安全默认值。
 2. 所有已配置微信群成员权限相同，不请求人工批准，不提供批准或拒绝流程。
 3. 准确区分建议、排队中、执行中、成功、失败和取消。没有工具结果时不得声称已完成。
-4. 研究、文件、浏览器、终端、Skills 和媒体任务必须使用云端服务器上的真实工具完成。
+4. 研究、文件、浏览器、终端和媒体任务必须使用云端服务器上的真实工具完成。
 5. 所有任务均在当前云端 Linux 服务器内执行，不依赖用户电脑、桌面软件、远程工作站或任意外部执行端点。
 6. 持久记忆只能通过 wechat_memory_list/wechat_memory_update 访问，并传入受信任 task_id。可保存项目背景、内容风格、常用要求和任务上下文；不得保存凭据、Token、密钥或敏感个人数据。
-7. 安装 Skill 只能调用 wechat_install_skill 并传入受信任 task_id；由适配器执行静态审计、深度审计、固定版本和失败回滚，不得直接运行安装命令或使用 --force。
-8. 回复自然、准确、简洁。长任务的最终答复包含完成内容、产物、关键限制；失败时给出可操作的下一步。
+7. 回复自然、准确、简洁。长任务的最终答复包含完成内容、产物、关键限制；失败时给出可操作的下一步。
 """
 
 RESTRICTED_SESSION_SYSTEM_PROMPT = """你是微信中的 Hermes 问答助手。
 
-当前会话只允许普通问答。服务端已强制移除所有工具、Skills、终端、文件、
+当前会话只允许普通问答。服务端已强制移除所有工具、终端、文件、
 浏览器、联网检索、异步任务和主动发送能力。不得声称已经执行、创建、搜索、
 安装、发送或完成任何外部工作；遇到执行型请求，应明确说明需要到已授权微信
 群中发起。回答自然、准确、简洁。
@@ -175,11 +173,6 @@ class InternalMemoryUpdate(BaseModel):
     value: str = Field(default="", max_length=4000)
 
 
-class InternalSkillInstallRequest(BaseModel):
-    task_id: str = Field(pattern=r"^T-[A-F0-9]{8}$")
-    identifier: str = Field(min_length=1, max_length=500)
-
-
 @dataclass(frozen=True)
 class RequestIdentity:
     room_id: str | None
@@ -198,7 +191,6 @@ class Runtime:
     hermes: HermesClient
     chat_api: ChatApiClient
     signer: ArtifactSigner
-    skill_installer: SkillInstaller | None = None
     execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     wake_event: asyncio.Event = field(default_factory=asyncio.Event)
     worker_task: asyncio.Task | None = None
@@ -310,11 +302,6 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         signer=ArtifactSigner(
             settings.internal_token or settings.bridge_token,
             settings.artifact_public_base_url,
-        ),
-        skill_installer=SkillInstaller(
-            hermes_cli=settings.hermes_cli_path,
-            hermes_home=settings.hermes_home,
-            command_timeout_seconds=settings.skill_install_timeout_seconds,
         ),
     )
 
@@ -554,7 +541,7 @@ def trusted_system_message(
             )
         )
         + memory_system_block(memory)
-        + "\n本轮是同步普通对话，服务端已禁用工具、Skills、终端、文件、浏览器、"
+        + "\n本轮是同步普通对话，服务端已禁用工具、终端、文件、浏览器、"
         "检索和主动发送。不要计划、承诺或声称读取外部输入；需要这些结果才能判断时，"
         "直接交代当前缺少什么。"
         + "\n"
@@ -903,7 +890,6 @@ async def queue_task(
         source_msg_svr_id=source_msg_svr_id,
         plan=execution_plan,
         delivery_policy=execution_plan["delivery_policy"],
-        skill_snapshot=runtime.store.skill_snapshot(),
     )
     log_event(
         "task_queued",
@@ -1513,49 +1499,6 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         kind=task["kind"],
     )
 
-    if task["kind"] != "chat":
-        if runtime.skill_installer is None:
-            finish("failed", error="Skill execution gate is unavailable")
-            return
-        try:
-            activation = await asyncio.to_thread(
-                runtime.skill_installer.activate_snapshot_runtime,
-                task.get("skill_snapshot") or [],
-            )
-            await runtime.hermes.reload_skills(
-                str(activation.get("skills_root") or ""),
-            )
-        except (SkillInstallError, OSError, ValueError) as exc:
-            runtime.store.add_task_event(
-                task["id"],
-                "skill_snapshot_rejected",
-                type(exc).__name__,
-            )
-            finish("failed", error="Skill snapshot could not be activated")
-            log_event(
-                "task_finished",
-                task_id=task["id"],
-                room_id=task["room_id"],
-                status="failed",
-                reason="skill_snapshot",
-            )
-            return
-        except RemoteAPIError as exc:
-            runtime.store.add_task_event(
-                task["id"],
-                "skill_runtime_reload_failed",
-                exc.error_type or type(exc).__name__,
-            )
-            finish("failed", error="Hermes Skill runtime could not be synchronized")
-            log_event(
-                "task_finished",
-                task_id=task["id"],
-                room_id=task["room_id"],
-                status="failed",
-                reason="skill_runtime_reload",
-            )
-            return
-
     await runtime.hermes.ensure_session(
         task["session_id"],
         session_title(
@@ -1575,7 +1518,6 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
                 "sender_id": task["sender_id"],
                 "generation": generation,
                 "execution_plan": task.get("plan") or {},
-                "skill_snapshot": task.get("skill_snapshot") or [],
             },
             ensure_ascii=False,
         )
@@ -1584,7 +1526,7 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         system_message = (
             trusted_envelope
             + "\n这是排队执行的普通对话，不是生产工具任务。服务端已禁用所有工具、"
-            "Skills、终端、文件、浏览器和主动发送能力。只回答用户问题，不得声称"
+            "终端、文件、浏览器和主动发送能力。只回答用户问题，不得声称"
             "执行、创建、检索、发送或完成了任何外部工作。"
             + memory_system_block(memory)
             + "\n"
@@ -1642,7 +1584,6 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         trusted_envelope
         + "\n这是异步生产任务。直接使用工具执行，不请求批准；"
         "需要读写持久记忆时只能使用 wechat_memory_list/wechat_memory_update，"
-        "安装 Skill 时只能使用 wechat_install_skill，并始终传入受信任 task_id。"
         "生成文件后必须调用 wechat_register_artifact 注册；最终只报告真实结果和 Artifact，"
         "不得输出 MEDIA: 路径，也不得直接向微信发送消息。"
         + memory_system_block(memory)
@@ -2036,18 +1977,6 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                     if terminal is None:
                         break
                     prepare_task_outbox(runtime, terminal)
-                if runtime.skill_installer is not None:
-                    recovered_skill_install = await asyncio.to_thread(
-                        runtime.skill_installer.recover_incomplete
-                    )
-                    if recovered_skill_install:
-                        LOG.warning(
-                            "recovered an interrupted Skill installation"
-                        )
-                    skill_inventory = await asyncio.to_thread(
-                        runtime.skill_installer.inventory_current
-                    )
-                    runtime.store.sync_skill_registry(skill_inventory)
                 log_event(
                     "adapter_recovery_completed",
                     recovered_inbound=recovered_inbound,
@@ -2612,68 +2541,6 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "memory": memory}
-
-    @app.post("/internal/skills/install")
-    async def internal_skill_install(
-        body: InternalSkillInstallRequest,
-        _: None = Depends(internal_auth),
-    ):
-        task = runtime.store.get_task(body.task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if task["status"] != "running" or task.get("cancel_requested"):
-            raise HTTPException(
-                status_code=409,
-                detail="Skill installation requires a running, non-canceled task",
-            )
-        if runtime.skill_installer is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Skill installer is unavailable",
-            )
-        try:
-            result = await asyncio.to_thread(
-                runtime.skill_installer.install,
-                body.identifier,
-                cancel_requested=lambda: runtime.store.is_cancel_requested(
-                    task["id"]
-                ),
-            )
-        except (SkillInstallError, ValueError) as exc:
-            runtime.store.add_task_event(
-                task["id"],
-                "skill_install_rejected",
-                type(exc).__name__,
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=str(exc),
-            ) from exc
-        try:
-            inventory = await asyncio.to_thread(
-                runtime.skill_installer.inventory_current
-            )
-            runtime.store.sync_skill_registry(inventory)
-        except (SkillInstallError, OSError, ValueError) as exc:
-            runtime.store.add_task_event(
-                task["id"],
-                "skill_registry_sync_failed",
-                type(exc).__name__,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Skill installed but registry synchronization failed",
-            ) from exc
-        runtime.store.add_task_event(
-            task["id"],
-            "skill_installed",
-            ",".join(
-                str(item.get("name") or "")
-                for item in result.get("installed", [])
-                if isinstance(item, dict)
-            ),
-        )
-        return result
 
     @app.post("/internal/send")
     async def internal_send(

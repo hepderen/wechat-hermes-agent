@@ -11,11 +11,8 @@ WorkingDirectory=/var/lib/wechat-hermes/workspace
 Environment=HOME=/var/lib/wechat-hermes/workspace/home
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/wechat-hermes/hermes.env
-ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills-lock.json
-ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/creative/creative-ideation/SKILL.md
-ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/media/douyin-video-production/SKILL.md
-ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/productivity/wechat-group-operations/SKILL.md
-ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/skill-trust/active/skills/personality/wechat-hermes-persona/SKILL.md
+ExecStartPre=/usr/bin/test -r /var/lib/wechat-hermes/workspace/home/.hermes/config.yaml
+ExecStartPre=/usr/bin/test -d /var/lib/wechat-hermes/workspace/home/.hermes/skills
 ExecStart=/opt/hermes-runtime/venv/bin/hermes gateway run --replace --accept-hooks
 Restart=always
 RestartSec=5
@@ -31,8 +28,10 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/wechat-hermes/workspace /var/lib/wechat-hermes/artifacts
+ReadOnlyPaths=/var/lib/wechat-hermes/workspace/home/.hermes/skills
 InaccessiblePaths=-/var/lib/wechat-hermes/adapter-data -/var/lib/wechat-hermes/adapter.db -/var/lib/wechat-hermes/adapter.db-wal -/var/lib/wechat-hermes/adapter.db-shm
 InaccessiblePaths=/opt/wechat-ai-bot/data /home/ubuntu/linux-wechat-bot /home/ubuntu/.cache/wechat-chat-api /home/ubuntu/xwechat_files
+InaccessiblePaths=-/var/lib/wechat-hermes/skill-trust -/var/lib/wechat-hermes/home
 InaccessiblePaths=-/etc/wechat-hermes/adapter.env -/etc/wechat-hermes/chat-api.env -/etc/wechat-hermes/bridge.env -/home/ubuntu/.ssh -/root/.ssh -/run/docker.sock -/var/run/docker.sock
 CapabilityBoundingSet=
 AmbientCapabilities=

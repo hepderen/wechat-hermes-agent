@@ -14,7 +14,8 @@
 - 逐项 Outbox：文字、图片、视频和文件分别持久化状态与幂等键；状态不确定的媒体不会自动重发。
 - 完成门禁：模型结束生成不等于任务成功，Verifier 根据工具退出码、来源和 Artifact 元数据判定结果。
 - Artifact 校验：限制任务目录、路径穿越、软链接、真实 MIME、扩展名、大小和 SHA-256。
-- 记忆与 Skills：会话隔离、过期治理、Skill 快照、静态审计和原子启用。
+- 记忆治理：按会话隔离稳定偏好和项目事实，支持过期、替换与遗忘。
+- 受控工具：搜索、终端、文件、浏览器、Artifact 和任务工具直接注册，Hermes Skills 默认关闭。
 - 混合人格：默认是轻度嘴贫的可靠损友，真实任务保持证据优先，明确要求锐评时才进入贴吧式吐槽模式。
 - 国内外检索：Bing HTML/RSS、Bing News、可选 SearXNG 合并，以及搜狗、360、百度移动端回退。
 - 可观测性：`/health`、`/metrics`、结构化 ID 日志、清理状态和恢复门禁。
@@ -27,7 +28,7 @@ flowchart LR
     API --> BRIDGE["Structured Bridge"]
     BRIDGE --> ADAPTER["Adapter :8000"]
     ADAPTER --> HERMES["Hermes :8642"]
-    HERMES --> TOOLS["Cloud tools and Skills"]
+    HERMES --> TOOLS["Controlled cloud tools and MCP"]
     BRIDGE --> API
     ADAPTER --> API
     API --> WXUI["WeChat UI send and DB confirmation"]
@@ -79,12 +80,12 @@ py -3.11 -m venv .venv
 
 | 目录 | 内容 |
 | --- | --- |
-| `adapter/` | FastAPI Adapter、SQLite 状态机、Outbox、Verifier、MCP 工具和 Skills |
+| `adapter/` | FastAPI Adapter、SQLite 状态机、Outbox、Verifier 和 MCP 工具 |
 | `chat-api/` | 微信数据库结构化读取、发送控制、Bridge 和 systemd 单元 |
 | `web-research/` | Hermes 搜索插件、SearXNG 配置、候选发布与回滚脚本 |
 | `docs/` | 架构、快速开始和生产部署说明 |
 
-仓库包含三个本项目自有 Skill：`douyin-video-production`、`wechat-group-operations` 和 `wechat-hermes-persona`。人格 Skill 只有 Markdown 规则，没有脚本、网络客户端或直接微信发送能力。其他 Hermes Skills 由部署环境单独安装、审计并生成部署专属完整性锁，不在本仓库复制分发。
+生产配置显式禁用 Hermes 的 `skills` 工具集，并使用空 Skill 目录。工作能力来自经过边界约束的原生工具、搜索插件和 WeChat MCP；运行时没有动态 Skill 安装入口。旧数据库中的 Skill 注册表和快照字段仅作为升级兼容数据保留，不参与新任务。
 
 ### 人格模式
 
@@ -96,7 +97,7 @@ py -3.11 -m venv .venv
 | `正常点` / `认真点` / `退出老哥模式` | 立即恢复默认口吻 |
 | 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
 
-社区人格来源只用于审计和风格研究，原始文件不会进入生产 Skill 树。版本、哈希和取舍记录见 [`style-contract.md`](adapter/skills/wechat-hermes-persona/references/style-contract.md)。
+人格规则由 [`persona.py`](adapter/app/persona.py) 的系统提示词统一注入，不依赖 Skill，也不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
 
 ## 生产部署
 

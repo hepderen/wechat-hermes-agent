@@ -69,7 +69,7 @@ mcp = FastMCP(
         "Cloud-only tools for the authorized WeChat production Agent. "
         "Task management commands are handled locally by the adapter and are "
         "not exposed to the model. These tools expose task-scoped memory, "
-        "audited Skill installation, and verified Linux artifact registration. "
+        "controlled network access, and verified Linux artifact registration. "
         "Artifacts must be produced locally inside the matching task directory. "
         "Only the adapter Outbox may deliver text or media to WeChat."
     ),
@@ -229,34 +229,6 @@ async def wechat_memory_update(
             "value": str(value or ""),
         },
         timeout=30,
-    )
-
-
-@mcp.tool(
-    description=(
-        "Install one Hermes Skill for a running trusted WeChat task. The "
-        "adapter allows only strict registry identifiers or HTTPS URLs, runs "
-        "static and deep audits, pins the installed Skill, updates integrity "
-        "metadata, and rolls back on any failure."
-    )
-)
-async def wechat_install_skill(
-    task_id: str,
-    identifier: str,
-) -> dict[str, Any]:
-    value = validate_task_id(task_id)
-    skill_identifier = str(identifier or "").strip()
-    if not skill_identifier or len(skill_identifier) > 500:
-        raise ValueError("identifier must contain 1 to 500 characters")
-    return await request_json(
-        "POST",
-        ADAPTER_URL + "/internal/skills/install",
-        headers=adapter_headers(),
-        json_body={
-            "task_id": value,
-            "identifier": skill_identifier,
-        },
-        timeout=360,
     )
 
 

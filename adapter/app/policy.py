@@ -16,12 +16,12 @@ EXECUTION_RE = re.compile(
     r"(?:帮我|替我|给我)(?:搜|查|找)|"
     r"制作|生成|创建|导出|视频|脚本|分镜|字幕|素材|封面|图片|"
     r"调研|研究|检索|搜索|浏览器|网页|下载|文件|表格|文档|幻灯片|"
-    r"执行|运行|终端|命令|部署|安装|skill|mcp|定时|提醒|发送|"
+    r"执行|运行|终端|命令|部署|安装|mcp|定时|提醒|发送|"
     r"记住|忘记|记忆|偏好|"
     r"\b(?:create|generate|export|video|script|storyboard|subtitle|image|"
     r"research|search|look\s+up|find|browse|browser|download|file|document|spreadsheet|"
     r"slides?|execute|run|terminal|command|deploy|install|schedule|remind|"
-    r"send|remember|forget|memory|preference|skill|mcp)\b"
+    r"send|remember|forget|memory|preference|mcp)\b"
     r")",
     re.IGNORECASE,
 )

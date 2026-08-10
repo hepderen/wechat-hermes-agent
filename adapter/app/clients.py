@@ -6,7 +6,6 @@ import inspect
 import json
 import time
 import urllib.parse
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -87,57 +86,6 @@ class HermesClient:
             raise RemoteAPIError("Hermes session request failed") from exc
         if response.status_code not in {201, 409}:
             raise response_error(response)
-
-    async def reload_skills(
-        self,
-        expected_skills_root: str,
-        *,
-        timeout_seconds: float = 10,
-    ) -> dict[str, Any]:
-        expected_root = str(expected_skills_root or "").strip()
-        if not expected_root.startswith("/") and not Path(expected_root).is_absolute():
-            raise ValueError("expected Hermes Skill root must be absolute")
-        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
-        timeout = httpx.Timeout(connect=5, read=10, write=5, pool=5)
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        self.base_url + "/v1/skills/reload",
-                        headers=self.headers(),
-                        json={"expected_skills_root": expected_root},
-                    )
-            except httpx.HTTPError as exc:
-                raise RemoteAPIError("Hermes Skill reload failed") from exc
-            if response.status_code == 200:
-                data = response.json()
-                if str(data.get("skills_root") or "") != expected_root:
-                    raise RemoteAPIError(
-                        "Hermes reloaded an unexpected Skill root",
-                        error_type="skills_root_mismatch",
-                    )
-                return data
-            error_code = ""
-            try:
-                payload = response.json()
-                error = payload.get("error") or {}
-                if isinstance(error, dict):
-                    error_code = str(error.get("code") or "")
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
-            if (
-                response.status_code == 409
-                and error_code == "skills_reload_busy"
-                and time.monotonic() < deadline
-            ):
-                await asyncio.sleep(0.1)
-                continue
-            raise RemoteAPIError(
-                "Hermes Skill reload was rejected",
-                response.status_code,
-                error_type=error_code or "skills_reload_failed",
-                retryable=error_code == "skills_reload_busy",
-            )
 
     async def chat(
         self,

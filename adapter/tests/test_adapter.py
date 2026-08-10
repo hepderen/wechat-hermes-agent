@@ -14,7 +14,13 @@ from fastapi.testclient import TestClient
 from app import clients
 from app.clients import HermesClient, RemoteAPIError
 from app.config import Settings
-from app.main import Runtime, create_app, deliver_task, session_title
+from app.main import (
+    SESSION_SYSTEM_PROMPT,
+    Runtime,
+    create_app,
+    deliver_task,
+    session_title,
+)
 from app.media import ArtifactSigner, validate_media_path
 from app.policy import (
     parse_task_command,
@@ -32,7 +38,6 @@ class FakeHermes:
         self.chat_calls = []
         self.ensure_calls = []
         self.stop_calls = []
-        self.skill_reload_calls = []
 
     async def ensure_session(self, session_id, title, system_prompt):
         self.ensure_calls.append((session_id, title, system_prompt))
@@ -53,15 +58,6 @@ class FakeHermes:
 
     async def stop_run(self, run_id):
         self.stop_calls.append(run_id)
-
-    async def reload_skills(self, expected_skills_root, **_kwargs):
-        self.skill_reload_calls.append(expected_skills_root)
-        return {
-            "skills_root": expected_skills_root,
-            "reloaded": True,
-            "count": 0,
-        }
-
 
 class FakeChatApi:
     def __init__(self):
@@ -258,9 +254,6 @@ def make_settings(tmp_path: Path, **changes) -> Settings:
         input_token_cost_per_million=3,
         output_token_cost_per_million=15,
         wechat_session_generation="1",
-        hermes_cli_path=Path("/opt/hermes-runtime/venv/bin/hermes"),
-        hermes_home=tmp_path / "hermes-home",
-        skill_install_timeout_seconds=300,
         allow_private_chat=False,
         worker_poll_seconds=0.2,
         cleanup_status_path=tmp_path / "cleanup-status.json",
@@ -273,28 +266,6 @@ def make_runtime(tmp_path: Path, **settings_changes) -> Runtime:
     fake_hermes = FakeHermes()
     fake_chat = FakeChatApi()
 
-    class FakeSkillInstaller:
-        def __init__(self):
-            self.activated = []
-
-        def recover_incomplete(self):
-            return False
-
-        def inventory_current(self):
-            return []
-
-        def activate_snapshot(self, snapshot):
-            self.activated.append(snapshot)
-            return list(snapshot or [])
-
-        def activate_snapshot_runtime(self, snapshot):
-            inventory = self.activate_snapshot(snapshot)
-            return {
-                "inventory": inventory,
-                "skills_root": "/trusted/skills",
-                "changed": True,
-            }
-
     return Runtime(
         settings=settings,
         store=AdapterStore(settings.database_path),
@@ -304,7 +275,6 @@ def make_runtime(tmp_path: Path, **settings_changes) -> Runtime:
             settings.internal_token,
             settings.artifact_public_base_url,
         ),
-        skill_installer=FakeSkillInstaller(),
     )
 
 
@@ -336,113 +306,46 @@ def post_chat(
     )
 
 
-def test_lifespan_recovers_interrupted_skill_install(tmp_path):
+def test_runtime_skills_are_detached_but_legacy_registry_is_preserved(tmp_path):
     runtime = make_runtime(tmp_path)
-
-    class RecoveringInstaller:
-        def __init__(self):
-            self.calls = 0
-
-        def recover_incomplete(self):
-            self.calls += 1
-            return True
-
-        def inventory_current(self):
-            return []
-
-    installer = RecoveringInstaller()
-    runtime.skill_installer = installer
-    with TestClient(create_app(runtime, start_worker=False)) as client:
-        assert client.get("/health").status_code == 200
-    assert installer.calls == 1
-
-
-def test_lifespan_syncs_trusted_skill_inventory(tmp_path):
-    runtime = make_runtime(tmp_path)
-    digest = hashlib.sha256(b"startup-skill").hexdigest()
-
-    class InventoryInstaller:
-        def recover_incomplete(self):
-            return False
-
-        def inventory_current(self):
-            return [
-                {
-                    "name": "research",
-                    "version": "1.0.0",
-                    "source": "registry/research@1.0.0",
-                    "bundle_sha256": digest,
-                    "capabilities": ["network"],
-                    "audit": {"passed": True},
-                }
-            ]
-
-        def activate_snapshot(self, snapshot):
-            return snapshot
-
-    runtime.skill_installer = InventoryInstaller()
-    with TestClient(create_app(runtime, start_worker=False)) as client:
-        assert client.get("/health").json()["ready"] is True
-
-    registered = runtime.store.get_skill("research")
-    assert registered["enabled"] is True
-    assert registered["sha256"] == digest
-    assert registered["capabilities"] == ["network"]
-
-
-def test_skill_install_resyncs_registry_after_atomic_publish(tmp_path):
-    runtime = make_runtime(tmp_path)
-    digest = hashlib.sha256(b"installed-skill").hexdigest()
-
-    class InstallingInstaller:
-        def __init__(self):
-            self.inventory = []
-
-        def recover_incomplete(self):
-            return False
-
-        def inventory_current(self):
-            return list(self.inventory)
-
-        def activate_snapshot(self, snapshot):
-            return snapshot
-
-        def install(self, identifier, *, cancel_requested=None):
-            assert cancel_requested is not None
-            assert cancel_requested() is False
-            self.inventory = [
-                {
-                    "name": "research",
-                    "version": "1.0.0",
-                    "source": identifier,
-                    "bundle_sha256": digest,
-                    "capabilities": ["network"],
-                    "audit": {"passed": True},
-                }
-            ]
-            return {"installed": list(self.inventory)}
-
-    runtime.skill_installer = InstallingInstaller()
-    runtime.store.initialize()
-    task = create_task(runtime.store, request_id="install-skill")
-    claimed = runtime.store.claim_next()
-    assert claimed["id"] == task["id"]
-    runtime.store.set_run_id(task["id"], "run-install-skill")
+    runtime.store.register_skill(
+        name="legacy-only",
+        version="1.0.0",
+        source="historical",
+        sha256=hashlib.sha256(b"legacy-only").hexdigest(),
+        enabled=True,
+    )
 
     with TestClient(create_app(runtime, start_worker=False)) as client:
-        response = client.post(
+        removed_endpoint = client.post(
             "/internal/skills/install",
             json={
-                "task_id": task["id"],
-                "identifier": "registry/research@1.0.0",
+                "task_id": "T-12345678",
+                "identifier": "legacy-only",
             },
             headers={"X-Internal-Token": runtime.settings.internal_token},
         )
+        queued = post_chat(
+            client,
+            {
+                "message": "搜索官网并生成一份文件",
+                "request_id": "no-skills-runtime",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 901,
+                "msg_svr_id": "no-skills-901",
+                "mentions_bot": True,
+            },
+        )
 
-    assert response.status_code == 200
-    registered = runtime.store.get_skill("research")
-    assert registered["enabled"] is True
-    assert registered["sha256"] == digest
+    assert removed_endpoint.status_code == 404
+    assert queued.status_code == 200
+    task = runtime.store.get_task(queued.json()["task_id"])
+    assert task is not None
+    assert task["skill_snapshot"] == []
+    assert runtime.store.get_skill("legacy-only") is not None
+    assert "wechat_install_skill" not in SESSION_SYSTEM_PROMPT
+    assert "Skills" not in SESSION_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import httpx
 import pytest
@@ -652,90 +651,6 @@ def test_chat_api_client_preserves_422_idempotency_conflict(monkeypatch):
         assert exc.delivery_uncertain is False
     else:
         raise AssertionError("HTTP 422 idempotency conflict was not rejected")
-def test_reload_skills_retries_busy_and_verifies_runtime_root(monkeypatch):
-    calls = []
-
-    class Response:
-        def __init__(self, status_code, payload):
-            self.status_code = status_code
-            self._payload = payload
-
-        def json(self):
-            return self._payload
-
-    responses = [
-        Response(
-            409,
-            {"error": {"code": "skills_reload_busy"}},
-        ),
-        Response(
-            200,
-            {
-                "skills_root": "/trusted/release/skills",
-                "reloaded": True,
-                "count": 3,
-            },
-        ),
-    ]
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, url, **kwargs):
-            calls.append((url, kwargs))
-            return responses.pop(0)
-
-    monkeypatch.setattr("app.clients.httpx.AsyncClient", lambda **_kwargs: Client())
-    hermes = HermesClient("http://127.0.0.1:8642", "secret")
-
-    result = asyncio.run(
-        hermes.reload_skills("/trusted/release/skills", timeout_seconds=2)
-    )
-
-    assert result["reloaded"] is True
-    assert len(calls) == 2
-    assert calls[0][1]["json"] == {
-        "expected_skills_root": "/trusted/release/skills"
-    }
-
-
-def test_reload_skills_accepts_platform_absolute_path(monkeypatch, tmp_path):
-    expected = str(tmp_path.resolve())
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, _url, **kwargs):
-            assert kwargs["json"]["expected_skills_root"] == expected
-            return Response(200, {"skills_root": expected, "reloaded": True})
-
-    monkeypatch.setattr("app.clients.httpx.AsyncClient", lambda **_kwargs: Client())
-    hermes = HermesClient("http://127.0.0.1:8642", "secret")
-
-    result = asyncio.run(hermes.reload_skills(expected))
-
-    assert result["skills_root"] == str(Path(expected))
-
-
-def test_reload_skills_rejects_relative_path():
-    hermes = HermesClient("http://127.0.0.1:8642", "secret")
-
-    try:
-        asyncio.run(hermes.reload_skills("relative/skills"))
-    except ValueError as exc:
-        assert "absolute" in str(exc)
-    else:
-        raise AssertionError("relative Skill root was accepted")
-
-
 def test_session_history_keeps_newest_messages_with_strict_character_budget(
     monkeypatch,
 ):

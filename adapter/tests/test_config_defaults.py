@@ -15,9 +15,6 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
     assert settings.database_path == Path(
         "/var/lib/wechat-hermes/adapter-data/adapter.db"
     )
-    assert settings.hermes_home == Path(
-        "/var/lib/wechat-hermes/workspace/home"
-    )
     assert settings.cleanup_status_path == Path(
         "/var/lib/wechat-hermes/adapter-data/cleanup-status.json"
     )

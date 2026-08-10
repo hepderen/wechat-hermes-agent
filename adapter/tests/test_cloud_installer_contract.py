@@ -105,14 +105,15 @@ def test_hermes_run_evidence_is_hardened_before_home_install():
     assert "deploy/harden_hermes_run_evidence.py" in SCRIPT
 
 
-def test_hermes_skill_reload_is_hardened_before_home_install():
-    assert "harden_hermes_skill_reload()" in SCRIPT
-    runtime_install = SCRIPT.index("  install_hermes_runtime\n")
-    reload_hardening = SCRIPT.index("  harden_hermes_skill_reload\n")
-    home_install = SCRIPT.index("  install_hermes_home\n")
-
-    assert runtime_install < reload_hardening < home_install
-    assert "deploy/harden_hermes_skill_reload.py" in SCRIPT
+def test_hermes_skills_are_disabled_during_home_install():
+    assert 'disabled_toolsets.append("skills")' in SCRIPT
+    assert 'skills["external_dirs"] = []' in SCRIPT
+    assert 'install -d -o root -g "$RUNTIME_GROUP" -m 0550' in SCRIPT
+    assert 'chmod 0550 "$skills_path"' in SCRIPT
+    assert 'chmod g-s "$skills_path"' in SCRIPT
+    assert "harden_hermes_skill_reload" not in SCRIPT
+    assert "remove_legacy_skill_sandbox" in SCRIPT
+    assert 'rm -f -- "$profile"' in SCRIPT
 
 
 def test_production_ports_memory_and_approvals_match_cloud_policy():
@@ -122,6 +123,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'approvals["cron_mode"] = "off"' in SCRIPT
     assert '["memory_enabled"] = False' in SCRIPT
     assert 'disabled_toolsets.append("memory")' in SCRIPT
+    assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
     assert '"HERMES_WECHAT_SESSION_GENERATION": "4"' in SCRIPT
     assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
@@ -155,7 +157,6 @@ def test_outbound_control_database_uses_isolated_state_path():
         "candidates",
         "chrome-for-testing",
         "home",
-        "skill-trust",
         "workspace",
     ):
         assert f"/var/lib/wechat-hermes/{protected}" in service
@@ -220,10 +221,8 @@ def test_environment_examples_match_production_generation_and_budget():
             "/var/lib/wechat-hermes/adapter-data/adapter.db"
         ) in example
         assert "HERMES_HOME=/var/lib/wechat-hermes/workspace/home" in example
-        assert (
-            "HERMES_SKILL_TRUST_ROOT=/var/lib/wechat-hermes/skill-trust"
-            in example
-        )
+        assert "HERMES_SKILL_TRUST_ROOT=" not in example
+        assert "HERMES_SKILL_SANDBOX=" not in example
 
     hermes_example = (root / "deploy/hermes.env.example").read_text(
         encoding="utf-8"
@@ -231,7 +230,18 @@ def test_environment_examples_match_production_generation_and_budget():
     assert "HERMES_HOME_MODE=2770" in hermes_example
 
 
-def test_release_permissions_preserve_runtime_and_skill_executables():
+def test_environment_writer_removes_legacy_skill_runtime_variables():
+    for name in (
+        "HERMES_CLI_PATH",
+        "HERMES_SKILL_TRUST_ROOT",
+        "HERMES_SKILL_SANDBOX",
+        "HERMES_WECHAT_SKILL_INSTALL_TIMEOUT_SECONDS",
+    ):
+        assert f'"{name}",' in SCRIPT
+    assert "environment.pop(obsolete, None)" in SCRIPT
+
+
+def test_release_permissions_preserve_runtime_executables():
     assert (
         'find "$release_root/.venv" -type f -exec chmod go-w,u+rw {} +'
         in SCRIPT
@@ -240,39 +250,8 @@ def test_release_permissions_preserve_runtime_and_skill_executables():
         r"chmod[^\n]*\"\$release_root/\.venv/bin/python\"",
         SCRIPT,
     )
-    assert (
-        'find "$pending_release" -type f -perm /0111 '
-        "-exec chmod 0550 {} +"
-    ) in SCRIPT
-    assert (
-        'find "$pending_release" -type f ! -perm /0111 '
-        "-exec chmod 0440 {} +"
-    ) in SCRIPT
-
-
-def test_skill_sandbox_is_installed_before_skill_runtime_use():
-    sandbox_install = SCRIPT.index("  install_skill_sandbox_dependency\n")
-    hermes_home_install = SCRIPT.index("  install_hermes_home\n")
-
-    assert sandbox_install < hermes_home_install
-    assert "apt-get install -y bubblewrap" in SCRIPT
-    assert '"HERMES_SKILL_SANDBOX": "/usr/bin/bwrap"' in SCRIPT
-
-
-def test_skill_sandbox_allows_only_bwrap_user_namespaces_on_restricted_ubuntu():
-    profile = (
-        Path(__file__).resolve().parents[1]
-        / "deploy"
-        / "wechat-hermes-bwrap.apparmor"
-    ).read_text(encoding="utf-8")
-
-    assert "profile wechat-hermes-bwrap /usr/bin/bwrap" in profile
-    assert "flags=(unconfined)" in profile
-    assert "userns," in profile
-    assert "kernel.apparmor_restrict_unprivileged_userns" in SCRIPT
-    assert "apparmor_parser -r /etc/apparmor.d/wechat-hermes-bwrap" in SCRIPT
-    assert 'sudo -u "$ADAPTER_USER" bwrap' in SCRIPT
-    assert "unprivileged Bubblewrap Skill sandbox self-test failed" in SCRIPT
+    assert "pending_release" not in SCRIPT
+    assert "install_skill_sandbox_dependency" not in SCRIPT
 
 
 def test_deployment_uses_four_separate_credentials_and_scoped_environments():
@@ -345,7 +324,7 @@ def test_release_layout_and_protected_baselines_are_required():
     assert '"/opt/wechat-ai-bot/data/bot.db"' in SCRIPT
 
 
-def test_versioned_runtime_and_skill_links_handle_legacy_directories():
+def test_versioned_runtime_links_and_empty_skill_home_handle_legacy_directories():
     assert 'if [[ -d "$ADAPTER_ROOT" && ! -L "$ADAPTER_ROOT" ]]' in SCRIPT
     assert 'if [[ -d "$HERMES_ROOT" && ! -L "$HERMES_ROOT" ]]' in SCRIPT
     assert (
@@ -355,45 +334,34 @@ def test_versioned_runtime_and_skill_links_handle_legacy_directories():
     assert 'mv -Tf -- "$next_link" "$ADAPTER_ROOT"' in SCRIPT
     assert 'mv -Tf -- "$next_root_link" "$HERMES_ROOT"' in SCRIPT
     assert 'mv -Tf -- "$next_python_link" "$HERMES_PYTHON_ROOT"' in SCRIPT
-    assert 'mv -Tf -- "$next_link" "$SKILL_TRUST_ROOT/current"' in SCRIPT
-    assert 'local active_link="$SKILL_TRUST_ROOT/active"' in SCRIPT
-    assert '[[ "$active_target" == releases/* ]]' in SCRIPT
-    assert 'fail "Hermes Skill active pointer is not a symlink"' in SCRIPT
-    assert 'ln -s "releases/$release_name" "$active_link"' in SCRIPT
-    assert (
-        'ln -sfn "$SKILL_TRUST_ROOT/active/skills" "$hermes_home/skills"'
-        in SCRIPT
-    )
-    assert (
-        '"$SKILL_TRUST_ROOT/active/skills-lock.json"'
-        in SCRIPT
-    )
-    assert (
-        '"$SKILL_TRUST_ROOT/current/skills" "$hermes_home/skills"'
-        not in SCRIPT
-    )
-    assert (
-        'find "$pending_release" -type d -exec chmod 0550 {} +'
-        in SCRIPT
-    )
+    assert 'local skills_path="$hermes_home/skills"' in SCRIPT
+    assert 'unlink -- "$skills_path"' in SCRIPT
+    assert 'mv -- "$skills_path" "$skills_backup"' in SCRIPT
+    assert 'unlink -- "$lock_path"' in SCRIPT
+    assert 'install -d -o root -g "$RUNTIME_GROUP" -m 0550' in SCRIPT
+    assert "SKILL_TRUST_ROOT=$STATE_ROOT" not in SCRIPT
+    assert '"$SKILL_TRUST_ROOT/' not in SCRIPT
 
 
-def test_hermes_startup_and_install_require_runtime_readable_skills():
+def test_hermes_startup_requires_config_and_empty_skill_directory():
     root = Path(__file__).resolve().parents[1]
     worker = (root / "deploy" / "hermes-worker.service").read_text(
         encoding="utf-8"
     )
-    for relative_path in (
-        "skills-lock.json",
-        "skills/creative/creative-ideation/SKILL.md",
-        "skills/media/douyin-video-production/SKILL.md",
-        "skills/personality/wechat-hermes-persona/SKILL.md",
-        "skills/productivity/wechat-group-operations/SKILL.md",
-    ):
-        absolute = "/var/lib/wechat-hermes/skill-trust/active/" + relative_path
-        assert f"ExecStartPre=/usr/bin/test -r {absolute}" in worker
-        assert f'"$SKILL_TRUST_ROOT/active/{relative_path}"' in SCRIPT
-    assert SCRIPT.count('sudo -u "$RUNTIME_USER" test -r') >= 5
+    assert (
+        "ExecStartPre=/usr/bin/test -r "
+        "/var/lib/wechat-hermes/workspace/home/.hermes/config.yaml"
+    ) in worker
+    assert (
+        "ExecStartPre=/usr/bin/test -d "
+        "/var/lib/wechat-hermes/workspace/home/.hermes/skills"
+    ) in worker
+    assert "/var/lib/wechat-hermes/skill-trust" in worker
+    assert "/var/lib/wechat-hermes/skill-trust/active" not in worker
+    assert (
+        "ReadOnlyPaths="
+        "/var/lib/wechat-hermes/workspace/home/.hermes/skills"
+    ) in worker
 
 
 def test_mcp_dependencies_keep_fastapi_starlette_compatible():

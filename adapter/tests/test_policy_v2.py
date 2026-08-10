@@ -24,7 +24,7 @@ def test_blocked_task_status_is_visible_in_single_and_list_formats():
         "Browse the website and download the report",
         "Run this command and export the result",
         "Create a spreadsheet from these files",
-        "Install the requested skill",
+        "Install the requested package",
     ),
 )
 def test_english_work_requests_use_the_execution_queue(message):

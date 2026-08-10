@@ -70,16 +70,6 @@ def runtime_env(path: Path, service_name: str) -> dict[str, str]:
         return service_env(service_name)
 
 
-def resolved_hermes_skills_root(environment: dict[str, str]) -> str:
-    home = str(environment.get("HOME") or "").strip()
-    if not home:
-        raise RuntimeError("Hermes runtime HOME is missing")
-    root = (Path(home) / ".hermes" / "skills").resolve(strict=True)
-    if not root.is_dir():
-        raise RuntimeError("Hermes Skill root is not a directory")
-    return str(root)
-
-
 async def request(
     client: httpx.AsyncClient,
     method: str,
@@ -98,64 +88,22 @@ async def request(
     return response
 
 
-async def hermes_skill_reload_probe(
-    client: httpx.AsyncClient,
-    base_url: str,
-    token: str,
-    expected_skills_root: str,
-    *,
-    timeout: float = 15,
-) -> dict[str, Any]:
-    payload = {"expected_skills_root": expected_skills_root}
-    await request(
-        client,
-        "POST",
-        f"{base_url}/v1/skills/reload",
-        token="invalid",
-        expected={401, 403},
-        json=payload,
-    )
-
-    deadline = time.monotonic() + timeout
-    while True:
-        response = await client.post(
-            f"{base_url}/v1/skills/reload",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-            },
-            json=payload,
-        )
-        if response.status_code == 200:
-            body = response.json()
-            if str(body.get("skills_root") or "") != expected_skills_root:
-                raise RuntimeError(
-                    "Hermes Skill reload returned an unexpected root"
-                )
-            if body.get("reloaded") not in {True, False}:
-                raise RuntimeError(
-                    "Hermes Skill reload returned an invalid result"
-                )
-            return body
-
-        error_code = ""
-        try:
-            error = (response.json().get("error") or {})
-            if isinstance(error, dict):
-                error_code = str(error.get("code") or "")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            pass
-        if (
-            response.status_code == 409
-            and error_code == "skills_reload_busy"
-            and time.monotonic() < deadline
-        ):
-            await asyncio.sleep(0.1)
-            continue
-        raise RuntimeError(
-            "Hermes Skill reload probe returned HTTP "
-            f"{response.status_code}"
-        )
+def verify_toolset_policy(payload: dict[str, Any]) -> None:
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise RuntimeError("Hermes toolset discovery returned an invalid payload")
+    toolsets = {
+        str(item.get("name") or ""): item
+        for item in entries
+        if isinstance(item, dict)
+    }
+    skills = toolsets.get("skills")
+    if not skills or skills.get("enabled") is not False:
+        raise RuntimeError("Hermes Skills toolset is not disabled")
+    for required in ("web", "browser", "terminal", "file", "code_execution"):
+        item = toolsets.get(required)
+        if not item or item.get("enabled") is not True:
+            raise RuntimeError(f"required Hermes toolset is disabled: {required}")
 
 
 async def wait_run(
@@ -343,22 +291,9 @@ async def main() -> int:
     bridge_token = adapter_env["BRIDGE_TOKEN"]
     internal_token = adapter_env["HERMES_WECHAT_INTERNAL_TOKEN"]
     hermes_token = hermes_env["API_SERVER_KEY"]
-    skills_environment = dict(hermes_env)
-    skills_environment.setdefault(
-        "HOME",
-        adapter_env.get("HERMES_HOME", ""),
-    )
-    hermes_skills_root = resolved_hermes_skills_root(skills_environment)
-
     timeout = httpx.Timeout(connect=10, read=300, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
         await request(client, "GET", f"{hermes_url}/health")
-        await hermes_skill_reload_probe(
-            client,
-            hermes_url,
-            hermes_token,
-            hermes_skills_root,
-        )
         await request(
             client,
             "GET",
@@ -366,7 +301,7 @@ async def main() -> int:
             token="invalid",
             expected={401, 403},
         )
-        skills = (
+        skills_payload = (
             await request(
                 client,
                 "GET",
@@ -374,15 +309,9 @@ async def main() -> int:
                 token=hermes_token,
             )
         ).json()
-        skill_text = json.dumps(skills, ensure_ascii=False)
-        for required in (
-            "douyin-video-production",
-            "wechat-group-operations",
-            "wechat-hermes-persona",
-            "creative-ideation",
-        ):
-            if required not in skill_text:
-                raise RuntimeError(f"required Skill is missing: {required}")
+        skills = skills_payload.get("data")
+        if not isinstance(skills, list) or skills:
+            raise RuntimeError("Hermes Skill inventory is not empty")
 
         toolsets = (
             await request(
@@ -392,6 +321,7 @@ async def main() -> int:
                 token=hermes_token,
             )
         ).json()
+        verify_toolset_policy(toolsets)
         tool_text = json.dumps(toolsets, ensure_ascii=False)
         if "workstation" in tool_text.lower() or "jianying" in tool_text.lower():
             raise RuntimeError("forbidden workstation tools were discovered")
@@ -426,7 +356,6 @@ async def main() -> int:
                 expected_tools = {
                     "wechat_memory_list",
                     "wechat_memory_update",
-                    "wechat_install_skill",
                     "wechat_register_artifact",
                     "wechat_http_fetch",
                     "wechat_write_text_artifact",
@@ -476,8 +405,8 @@ async def main() -> int:
                         "room_id": room_id,
                         "checks": [
                             "Hermes health and authentication",
-                            "authenticated trusted Skill reload",
-                            "Skills and toolset discovery",
+                            "empty Skill inventory and disabled Skill toolset",
+                            "production toolset discovery",
                             "direct read-only MCP discovery",
                             "unknown-room policy before model execution",
                         ],
@@ -673,8 +602,8 @@ async def main() -> int:
                 "room_id": room_id,
                 "checks": [
                     "Hermes health and authentication",
-                    "authenticated trusted Skill reload",
-                    "Skills and direct MCP discovery",
+                    "empty Skill inventory and disabled Skill toolset",
+                    "production tools and direct MCP discovery",
                     "request-scoped zero-tool API validation",
                     "unknown-room policy",
                     "synchronous Session Chat",

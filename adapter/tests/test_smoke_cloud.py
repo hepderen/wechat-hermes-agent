@@ -155,15 +155,14 @@ def test_read_only_smoke_returns_before_model_and_allowed_room_probes():
         '            "authorized-room synchronous chat"'
     )
     scope_validation = source.index("invalid_scope_session =")
-    reload_probe = source.index("await hermes_skill_reload_probe(")
+    skill_inventory_probe = source.index('f"{hermes_url}/v1/skills"')
 
-    assert reload_probe < read_only_guard
+    assert skill_inventory_probe < read_only_guard
     assert read_only_guard < allowed_room_probe
     assert read_only_guard < scope_validation
     assert "--read-only" in source
     assert 'cwd="/opt/wechat-hermes-adapter"' in source
-    assert 'adapter_env.get("HERMES_HOME", "")' in source
-    assert "authenticated trusted Skill reload" in source
+    assert "empty Skill inventory and disabled Skill toolset" in source
     assert "direct read-only MCP discovery" in source
     assert "wechat_list_tasks" not in source
 
@@ -285,51 +284,22 @@ def test_runtime_env_uses_service_process_when_file_is_protected(tmp_path):
     process_env.assert_called_once_with("wechat-hermes-adapter.service")
 
 
-def test_resolved_hermes_skills_root_uses_runtime_home(tmp_path):
-    skills = tmp_path / ".hermes" / "skills"
-    skills.mkdir(parents=True)
-
-    assert smoke_cloud.resolved_hermes_skills_root(
-        {"HOME": str(tmp_path)}
-    ) == str(skills.resolve())
-
-
-def test_skill_reload_probe_checks_authentication_and_runtime_root(tmp_path):
-    expected_root = str(tmp_path.resolve())
-    requests = []
-
-    def handler(request):
-        requests.append(request)
-        if request.headers["Authorization"] == "Bearer invalid":
-            return httpx.Response(401, json={"error": {"code": "unauthorized"}})
-        return httpx.Response(
-            200,
-            json={
-                "object": "hermes.skills.reload",
-                "skills_root": expected_root,
-                "reloaded": False,
-                "count": 3,
-            },
-        )
-
-    async def probe():
-        transport = httpx.MockTransport(handler)
-        async with httpx.AsyncClient(transport=transport) as client:
-            return await smoke_cloud.hermes_skill_reload_probe(
-                client,
-                "http://127.0.0.1:8642",
-                "valid-token",
-                expected_root,
-            )
-
-    result = asyncio.run(probe())
-
-    assert result["skills_root"] == expected_root
-    assert [request.headers["Authorization"] for request in requests] == [
-        "Bearer invalid",
-        "Bearer valid-token",
+def test_toolset_policy_requires_skills_off_and_production_tools_on():
+    data = [
+        {"name": "skills", "enabled": False},
+        {"name": "web", "enabled": True},
+        {"name": "browser", "enabled": True},
+        {"name": "terminal", "enabled": True},
+        {"name": "file", "enabled": True},
+        {"name": "code_execution", "enabled": True},
     ]
-    assert all(
-        json.loads(request.content)["expected_skills_root"] == expected_root
-        for request in requests
-    )
+    smoke_cloud.verify_toolset_policy({"object": "list", "data": data})
+
+    for name in ("skills", "web"):
+        broken = [dict(item) for item in data]
+        item = next(entry for entry in broken if entry["name"] == name)
+        item["enabled"] = not item["enabled"]
+        with pytest.raises(RuntimeError):
+            smoke_cloud.verify_toolset_policy(
+                {"object": "list", "data": broken}
+            )

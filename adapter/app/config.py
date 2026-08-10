@@ -37,9 +37,6 @@ class Settings:
     input_token_cost_per_million: float
     output_token_cost_per_million: float
     wechat_session_generation: str
-    hermes_cli_path: Path
-    hermes_home: Path
-    skill_install_timeout_seconds: int
     allow_private_chat: bool
     worker_poll_seconds: float
     sync_chat_timeout_seconds: float = 8.0
@@ -118,9 +115,6 @@ class Settings:
             "artifact_retention_days": self.artifact_retention_days,
             "audit_retention_days": self.audit_retention_days,
             "cleanup_max_age_seconds": self.cleanup_max_age_seconds,
-            "skill_install_timeout_seconds": (
-                self.skill_install_timeout_seconds
-            ),
         }
         for name, value in positive_limits.items():
             if not isfinite(float(value)) or float(value) <= 0:
@@ -231,27 +225,6 @@ class Settings:
             wechat_session_generation=(
                 os.getenv("HERMES_WECHAT_SESSION_GENERATION", "1").strip()
                 or "1"
-            ),
-            hermes_cli_path=Path(
-                os.getenv(
-                    "HERMES_CLI_PATH",
-                    "/opt/hermes-runtime/venv/bin/hermes",
-                )
-            ),
-            hermes_home=Path(
-                os.getenv(
-                    "HERMES_HOME",
-                    "/var/lib/wechat-hermes/workspace/home",
-                )
-            ),
-            skill_install_timeout_seconds=max(
-                30,
-                int(
-                    os.getenv(
-                        "HERMES_WECHAT_SKILL_INSTALL_TIMEOUT_SECONDS",
-                        "300",
-                    )
-                ),
             ),
             allow_private_chat=env_bool("ALLOW_PRIVATE_WECHAT_CHAT", False),
             worker_poll_seconds=max(

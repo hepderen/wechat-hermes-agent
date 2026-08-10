@@ -212,25 +212,6 @@ class HermesHandler(JsonHandler):
                 },
             )
             return
-        if path == "/v1/skills/reload":
-            expected_root = str(payload.get("expected_skills_root") or "")
-            if not Path(expected_root).is_absolute():
-                self.send_json(
-                    400,
-                    {"error": {"code": "invalid_skills_root"}},
-                )
-                return
-            STATE.record("hermes.skills.reload", skills_root=expected_root)
-            self.send_json(
-                200,
-                {
-                    "object": "hermes.skills.reload",
-                    "skills_root": expected_root,
-                    "reloaded": True,
-                    "count": 0,
-                },
-            )
-            return
         if path == "/v1/runs":
             prompt = str(payload.get("input") or "")
             instructions = str(payload.get("instructions") or "")
@@ -442,25 +423,6 @@ def adapter_environment(
     adapter_port: int,
     home: Path,
 ) -> dict[str, str]:
-    skills = home / ".hermes" / "skills"
-    hub = skills / ".hub"
-    hub.mkdir(parents=True, exist_ok=True)
-    (hub / "lock.json").write_text(
-        json.dumps({"installed": {}}, sort_keys=True),
-        encoding="utf-8",
-    )
-    (home / ".hermes" / "skills-lock.json").write_text(
-        json.dumps(
-            {
-                "lock_version": 1,
-                "skills": [],
-                "dynamic_skills": [],
-                "revoked_skills": [],
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
     environment = {
         **os.environ,
         "BRIDGE_TOKEN": BRIDGE_TOKEN,
@@ -488,14 +450,10 @@ def adapter_environment(
         "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
         "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
         "HERMES_WECHAT_SESSION_GENERATION": "fake-stack",
-        "HERMES_CLI_PATH": str(home / "missing-hermes"),
-        "HERMES_HOME": str(home),
         "ALLOW_PRIVATE_WECHAT_CHAT": "false",
         "HERMES_WECHAT_WORKER_POLL_SECONDS": "0.05",
         "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "2",
     }
-    environment.pop("HERMES_SKILL_TRUST_ROOT", None)
-    environment.pop("HERMES_SKILL_SANDBOX", None)
     return environment
 
 

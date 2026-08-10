@@ -41,7 +41,6 @@ def test_mcp_exposes_cloud_only_tools():
     assert set(mcp_server.mcp.tools) == {
         "wechat_memory_list",
         "wechat_memory_update",
-        "wechat_install_skill",
         "wechat_register_artifact",
         "wechat_http_fetch",
         "wechat_write_text_artifact",
@@ -124,7 +123,7 @@ def test_register_cloud_artifact_is_task_scoped_and_verified(
             mcp_server.wechat_register_artifact(task_id, str(fake_video))
         )
 
-def test_memory_and_skill_tools_use_only_trusted_task_id(monkeypatch):
+def test_memory_tools_use_only_trusted_task_id(monkeypatch):
     calls = []
 
     async def fake_request(method, url, **kwargs):
@@ -141,18 +140,8 @@ def test_memory_and_skill_tools_use_only_trusted_task_id(monkeypatch):
             "concise",
         )
     )
-    asyncio.run(
-        mcp_server.wechat_install_skill(
-            "T-12AB34CD",
-            "creative/example-skill@1.0.0",
-        )
-    )
     assert calls[0][1].endswith("/internal/memory/T-12AB34CD")
     assert "room_id" not in calls[0][2]["json_body"]
-    assert calls[1][2]["json_body"]["task_id"] == "T-12AB34CD"
-    assert calls[1][2]["json_body"]["identifier"] == (
-        "creative/example-skill@1.0.0"
-    )
 
 
 def test_remote_error_never_includes_response_body():

@@ -28,7 +28,6 @@ RUNTIME_GROUP=wechat-hermes-runtime
 ADAPTER_HOME=$STATE_ROOT/home
 RUNTIME_HOME=$STATE_ROOT/workspace/home
 ADAPTER_DATA_ROOT=$STATE_ROOT/adapter-data
-SKILL_TRUST_ROOT=$STATE_ROOT/skill-trust
 OUTBOUND_CONTROL_DB=$STATE_ROOT/outbound-control.db
 RELEASE_ID=${RELEASE_ID:-$(date -u +%Y%m%d%H%M%S)}
 MAINTENANCE_MODE=${MAINTENANCE_MODE:-0}
@@ -171,16 +170,22 @@ ensure_accounts_and_directories() {
     "$RUNTIME_HOME"
   install -d -o "$ADAPTER_USER" -g "$RUNTIME_GROUP" -m 2770 \
     "$STATE_ROOT/artifacts"
-  install -d -o "$ADAPTER_USER" -g "$RUNTIME_GROUP" -m 2750 \
-    "$SKILL_TRUST_ROOT" \
-    "$SKILL_TRUST_ROOT/releases"
-  install -d -o "$ADAPTER_USER" -g "$ADAPTER_USER" -m 0700 \
-    "$SKILL_TRUST_ROOT/staging"
   install -d -o root -g root -m 0700 "$CONFIG_ROOT"
   install -d -o root -g root -m 0755 \
     "$ADAPTER_RELEASES_ROOT" \
     "$HERMES_RELEASES_ROOT" \
     "$HERMES_PYTHON_RELEASES_ROOT"
+}
+
+remove_legacy_skill_sandbox() {
+  local profile=/etc/apparmor.d/wechat-hermes-bwrap
+
+  if [[ -f "$profile" ]]; then
+    if command -v apparmor_parser >/dev/null 2>&1; then
+      apparmor_parser -R "$profile" >/dev/null 2>&1 || true
+    fi
+    rm -f -- "$profile"
+  fi
 }
 
 normalize_existing_artifact_permissions() {
@@ -477,34 +482,6 @@ PY
   chmod 0600 "$CHAT_API_ROOT/config.json"
 }
 
-install_skill_sandbox_dependency() {
-  local restrict_userns=0
-  if ! command -v bwrap >/dev/null 2>&1; then
-    env DEBIAN_FRONTEND=noninteractive apt-get update
-    env DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
-  fi
-  command -v bwrap >/dev/null 2>&1 ||
-    fail "bubblewrap installation did not provide bwrap"
-
-  restrict_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || printf 0)
-  if [[ "$restrict_userns" == "1" ]]; then
-    command -v apparmor_parser >/dev/null 2>&1 ||
-      fail "AppArmor parser is required for the Skill sandbox"
-    install -o root -g root -m 0644 \
-      "$ADAPTER_ROOT/deploy/wechat-hermes-bwrap.apparmor" \
-      /etc/apparmor.d/wechat-hermes-bwrap
-    apparmor_parser -r /etc/apparmor.d/wechat-hermes-bwrap
-  fi
-
-  sudo -u "$ADAPTER_USER" bwrap \
-    --die-with-parent \
-    --new-session \
-    --unshare-all \
-    --ro-bind / / \
-    -- /bin/true ||
-    fail "unprivileged Bubblewrap Skill sandbox self-test failed"
-}
-
 harden_hermes_logging() {
   python3 \
     "$ADAPTER_ROOT/deploy/harden_hermes_logging.py" \
@@ -526,12 +503,6 @@ harden_hermes_api_scopes() {
 harden_hermes_run_evidence() {
   python3 \
     "$ADAPTER_ROOT/deploy/harden_hermes_run_evidence.py" \
-    --root "$HERMES_ROOT"
-}
-
-harden_hermes_skill_reload() {
-  python3 \
-    "$ADAPTER_ROOT/deploy/harden_hermes_skill_reload.py" \
     --root "$HERMES_ROOT"
 }
 
@@ -562,58 +533,14 @@ ensure_cleanup_runtime_directories() {
 install_hermes_home() {
   local home="$RUNTIME_HOME"
   local hermes_home="$home/.hermes"
-  local stage_root="$SKILL_TRUST_ROOT/staging/bootstrap-$RELEASE_ID"
-  local stage_home="$stage_root/home"
-  local stage_hermes="$stage_home/.hermes"
-  local stage_skills="$stage_hermes/skills"
-  local source_skills
   local config_source
-  local release_name="release-$RELEASE_ID"
-  local pending_release="$SKILL_TRUST_ROOT/releases/.pending-$release_name"
-  local release="$SKILL_TRUST_ROOT/releases/$release_name"
-  local next_link="$SKILL_TRUST_ROOT/.current-$RELEASE_ID"
-  local active_link="$SKILL_TRUST_ROOT/active"
-  local active_target
-
-  assert_exact_path \
-    "$SKILL_TRUST_ROOT/staging/bootstrap-$RELEASE_ID" \
-    "$stage_root"
-  assert_exact_path \
-    "$SKILL_TRUST_ROOT/releases/.pending-$release_name" \
-    "$pending_release"
-  [[ ! -e "$stage_root" ]] || fail "Hermes home stage already exists"
-  [[ ! -e "$pending_release" && ! -e "$release" ]] ||
-    fail "Hermes Skill release already exists"
+  local staged_config="$hermes_home/config.yaml.next-$RELEASE_ID"
+  local skills_path="$hermes_home/skills"
+  local skills_backup="$ADAPTER_HOME/skills.disabled-$RELEASE_ID"
+  local lock_path="$hermes_home/skills-lock.json"
+  local lock_backup="$ADAPTER_HOME/skills-lock.json.disabled-$RELEASE_ID"
 
   ensure_cleanup_runtime_directories
-  install -d -o "$ADAPTER_USER" -g "$ADAPTER_USER" -m 0700 \
-    "$stage_root" \
-    "$stage_home" \
-    "$stage_hermes" \
-    "$stage_skills"
-
-  if [[ -d "$SKILL_TRUST_ROOT/current/skills" ]]; then
-    source_skills="$SKILL_TRUST_ROOT/current/skills"
-  elif [[ -d "$ADAPTER_HOME/.hermes/skills" ]]; then
-    source_skills="$ADAPTER_HOME/.hermes/skills"
-  else
-    source_skills="$HERMES_HOME_SOURCE/skills"
-  fi
-  rsync -aL "$source_skills/" "$stage_skills/"
-
-  install -d -o "$ADAPTER_USER" -g "$ADAPTER_USER" -m 0755 \
-    "$stage_skills/media" \
-    "$stage_skills/personality" \
-    "$stage_skills/productivity"
-  rsync -a --delete \
-    "$ADAPTER_ROOT/skills/douyin-video-production/" \
-    "$stage_skills/media/douyin-video-production/"
-  rsync -a --delete \
-    "$ADAPTER_ROOT/skills/wechat-group-operations/" \
-    "$stage_skills/productivity/wechat-group-operations/"
-  rsync -a --delete \
-    "$ADAPTER_ROOT/skills/wechat-hermes-persona/" \
-    "$stage_skills/personality/wechat-hermes-persona/"
 
   if [[ -f "$hermes_home/config.yaml" ]]; then
     config_source="$hermes_home/config.yaml"
@@ -622,7 +549,9 @@ install_hermes_home() {
   else
     config_source="$HERMES_HOME_SOURCE/config.yaml"
   fi
-  python3 - "$config_source" "$stage_hermes/config.yaml" <<'PY'
+  [[ ! -e "$staged_config" ]] ||
+    fail "staged Hermes config already exists: $staged_config"
+  python3 - "$config_source" "$staged_config" <<'PY'
 from pathlib import Path
 import sys
 import yaml
@@ -647,7 +576,11 @@ if not isinstance(disabled_toolsets, list):
     disabled_toolsets = []
 if "memory" not in disabled_toolsets:
     disabled_toolsets.append("memory")
+if "skills" not in disabled_toolsets:
+    disabled_toolsets.append("skills")
 agent["disabled_toolsets"] = disabled_toolsets
+skills = config.setdefault("skills", {})
+skills["external_dirs"] = []
 config.setdefault("gateway", {}).setdefault("api_server", {})[
     "max_concurrent_runs"
 ] = 1
@@ -683,101 +616,32 @@ target.write_text(
 )
 PY
 
-  if rg -n -i -F \
-    -e 'jianying' \
-    -e '剪映' \
-    -e 'workstation' \
-    -e '18766' \
-    -e 'powershell' \
-    -e 'c:\' \
-    -e 'd:\' \
-    -e 'e:\' \
-    "$stage_skills/media/douyin-video-production" \
-    "$stage_skills/personality/wechat-hermes-persona" \
-    "$stage_skills/productivity/wechat-group-operations"; then
-    fail "custom Skill cloud-only scan failed"
-  fi
-
-  chown -R "$ADAPTER_USER:$ADAPTER_USER" "$stage_root"
-  sudo -u "$ADAPTER_USER" env HOME="$stage_home" \
-    git config --global --add safe.directory "$HERMES_ROOT"
-  sudo -u "$ADAPTER_USER" env \
-    HOME="$stage_home" \
-    HERMES_HOME="$stage_hermes" \
-    "$HERMES_ROOT/venv/bin/hermes" curator pin wechat-group-operations
-  sudo -u "$ADAPTER_USER" env \
-    HOME="$stage_home" \
-    HERMES_HOME="$stage_hermes" \
-    "$HERMES_ROOT/venv/bin/hermes" curator pin douyin-video-production
-  sudo -u "$ADAPTER_USER" env \
-    HOME="$stage_home" \
-    HERMES_HOME="$stage_hermes" \
-    "$HERMES_ROOT/venv/bin/hermes" curator pin wechat-hermes-persona
-
-  "$HERMES_ROOT/venv/bin/python" \
-    "$ADAPTER_ROOT/scripts/generate_skills_lock.py" \
-    --hermes-repo "$HERMES_ROOT" \
-    --skills-root "$stage_skills" \
-    --hub-lock "$stage_skills/.hub/lock.json" \
-    --output "$stage_hermes/skills-lock.json"
-
-  install -d -o "$ADAPTER_USER" -g "$RUNTIME_GROUP" -m 0750 \
-    "$pending_release"
-  mv -- "$stage_skills" "$pending_release/skills"
-  mv -- "$stage_hermes/skills-lock.json" "$pending_release/skills-lock.json"
-  chown -R "$ADAPTER_USER:$RUNTIME_GROUP" "$pending_release"
-  find "$pending_release" -type d -exec chmod 0550 {} +
-  find "$pending_release" -type f -perm /0111 -exec chmod 0550 {} +
-  find "$pending_release" -type f ! -perm /0111 -exec chmod 0440 {} +
-  mv -- "$pending_release" "$release"
-
-  ln -s "releases/$release_name" "$next_link"
-  mv -Tf -- "$next_link" "$SKILL_TRUST_ROOT/current"
-
-  if [[ -L "$active_link" ]]; then
-    active_target=$(readlink "$active_link")
-    [[ "$active_target" == releases/* ]] ||
-      fail "Hermes Skill active pointer is invalid"
-    [[ -d "$SKILL_TRUST_ROOT/$active_target/skills" ]] ||
-      fail "Hermes Skill active release is missing"
-    [[ -f "$SKILL_TRUST_ROOT/$active_target/skills-lock.json" ]] ||
-      fail "Hermes Skill active release lock is missing"
-  elif [[ -e "$active_link" ]]; then
-    fail "Hermes Skill active pointer is not a symlink"
-  else
-    ln -s "releases/$release_name" "$active_link"
-  fi
-
-  for name in skills skills-lock.json; do
-    if [[ -e "$hermes_home/$name" && ! -L "$hermes_home/$name" ]]; then
-      mv -- "$hermes_home/$name" \
-        "$hermes_home/$name.previous-$RELEASE_ID"
+  if [[ -L "$skills_path" ]]; then
+    unlink -- "$skills_path"
+  elif [[ -e "$skills_path" ]]; then
+    if [[ ! -d "$skills_path" ]] ||
+      [[ -n "$(find "$skills_path" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+      [[ ! -e "$skills_backup" ]] ||
+        fail "disabled Skill backup already exists: $skills_backup"
+      mv -- "$skills_path" "$skills_backup"
     fi
-  done
-  ln -sfn "$SKILL_TRUST_ROOT/active/skills" "$hermes_home/skills"
-  ln -sfn \
-    "$SKILL_TRUST_ROOT/active/skills-lock.json" \
-    "$hermes_home/skills-lock.json"
-  sudo -u "$RUNTIME_USER" test -r \
-    "$SKILL_TRUST_ROOT/active/skills-lock.json" ||
-    fail "Hermes runtime cannot read the active Skill lock"
-  sudo -u "$RUNTIME_USER" test -r \
-    "$SKILL_TRUST_ROOT/active/skills/creative/creative-ideation/SKILL.md" ||
-    fail "Hermes runtime cannot read creative-ideation"
-  sudo -u "$RUNTIME_USER" test -r \
-    "$SKILL_TRUST_ROOT/active/skills/media/douyin-video-production/SKILL.md" ||
-    fail "Hermes runtime cannot read douyin-video-production"
-  sudo -u "$RUNTIME_USER" test -r \
-    "$SKILL_TRUST_ROOT/active/skills/productivity/wechat-group-operations/SKILL.md" ||
-    fail "Hermes runtime cannot read wechat-group-operations"
-  sudo -u "$RUNTIME_USER" test -r \
-    "$SKILL_TRUST_ROOT/active/skills/personality/wechat-hermes-persona/SKILL.md" ||
-    fail "Hermes runtime cannot read wechat-hermes-persona"
+  fi
+  if [[ -L "$lock_path" ]]; then
+    unlink -- "$lock_path"
+  elif [[ -e "$lock_path" ]]; then
+    [[ ! -e "$lock_backup" ]] ||
+      fail "disabled Skill lock backup already exists: $lock_backup"
+    mv -- "$lock_path" "$lock_backup"
+  fi
+  install -d -o root -g "$RUNTIME_GROUP" -m 0550 "$skills_path"
+  # The setgid Hermes home can add its group bit back while creating children.
+  chmod 0550 "$skills_path"
+  chmod g-s "$skills_path"
   install -o "$RUNTIME_USER" -g "$RUNTIME_GROUP" -m 0640 \
-    "$stage_hermes/config.yaml" "$hermes_home/config.yaml"
+    "$staged_config" "$hermes_home/config.yaml"
+  rm -f -- "$staged_config"
   chown "$RUNTIME_USER:$RUNTIME_GROUP" "$hermes_home"
   chmod 2770 "$hermes_home"
-  rm -rf -- "$stage_root"
 
   sudo -u "$RUNTIME_USER" env HOME="$home" \
     git config --global --add safe.directory "$HERMES_ROOT"
@@ -1125,15 +989,19 @@ adapter.update({
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
     "HERMES_WECHAT_SESSION_GENERATION": "4",
-    "HERMES_CLI_PATH": "/opt/hermes-runtime/venv/bin/hermes",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
-    "HERMES_SKILL_TRUST_ROOT": "/var/lib/wechat-hermes/skill-trust",
-    "HERMES_SKILL_SANDBOX": "/usr/bin/bwrap",
-    "HERMES_WECHAT_SKILL_INSTALL_TIMEOUT_SECONDS": "300",
     "ALLOW_PRIVATE_WECHAT_CHAT": "false",
     "HERMES_WECHAT_WORKER_POLL_SECONDS": "1",
     "HERMES_WECHAT_ADAPTER_URL": "http://127.0.0.1:8000",
 })
+for environment in (adapter, hermes):
+    for obsolete in (
+        "HERMES_CLI_PATH",
+        "HERMES_SKILL_TRUST_ROOT",
+        "HERMES_SKILL_SANDBOX",
+        "HERMES_WECHAT_SKILL_INSTALL_TIMEOUT_SECONDS",
+    ):
+        environment.pop(obsolete, None)
 for key, value in {
     "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "8",
     "HERMES_WECHAT_MAX_TOOL_CALLS": "80",
@@ -1259,17 +1127,16 @@ main() {
   require_deployment_identity
   assert_baseline
   ensure_accounts_and_directories
+  remove_legacy_skill_sandbox
   normalize_existing_artifact_permissions
   ensure_chat_api_control_store
   migrate_adapter_database
   install_adapter
-  install_skill_sandbox_dependency
   install_hermes_runtime
   harden_hermes_logging
   harden_hermes_home_mode
   harden_hermes_api_scopes
   harden_hermes_run_evidence
-  harden_hermes_skill_reload
   install_hermes_home
   install_cloud_browser
   write_environment

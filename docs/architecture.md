@@ -33,7 +33,8 @@
 ### Hermes Worker
 
 - 监听 `127.0.0.1:8642`。
-- 负责对话生成、计划执行、终端、文件、浏览器、联网检索和 Skills。
+- 负责对话生成、计划执行、终端、文件、浏览器和联网检索。
+- `skills` 工具集在生产配置中禁用，Skill 目录为空；真实能力由原生工具、搜索插件和受控 MCP 提供。
 - Worker 不持有 Bridge Token 或 Chat API Token，主动发送必须经过 Adapter MCP。
 - systemd 将写权限限制到工作区和 Artifact 目录。
 
@@ -150,6 +151,6 @@ Adapter 启动时先获取单进程锁，恢复未完成任务并对账 Outbox�
 - 内部 API 使用独立 Token；Hermes Worker 不获取微信发送凭据。
 - 网络工具阻止回环、私网、链路本地、云元数据和重定向 SSRF。
 - 文件工具限制根目录、软链接、归档条目数和下载字节数。
-- Skill 安装先进入隔离目录，完成静态/行为审计和锁定后原子启用。
-- Ubuntu 启用受限用户命名空间时，只为 `/usr/bin/bwrap` 加载专用 AppArmor `userns` 配置；Skill 安装内容仍运行在只读根目录、隔离 HOME 和默认断网的 Bubblewrap 中。
-- 人格规则分为 Adapter 会话基线和无代码人格 Skill。措辞层不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
+- Hermes 的 `skills` 工具集被显式禁用，运行目录不包含可加载 Skill，Adapter 也不暴露安装或 reload 接口。
+- 人格规则只由 Adapter 会话基线注入。措辞层不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
+- 升级不会删除旧 SQLite 中的 Skill 历史字段或注册表；这些兼容数据没有运行时读取路径。

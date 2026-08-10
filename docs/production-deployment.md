@@ -20,7 +20,7 @@
 
 ## 前置条件
 
-- Ubuntu、systemd、Python 3.11、`venv`、`curl`、`rsync`、`acl` 和 `bubblewrap`。
+- Ubuntu、systemd、Python 3.11、`venv`、`curl`、`rsync` 和 `acl`。
 - 一个持续运行的 Linux 微信桌面进程和可用 DISPLAY。
 - 微信消息数据库路径、对应数据库密钥 JSON 和目标群 ID。
 - Hermes Agent 源码 Git checkout，且 `venv/bin/hermes` 可执行。
@@ -126,11 +126,10 @@ sudo --preserve-env \
 2. 创建独立服务账户与受限目录。
 3. 备份并迁移 Adapter SQLite。
 4. 安装版本化 Adapter 和 Hermes runtime。
-5. 应用 Hermes 日志、API scope、工具证据和 Skill reload 加固补丁。
-6. 安装 Bubblewrap 专用 AppArmor `userns` 配置并执行非 root 沙箱自检。
-7. 生成部署专属 Skills 完整性锁，其中包含无代码的混合人格 Skill。
-8. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
-9. 写入四个隔离环境文件。
+5. 应用 Hermes 日志、API scope 和工具证据加固补丁。
+6. 禁用 Hermes `skills` 工具集，清空活动 Skill 目录并移除 Adapter 的安装入口；旧 Skill 发布目录只保留为不可访问的回滚资料。
+7. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
+8. 写入四个隔离环境文件。
 
 该版本将 `HERMES_WECHAT_SESSION_GENERATION` 设为 `4`，使已有群聊创建带 v2 人格提示词的新 Hermes Session；旧 Session 只保留为历史记录。
 
