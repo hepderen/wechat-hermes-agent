@@ -964,6 +964,67 @@ def _query_domain_results(query: str) -> List[Dict[str, Any]]:
     return results
 
 
+def _official_entry_results(query: str) -> List[Dict[str, Any]]:
+    if not QUALITY_RANKING_RE.search(query):
+        return []
+    entries = (
+        (
+            r"\bopenai\b",
+            "OpenAI official documentation",
+            "https://platform.openai.com/docs/",
+        ),
+        (
+            r"\bpython\b",
+            "Python official documentation",
+            "https://docs.python.org/3/",
+        ),
+        (
+            r"\bkubernetes\b",
+            "Kubernetes official documentation",
+            "https://kubernetes.io/docs/",
+        ),
+        (
+            r"\bsystemd\b",
+            "systemd official documentation",
+            "https://systemd.io/",
+        ),
+        (
+            r"(?:国务院|中国政府网)",
+            "国务院政策文件库",
+            "https://www.gov.cn/zhengce/",
+        ),
+        (
+            r"腾讯云",
+            "腾讯云官方文档",
+            "https://cloud.tencent.com/document/product",
+        ),
+        (
+            r"阿里云",
+            "阿里云官方文档",
+            "https://help.aliyun.com/",
+        ),
+    )
+    results = []
+    for pattern, title, raw_url in entries:
+        if not re.search(pattern, query, re.IGNORECASE):
+            continue
+        url = _public_result_url(raw_url)
+        if not url:
+            continue
+        results.append(
+            {
+                "title": title,
+                "url": url,
+                "content": (
+                    "Known public official entry point; verify the relevant page "
+                    "with web_extract before answering."
+                ),
+                "source": "official-entry",
+            }
+        )
+    return results
+
+
 def _interleave_results(
     primary: List[Dict[str, Any]],
     secondary: List[Dict[str, Any]],
@@ -1869,6 +1930,7 @@ class WechatCloudWebProvider(WebSearchProvider):
             upstream_errors: List[str] = []
             try:
                 direct_results = _query_domain_results(normalized_query)
+                official_results = _official_entry_results(normalized_query)
                 raw_results: List[Dict[str, Any]] = list(direct_results)
                 trusted_results, trusted_errors = _trusted_feed_results(
                     normalized_query,
@@ -2049,15 +2111,10 @@ class WechatCloudWebProvider(WebSearchProvider):
                 elif regional_results:
                     raw_results.extend(regional_results)
 
-                candidates: List[Dict[str, Any]] = []
-                seen = set()
-                for raw in raw_results:
-                    if not isinstance(raw, dict):
-                        continue
+                def normalize_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     url = _public_result_url(raw.get("url"))
-                    if not url or url in seen:
-                        continue
-                    seen.add(url)
+                    if not url:
+                        return None
                     candidate = {
                         "title": _clean_text(raw.get("title"), 500),
                         "url": url,
@@ -2074,10 +2131,31 @@ class WechatCloudWebProvider(WebSearchProvider):
                     source_name = _clean_text(raw.get("source"), 80)
                     if source_name:
                         candidate["source"] = source_name
+                    return candidate
+
+                candidates: List[Dict[str, Any]] = []
+                seen = set()
+                for raw in raw_results:
+                    if not isinstance(raw, dict):
+                        continue
+                    candidate = normalize_candidate(raw)
+                    if candidate is None or candidate["url"] in seen:
+                        continue
+                    seen.add(candidate["url"])
                     candidates.append(candidate)
                     if len(candidates) >= candidate_limit:
                         break
                 ranked = _rank_search_results(normalized_query, candidates)
+                if not ranked and official_results:
+                    fallback_candidates = [
+                        candidate
+                        for raw in official_results
+                        if (candidate := normalize_candidate(raw)) is not None
+                    ]
+                    ranked = _rank_search_results(
+                        normalized_query,
+                        fallback_candidates,
+                    )
                 results = []
                 for item in ranked[:safe_limit]:
                     results.append(

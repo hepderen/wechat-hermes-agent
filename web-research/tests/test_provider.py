@@ -602,6 +602,19 @@ def test_explicit_public_domain_is_first_result_without_guessing(
     assert result["data"]["web"][0]["url"] == "https://platform.openai.com/docs"
 
 
+def test_known_official_entry_does_not_depend_on_search_upstreams(
+    provider_module,
+):
+    result = provider_module.WechatCloudWebProvider().search(
+        "OpenAI official documentation",
+        1,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["web"][0]["url"] == "https://platform.openai.com/docs/"
+    assert result["data"]["web"][0]["source"] == "official-entry"
+
+
 def test_searx_results_are_interleaved_with_bing(provider_module, monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
     monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "false")

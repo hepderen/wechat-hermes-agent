@@ -23,7 +23,13 @@ esac
 
 candidate_base=/var/lib/wechat-hermes/candidates/web-research
 candidate_root="$candidate_base/$release_id"
-python_bin=${PYTHON_BIN:-python3}
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  python_bin=$PYTHON_BIN
+elif [[ -x /opt/hermes-runtime/venv/bin/python ]]; then
+  python_bin=/opt/hermes-runtime/venv/bin/python
+else
+  python_bin=python3
+fi
 hermes_config=${HERMES_CONFIG_SOURCE:-/var/lib/wechat-hermes/workspace/home/.hermes/config.yaml}
 
 test -f "$source_root/hermes-plugin/provider.py"

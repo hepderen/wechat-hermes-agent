@@ -103,6 +103,7 @@ def test_candidate_builder_vendors_only_hash_locked_dependencies():
     assert "--require-hashes" in source
     assert "--no-deps" in source
     assert 'test -d "$vendor/trafilatura"' in source
+    assert "/opt/hermes-runtime/venv/bin/python" in source
     assert "gateway-home" in source
     assert "configure_hermes_web.py" in source
     assert ":8765" not in source
