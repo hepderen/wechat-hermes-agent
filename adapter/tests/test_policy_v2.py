@@ -66,6 +66,41 @@ def test_additional_explicit_research_phrases_use_the_execution_queue(message):
 @pytest.mark.parametrize(
     "message",
     (
+        "今天有什么 AI 新闻",
+        "最近的大模型热点有哪些",
+        "国务院最新人工智能政策",
+        "Python 当前最新版本是什么",
+        "比特币现在什么价格",
+        "上海今天天气",
+        "这个消息是真的吗",
+        "官方怎么说这件事",
+        "What are today's AI headlines?",
+        "What is the latest Python release?",
+    ),
+)
+def test_time_sensitive_facts_use_the_execution_queue_without_search_verbs(
+    message,
+):
+    assert should_run_async(message, "text", []) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "现在这个方案怎么改",
+        "最近心情不太好",
+        "当前任务怎么取消",
+        "写一段关于新闻行业的文案",
+        "什么是新闻",
+    ),
+)
+def test_non_web_uses_of_time_words_stay_in_normal_chat(message):
+    assert should_run_async(message, "text", []) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
         "什么是搜索引擎",
         "研究是什么意思",
         "讲讲浏览器原理",

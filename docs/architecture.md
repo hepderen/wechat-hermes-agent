@@ -27,7 +27,8 @@
 - 监听 `127.0.0.1:8000`，入口为 `POST /api/chat`。
 - 使用 `X-Bridge-Token` 验证 Bridge，忽略正文中伪造的身份字段。
 - 根据房间白名单决定工具权限，按群或私聊隔离 Session 和记忆。
-- 普通问答走 Hermes Session Chat；执行请求持久化后进入单并发 Run Worker。
+- 普通问答走 Hermes Session Chat；显式搜索、时效事实和真假核实自动进入联网 Run，其他执行请求持久化后进入单并发 Run Worker。
+- Hermes 返回 `429/503` 等瞬时状态时，Adapter 按服务端 `Retry-After` 和有界指数退避重试，不连续撞击上游。
 - 管理任务代次、SSE 工具事件、Verifier、Artifact、Outbox、费用和资源限制。
 
 ### Hermes Worker

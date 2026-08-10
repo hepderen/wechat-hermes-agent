@@ -4,7 +4,7 @@ import re
 import urllib.parse
 from typing import Any
 
-from .intents import is_conceptual_question, is_explicit_research_request
+from .intents import is_conceptual_question, is_research_request
 from .security import redact_sensitive_text
 
 
@@ -112,7 +112,7 @@ def build_execution_plan(
     expected_artifacts = list(dict.fromkeys(expected_artifacts))
 
     capabilities: list[str] = []
-    if is_explicit_research_request(text) or (
+    if is_research_request(text) or (
         not conceptual and RESEARCH_RE.search(text)
     ):
         capabilities.append("research")

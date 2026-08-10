@@ -807,6 +807,45 @@ def test_api_routes_explicit_research_variants_to_runs(tmp_path, message):
 @pytest.mark.parametrize(
     "message",
     [
+        "今天有什么 AI 新闻",
+        "国务院最新人工智能政策",
+        "Python 当前最新版本是什么",
+        "这个消息是真的吗",
+        "What is the latest Python release?",
+    ],
+)
+def test_api_routes_time_sensitive_facts_to_research_without_search_verbs(
+    tmp_path,
+    message,
+):
+    runtime = make_runtime(tmp_path)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": message,
+                "request_id": "current-fact-" + hashlib.sha256(
+                    message.encode("utf-8")
+                ).hexdigest()[:12],
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 101,
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    task = runtime.store.list_tasks(ROOM_ID)[0]
+    assert task["kind"] == "run"
+    assert task["plan"]["task_type"] == "research"
+    assert task["plan"]["required_tools"] == ["research"]
+    assert runtime.hermes.chat_calls == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
         "什么是搜索引擎",
         "研究是什么意思",
         "讲讲浏览器原理",

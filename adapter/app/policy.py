@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .intents import is_conceptual_question, is_explicit_research_request
+from .intents import is_conceptual_question, is_research_request
 
 
 EXECUTION_RE = re.compile(
@@ -87,7 +87,7 @@ def should_run_async(
     if attachments or message_type not in {"", "text"}:
         return True
     text = str(message or "")
-    if is_explicit_research_request(text):
+    if is_research_request(text):
         return True
     if is_conceptual_question(text):
         return False

@@ -17,7 +17,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from .clients import ChatApiClient, HermesClient, RemoteAPIError
+from .clients import (
+    ChatApiClient,
+    HermesClient,
+    RemoteAPIError,
+    retry_delay_seconds,
+)
 from .config import Settings
 from .evidence import (
     build_execution_plan,
@@ -1939,6 +1944,20 @@ async def worker_loop(runtime: Runtime) -> None:
                             current = runtime.store.get_task(task["id"])
                             if current is not None:
                                 prepare_task_outbox(runtime, current)
+                        elif isinstance(exc, RemoteAPIError) and exc.retryable:
+                            current = runtime.store.get_task(task["id"])
+                            delay = retry_delay_seconds(
+                                exc,
+                                int((current or task).get("attempts") or 1),
+                            )
+                            log_event(
+                                "task_retry_backoff",
+                                task_id=task["id"],
+                                room_id=task["room_id"],
+                                status_code=exc.status_code,
+                                delay_seconds=delay,
+                            )
+                            await asyncio.sleep(delay)
             await asyncio.sleep(0.2)
             continue
 

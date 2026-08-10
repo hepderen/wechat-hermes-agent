@@ -92,6 +92,21 @@ def test_research_variants_and_url_actions_require_source_evidence():
         assert plan["max_tool_calls"] == 24
 
 
+def test_time_sensitive_questions_require_research_evidence_without_search_verbs():
+    for message in (
+        "今天有什么 AI 新闻",
+        "国务院最新人工智能政策",
+        "Python 当前最新版本是什么",
+        "这个消息是真的吗",
+        "What is the latest Python release?",
+    ):
+        plan = build_execution_plan(message)
+        assert plan["task_type"] == "research"
+        assert plan["required_tools"] == ["research"]
+        assert plan["requires_tool_evidence"] is True
+        assert "source_recorded" in plan["success_conditions"]
+
+
 def test_conceptual_execution_terms_do_not_create_tool_requirements():
     for message in (
         "什么是搜索引擎",

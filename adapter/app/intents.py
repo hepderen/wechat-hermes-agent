@@ -30,6 +30,40 @@ URL_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+FRESHNESS_RE = re.compile(
+    r"(?:最新|最近|近期|今天|今日|刚刚|刚才|现在|当前|目前|现行|实时|"
+    r"本周|这周|本月|这个月|今年|截至(?:今天|目前|现在)?|"
+    r"latest|recent|current(?:ly)?|today|right\s+now|"
+    r"this\s+(?:week|month|year))",
+    re.IGNORECASE,
+)
+
+TIME_SENSITIVE_FACT_RE = re.compile(
+    r"(?:新闻|消息|热点|热搜|快讯|动态|近况|进展|更新|版本|发布|"
+    r"公告|政策|法规|规定|价格|报价|现价|行情|汇率|股价|天气|"
+    r"比分|赛果|排名|榜单|票房|数据|统计|状态|故障|宕机|"
+    r"release(?:\s+notes?)?|news|headline|update|version|announcement|"
+    r"policy|regulation|price|quote|market|exchange\s+rate|stock|"
+    r"weather|score|ranking|box\s+office|status|outage)",
+    re.IGNORECASE,
+)
+
+INHERENTLY_LIVE_FACT_RE = re.compile(
+    r"(?:新闻(?!行业|专业|学|稿|文案)|热搜|快讯|实时|现价|行情|"
+    r"汇率|股价|天气|比分|赛果|"
+    r"票房|宕机|news|headlines?|weather|exchange\s+rate|stock\s+price|"
+    r"live\s+score|box\s+office|outage)",
+    re.IGNORECASE,
+)
+
+VERIFICATION_RE = re.compile(
+    r"(?:真假|真的假的|是真的吗|真吗|是否属实|属实吗|是不是真的|"
+    r"靠谱吗|可信吗|核实|查证|"
+    r"辟谣|事实核查|(?:来源|出处|依据)(?:呢|是|在|链接|有吗)|"
+    r"官方(?:怎么说|回应|消息)|verify|fact[-\s]?check|is\s+.+\s+true)",
+    re.IGNORECASE,
+)
+
 CONCEPTUAL_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请|please)\s*)?(?:"
     r"什么是|何为|.+?是什么意思|为什么|为何|"
@@ -59,8 +93,27 @@ def is_explicit_research_request(value: str) -> bool:
     return bool(URL_RE.search(text) and URL_ACTION_RE.search(text))
 
 
+def is_current_information_request(value: str) -> bool:
+    text = normalize_intent_text(value)
+    if not text:
+        return False
+    if VERIFICATION_RE.search(text):
+        return True
+    if FRESHNESS_RE.search(text) and TIME_SENSITIVE_FACT_RE.search(text):
+        return True
+    if CONCEPTUAL_QUESTION_RE.search(text):
+        return False
+    return bool(INHERENTLY_LIVE_FACT_RE.search(text))
+
+
+def is_research_request(value: str) -> bool:
+    return is_explicit_research_request(value) or is_current_information_request(
+        value
+    )
+
+
 def is_conceptual_question(value: str) -> bool:
     text = normalize_intent_text(value)
-    if not text or is_explicit_research_request(text):
+    if not text or is_research_request(text):
         return False
     return bool(CONCEPTUAL_QUESTION_RE.search(text))

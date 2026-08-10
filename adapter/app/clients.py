@@ -11,6 +11,9 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 
+RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
 class RemoteAPIError(RuntimeError):
     def __init__(
         self,
@@ -21,6 +24,7 @@ class RemoteAPIError(RuntimeError):
         delivery_uncertain: bool = False,
         pre_submission: bool = False,
         retryable: bool = False,
+        retry_after_seconds: float = 0,
     ):
         super().__init__(message)
         self.status_code = status_code
@@ -28,6 +32,7 @@ class RemoteAPIError(RuntimeError):
         self.delivery_uncertain = bool(delivery_uncertain)
         self.pre_submission = bool(pre_submission)
         self.retryable = bool(retryable)
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds or 0))
 
 
 def response_error(
@@ -36,12 +41,33 @@ def response_error(
     data: dict[str, Any] | None = None,
 ) -> RemoteAPIError:
     payload = data or {}
+    retryable = bool(payload.get("retryable")) or (
+        response.status_code in RETRYABLE_HTTP_STATUSES
+    )
+    retry_after = 0.0
+    headers = getattr(response, "headers", {}) or {}
+    try:
+        retry_after = min(
+            60.0,
+            max(0.0, float(headers.get("Retry-After") or 0)),
+        )
+    except (TypeError, ValueError):
+        retry_after = 0.0
     return RemoteAPIError(
         "remote API returned HTTP %s" % response.status_code,
         response.status_code,
         error_type=str(payload.get("error_type") or ""),
-        retryable=bool(payload.get("retryable")),
+        retryable=retryable,
+        retry_after_seconds=retry_after,
     )
+
+
+def retry_delay_seconds(error: RemoteAPIError, attempts: int) -> float:
+    if not error.retryable:
+        return 0.0
+    attempt = max(1, int(attempts))
+    exponential = min(30.0, 5.0 * (2 ** (attempt - 1)))
+    return min(60.0, max(exponential, error.retry_after_seconds))
 
 
 class HermesClient:

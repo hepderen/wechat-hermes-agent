@@ -10,12 +10,29 @@ from app.clients import ChatApiClient, HermesClient, RemoteAPIError
 
 
 class Response:
-    def __init__(self, status_code, payload):
+    def __init__(self, status_code, payload, headers=None):
         self.status_code = status_code
         self.payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self.payload
+
+
+def test_transient_http_errors_are_retryable_with_bounded_backoff():
+    error = clients.response_error(
+        Response(429, {}, {"Retry-After": "12"})
+    )
+    assert error.retryable is True
+    assert error.retry_after_seconds == 12
+    assert clients.retry_delay_seconds(error, 1) == 12
+    assert clients.retry_delay_seconds(error, 4) == 30
+
+
+def test_permanent_http_errors_do_not_trigger_backoff():
+    error = clients.response_error(Response(400, {}))
+    assert error.retryable is False
+    assert clients.retry_delay_seconds(error, 1) == 0
 
 
 def test_wait_run_publishes_sse_tool_events():
