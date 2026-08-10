@@ -919,6 +919,12 @@ def test_freshness_query_preserves_dates_and_expands_relative_time(
     assert provider_module._upstream_query(
         "August 11, 2026 artificial intelligence latest news"
     ) == "artificial intelligence latest news 2026-08-11"
+    assert provider_module.FRESHNESS_RE.search(
+        "artificial intelligence 2026-08-11"
+    )
+    assert provider_module.FRESHNESS_RE.search(
+        "人工智能 2026年8月11日"
+    )
 
 
 def test_query_terms_exclude_english_date_and_intent_words(provider_module):

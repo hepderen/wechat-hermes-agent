@@ -638,7 +638,9 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     assert "官方、一手资料和可信主流媒体" in captured_instructions[0]
     assert "研究日期为" in captured_instructions[0]
     assert "主体在前、ISO 日期放末尾" in captured_instructions[0]
-    assert "分别用中文和英文各搜索一次" in captured_instructions[0]
+    assert "中文主题 新闻 YYYY-MM-DD" in captured_instructions[0]
+    assert "English topic news YYYY-MM-DD" in captured_instructions[0]
+    assert "普通研究不得用 browser_* 继续搜索" in captured_instructions[0]
 
 
 def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(

@@ -106,7 +106,13 @@ DOMAIN_TOKEN_RE = re.compile(
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
 FRESHNESS_RE = re.compile(
     r"(?:\blatest\b|\bcurrent\b|\brecent\b|\btoday\b|\bnews\b|"
-    r"最新|最近|近期|今天|今日|当前|目前|新闻|热点|实时)",
+    r"最新|最近|近期|今天|今日|当前|目前|新闻|热点|实时|"
+    r"(?<!\d)(?:19|20)\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*"
+    r"(?:月|[-/.])\s*\d{1,2}\s*日?|"
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}"
+    r"(?:st|nd|rd|th)?(?:,|\s)+\s*(?:19|20)\d{2}\b)",
     re.IGNORECASE,
 )
 TODAY_QUERY_RE = re.compile(r"(?:今天|今日|\btoday(?:'s)?\b)", re.IGNORECASE)
