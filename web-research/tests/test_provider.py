@@ -89,6 +89,7 @@ def provider_module(monkeypatch):
     provider._circuit_open_until = 0.0
     provider._source_failures.clear()
     provider._source_open_until.clear()
+    module._trusted_feed_cache.clear()
     monkeypatch.setenv("WECHAT_WEB_SEARCH_URL", "http://127.0.0.1:8651")
     monkeypatch.setenv("WECHAT_WEB_BING_URL", "https://www.bing.com/search")
     monkeypatch.setenv(
@@ -97,6 +98,7 @@ def provider_module(monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_BING_NEWS_RSS_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_TRUSTED_FEEDS_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_SEARX_MERGE_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_SEARCH_CACHE_DB", "disabled")
@@ -145,10 +147,10 @@ def test_search_filters_private_and_duplicate_results_and_caches(
             request=request,
             json={
                 "results": [
-                    {"title": " One ", "url": "https://one.example/a#fragment", "content": " A result "},
+                    {"title": " Current facts one ", "url": "https://one.example/a#fragment", "content": " A result "},
                     {"title": "Duplicate", "url": "https://one.example/a", "content": "duplicate"},
                     {"title": "Private", "url": "http://127.0.0.1/admin", "content": "no"},
-                    {"title": "Two", "url": "https://two.example/", "content": "second"},
+                    {"title": "Current facts two", "url": "https://two.example/", "content": "second"},
                 ]
             },
         )
@@ -165,7 +167,7 @@ def test_search_filters_private_and_duplicate_results_and_caches(
         "https://one.example/a",
         "https://two.example/",
     ]
-    assert first["data"]["web"][0]["title"] == "One"
+    assert first["data"]["web"][0]["title"] == "Current facts one"
 
 
 def test_persistent_cache_survives_memory_reset_without_storing_query(
@@ -315,6 +317,90 @@ def test_bing_rss_is_primary_and_does_not_call_searx(provider_module, monkeypatc
     assert result["data"]["web"][0]["description"] == "Useful description 1"
 
 
+def test_trusted_feed_parser_supports_rss_and_atom(provider_module):
+    rss_request = httpx.Request(
+        "GET",
+        "https://techcrunch.com/feed/",
+    )
+    rss = httpx.Response(
+        200,
+        request=rss_request,
+        headers={"content-type": "application/rss+xml"},
+        content=b"""<?xml version="1.0"?><rss><channel><item>
+        <title>AI launch</title><link>https://publisher.example/ai</link>
+        <description>Official &lt;b&gt;model&lt;/b&gt; news</description>
+        <pubDate>Mon, 10 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>""",
+    )
+    atom_request = httpx.Request(
+        "GET",
+        "https://www.theverge.com/rss/index.xml",
+    )
+    atom = httpx.Response(
+        200,
+        request=atom_request,
+        headers={"content-type": "application/atom+xml"},
+        content=b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+        <entry><title>AI policy &amp;#8217; update</title><link href="https://publisher.example/policy" />
+        <summary>Policy details</summary><updated>2026-08-10T09:00:00Z</updated></entry>
+        </feed>""",
+    )
+
+    rss_rows = provider_module._trusted_feed_results_from_response(
+        rss,
+        "techcrunch",
+        100_000,
+    )
+    atom_rows = provider_module._trusted_feed_results_from_response(
+        atom,
+        "the-verge",
+        100_000,
+    )
+
+    assert rss_rows[0]["content"] == "Official model news"
+    assert rss_rows[0]["published_at"].startswith("Mon, 10 Aug 2026")
+    assert atom_rows[0]["url"] == "https://publisher.example/policy"
+    assert atom_rows[0]["title"] == "AI policy \u2019 update"
+    assert atom_rows[0]["source"] == "the-verge"
+
+
+def test_freshness_search_merges_relevant_trusted_feed(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_TRUSTED_FEEDS_ENABLED", "true")
+    monkeypatch.setattr(
+        provider_module,
+        "TRUSTED_FEED_ENDPOINTS",
+        (("the-verge", "https://www.theverge.com/rss/index.xml"),),
+    )
+    calls = []
+    atom = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+    <entry><title>AI model launch</title><link href="https://publisher.example/ai" />
+    <summary>Artificial intelligence news</summary>
+    <updated>2026-08-10T09:00:00Z</updated></entry></feed>"""
+
+    def handler(request):
+        calls.append(request.url.host)
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/atom+xml"},
+            content=atom,
+        )
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
+    result = provider_module.WechatCloudWebProvider().search(
+        "AI news 2026-08-11",
+        1,
+    )
+
+    assert result["success"] is True
+    assert calls == ["www.theverge.com"]
+    assert result["data"]["web"][0]["url"] == "https://publisher.example/ai"
+    assert result["data"]["web"][0]["source"] == "the-verge"
+
+
 def test_bing_html_is_primary_and_parses_result_cards(provider_module, monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
     monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "true")
@@ -354,12 +440,12 @@ def test_freshness_search_prioritizes_bing_news_sources(provider_module, monkeyp
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
     monkeypatch.setenv("WECHAT_WEB_BING_NEWS_RSS_ENABLED", "true")
     html = b"""
-    <li class="b_algo"><h2><a href="https://web-one.example/">Web one</a></h2></li>
-    <li class="b_algo"><h2><a href="https://web-two.example/">Web two</a></h2></li>
+      <li class="b_algo"><h2><a href="https://web-one.example/">AI web one</a></h2></li>
+      <li class="b_algo"><h2><a href="https://web-two.example/">AI web two</a></h2></li>
     """
     rss = b"""<?xml version="1.0"?><rss><channel>
-    <item><title>News one</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fnews-one.example%2Fstory</link><description>One</description></item>
-    <item><title>News two</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fnews-two.example%2Fstory</link><description>Two</description></item>
+    <item><title>AI news one</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fnews-one.example%2Fstory</link><description>One</description></item>
+    <item><title>AI news two</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fnews-two.example%2Fstory</link><description>Two</description></item>
     </channel></rss>"""
     calls = []
 
@@ -392,14 +478,14 @@ def test_freshness_search_keeps_news_ahead_of_regional_results(
     html = b"".join(
         (
             '<li class="b_algo"><h2><a href="https://web-%d.example/">'
-            "Web %d</a></h2></li>" % (index, index)
+            "AI web %d</a></h2></li>" % (index, index)
         ).encode()
         for index in range(1, 5)
     )
     rss = (
         '<?xml version="1.0"?><rss><channel>'
         + "".join(
-            "<item><title>News %d</title><link>"
+            "<item><title>AI news %d</title><link>"
             "http://www.bing.com/news/apiclick.aspx?url="
             "https%%3A%%2F%%2Fnews-%d.example%%2Fstory"
             "</link><description>Relevant news</description></item>" % (index, index)
@@ -416,7 +502,7 @@ def test_freshness_search_keeps_news_ahead_of_regional_results(
                 json={
                     "results": [
                         {
-                            "title": "Regional %d" % index,
+                            "title": "AI regional %d" % index,
                             "url": "https://regional-%d.example/" % index,
                             "content": "Regional result",
                         }
@@ -790,12 +876,271 @@ def test_english_merge_keeps_two_global_results_per_domestic_result(provider_mod
     assert [item["url"] for item in merged] == ["p0", "p1", "s0", "p2", "p3", "s1"]
 
 
-def test_current_year_is_removed_only_for_freshness_queries(provider_module):
+def test_freshness_query_preserves_dates_and_expands_relative_time(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 11),
+    )
     year = str(provider_module.time.gmtime().tm_year)
-    assert provider_module._upstream_query(year + " AI latest news") == "AI latest news"
-    assert provider_module._upstream_query(year + " 人工智能最新新闻") == "人工智能最新新闻"
+    assert provider_module._upstream_query(year + " AI latest news") == (
+        year + " AI latest news"
+    )
+    assert provider_module._upstream_query(year + " 人工智能最新新闻") == (
+        year + " 人工智能最新新闻"
+    )
+    assert provider_module._upstream_query(
+        year + "年8月11日 人工智能 最新新闻"
+    ) == ("人工智能 最新新闻 " + year + "-08-11")
     assert provider_module._upstream_query(year + " annual report") == year + " annual report"
     assert provider_module._upstream_query("2024 AI latest news") == "2024 AI latest news"
+    assert provider_module._upstream_query("今天国内外大模型重要消息") == (
+        "人工智能 大模型 新闻 2026-08-11"
+    )
+    assert provider_module._upstream_query("AI latest news") == (
+        "AI latest news 2026"
+    )
+    assert provider_module._upstream_query(
+        "August 11, 2026 artificial intelligence latest news"
+    ) == "artificial intelligence latest news 2026-08-11"
+
+
+def test_query_terms_exclude_english_date_and_intent_words(provider_module):
+    terms = provider_module._query_relevance_terms(
+        "August 11, 2026 global artificial intelligence latest news"
+    )
+
+    assert "august" not in terms
+    assert "global" not in terms
+    assert "latest" not in terms
+    assert "artificial" in terms
+    assert "intelligence" in terms
+    global_terms = provider_module._query_relevance_terms("全球化最新趋势")
+    assert "全球化" in global_terms
+    assert "趋势" in global_terms
+
+
+def test_freshness_ranking_drops_zero_relevance_dictionary_results(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "2026年8月11日 人工智能 最新新闻",
+        [
+            {
+                "title": "年（汉语文字）",
+                "url": "https://baike.baidu.com/item/year",
+                "description": "年的解释",
+            },
+            {
+                "title": "人工智能产业发布最新模型",
+                "url": "https://news.example/ai-model",
+                "description": "2026年8月11日人工智能动态",
+            },
+            {
+                "title": "旅行清单",
+                "url": "https://travel.example/list",
+                "description": "今日旅行推荐",
+            },
+        ],
+    )
+    assert [item["url"] for item in ranked] == [
+        "https://news.example/ai-model"
+    ]
+
+
+def test_official_ranking_prefers_exact_entity_domain(provider_module):
+    ranked = provider_module._rank_search_results(
+        "Python latest official release",
+        [
+            {
+                "title": "Learn Python",
+                "url": "https://www.learnpython.org/",
+                "description": "Python tutorial",
+            },
+            {
+                "title": "Python 3.14 release",
+                "url": "https://www.python.org/downloads/",
+                "description": "Official Python release",
+            },
+        ],
+    )
+    assert ranked[0]["url"] == "https://www.python.org/downloads/"
+
+
+def test_freshness_ranking_prefers_authoritative_news_source(provider_module):
+    ranked = provider_module._rank_search_results(
+        "2026 artificial intelligence latest news",
+        [
+            {
+                "title": "Artificial intelligence model update",
+                "url": "https://seo-blog.example/ai",
+                "description": "2026 AI news",
+            },
+            {
+                "title": "Artificial intelligence model update",
+                "url": "https://www.reuters.com/technology/ai/",
+                "description": "2026 AI news",
+            },
+        ],
+    )
+    assert ranked[0]["url"].startswith("https://www.reuters.com/")
+
+
+def test_freshness_ranking_suppresses_stale_and_description_only_hits(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 11),
+    )
+    ranked = provider_module._rank_search_results(
+        "today AI news",
+        [
+            {
+                "title": "AI product news in 2024",
+                "url": "https://old.example/ai",
+                "description": "2024 artificial intelligence report",
+            },
+            {
+                "title": "August holidays and observances",
+                "url": "https://calendar.example/august",
+                "description": "One AI event is listed in the calendar",
+            },
+            {
+                "title": "AI model launch in 2026",
+                "url": "https://current.example/ai",
+                "description": "2 days ago artificial intelligence update",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://current.example/ai"
+    ]
+
+
+def test_short_ai_term_uses_word_boundaries(provider_module):
+    assert provider_module._contains_term("daily calendar", "ai") is False
+    assert provider_module._contains_term("daily AI update", "ai") is True
+    assert provider_module._technology_feed_query(
+        "artificial intelligence latest news"
+    )
+
+
+def test_freshness_ranking_excludes_reference_sites_and_deduplicates_hosts(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "latest artificial intelligence news",
+        [
+            {
+                "title": "Artificial intelligence definition updated in 2026",
+                "url": "https://www.britannica.com/technology/artificial-intelligence",
+                "description": "Artificial intelligence reference article",
+            },
+            {
+                "title": "Artificial intelligence model launch",
+                "url": "https://news.example/one",
+                "description": "AI news report",
+            },
+            {
+                "title": "Artificial intelligence follow-up",
+                "url": "https://news.example/two",
+                "description": "AI news report",
+            },
+            {
+                "title": "Artificial intelligence policy update",
+                "url": "https://other.example/ai",
+                "description": "AI news report",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://news.example/one",
+        "https://other.example/ai",
+    ]
+
+
+def test_freshness_ranking_prefers_more_recent_publication(provider_module):
+    ranked = provider_module._rank_search_results(
+        "artificial intelligence news 2026-08-11",
+        [
+            {
+                "title": "Artificial intelligence weekly update",
+                "url": "https://older.example/ai",
+                "description": "AI news",
+                "published_at": "Tue, 04 Aug 2026 13:00:00 GMT",
+            },
+            {
+                "title": "Artificial intelligence model update",
+                "url": "https://recent.example/ai",
+                "description": "AI news",
+                "published_at": "Mon, 10 Aug 2026 13:00:00 GMT",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"] == "https://recent.example/ai"
+
+
+def test_rss_publication_date_satisfies_strict_freshness(provider_module):
+    assert provider_module._has_strict_freshness_evidence(
+        "AI news 2026-08-11",
+        "AI model launch",
+        "Official announcement",
+        "Mon, 10 Aug 2026 09:30:00 GMT",
+    )
+    assert not provider_module._has_strict_freshness_evidence(
+        "AI news 2026-08-11",
+        "AI model overview",
+        "Undated background article",
+        "",
+    )
+
+
+def test_live_freshness_search_keeps_date_and_filters_irrelevant_cards(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
+    monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_BING_NEWS_RSS_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_SEARX_MERGE_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED", "false")
+    html = b"""
+    <li class="b_algo"><h2><a href="https://baike.baidu.com/item/year">Year</a></h2>
+      <div class="b_caption"><p>Dictionary entry.</p></div></li>
+    <li class="b_algo"><h2><a href="https://travel.example/">Travel</a></h2>
+      <div class="b_caption"><p>Today travel list.</p></div></li>
+    <li class="b_algo"><h2><a href="https://news.example/ai">AI model update</a></h2>
+      <div class="b_caption"><p>2026-08-10 artificial intelligence news.</p></div></li>
+    """
+
+    def handler(request):
+        assert "2026" in request.url.params["q"]
+        assert request.url.params["count"] == "15"
+        return httpx.Response(200, request=request, content=html)
+
+    monkeypatch.setattr(
+        provider_module.httpx,
+        "Client",
+        _sync_client_factory(handler),
+    )
+    result = provider_module.WechatCloudWebProvider().search(
+        "2026年8月11日 人工智能 最新新闻",
+        3,
+    )
+
+    assert result["success"] is True
+    assert [item["url"] for item in result["data"]["web"]] == [
+        "https://news.example/ai"
+    ]
 
 
 def test_bing_tracking_url_is_unwrapped_before_public_safety_check(provider_module):

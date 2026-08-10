@@ -15,6 +15,14 @@ endpoint or requiring a third-party API key.
   Search, and Baidu when the global route has too few useful results. Each
   domestic source has an independent circuit breaker, so a CAPTCHA on one
   source does not disable the others.
+- AI and technology freshness searches also read a fixed allowlist of official
+  and established international RSS/Atom feeds. Feed responses are fetched in
+  parallel, cached independently of the user query, size checked, and re-ranked
+  together with domestic results; no query text is sent to feed publishers.
+- Relative dates are normalized in the configured timezone with the subject
+  kept ahead of the date. Freshness ranking requires a real subject match,
+  rejects dictionaries and stale cards, scores publication dates by day, and
+  returns at most one result per host.
 - Successful searches are cached by query hash in memory and in a private
   SQLite database. Fresh entries survive gateway restarts; expired entries may
   be used for up to 24 hours only when every live upstream fails. Query text is

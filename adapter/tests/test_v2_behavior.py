@@ -591,7 +591,7 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
         "搜索今天的国内外 AI 新闻并给出来源",
     )
     claimed = runtime.store.claim_next()
-    assert claimed["plan"]["max_tool_calls"] == 24
+    assert claimed["plan"]["max_tool_calls"] == 12
     captured_instructions = []
 
     async def session_history(_session_id):
@@ -631,11 +631,14 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
 
     stored = runtime.store.get_task(task["id"])
     assert stored["status"] == "failed"
-    assert "上限 24" in stored["error"]
+    assert "上限 12" in stored["error"]
     assert runtime.hermes.stop_calls == ["run-research-tool-limit"]
-    assert "3-6 次搜索" in captured_instructions[0]
-    assert "1-3 个结果" in captured_instructions[0]
-    assert "国内外独立来源" in captured_instructions[0]
+    assert "web_search 4 次" in captured_instructions[0]
+    assert "web_extract 3 次" in captured_instructions[0]
+    assert "官方、一手资料和可信主流媒体" in captured_instructions[0]
+    assert "研究日期为" in captured_instructions[0]
+    assert "主体在前、ISO 日期放末尾" in captured_instructions[0]
+    assert "分别用中文和英文各搜索一次" in captured_instructions[0]
 
 
 def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(

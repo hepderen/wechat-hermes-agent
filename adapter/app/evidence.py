@@ -75,7 +75,7 @@ BROWSER_TOOLS = frozenset(
         "browser_dialog",
     }
 )
-RESEARCH_MAX_TOOL_CALLS = 24
+RESEARCH_MAX_TOOL_CALLS = 12
 
 
 def _attachment_types(attachments: list[dict[str, Any]]) -> set[str]:

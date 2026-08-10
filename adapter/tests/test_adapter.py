@@ -800,7 +800,7 @@ def test_api_routes_explicit_research_variants_to_runs(tmp_path, message):
     task = runtime.store.list_tasks(ROOM_ID)[0]
     assert task["kind"] == "run"
     assert task["plan"]["task_type"] == "research"
-    assert task["plan"]["max_tool_calls"] == 24
+    assert task["plan"]["max_tool_calls"] == 12
     assert runtime.hermes.chat_calls == []
 
 

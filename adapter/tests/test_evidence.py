@@ -69,7 +69,7 @@ def test_colloquial_social_search_requires_research_evidence():
     assert plan["required_tools"] == ["research"]
     assert plan["requires_tool_evidence"] is True
     assert "source_recorded" in plan["success_conditions"]
-    assert plan["max_tool_calls"] == 24
+    assert plan["max_tool_calls"] == 12
 
 
 def test_research_variants_and_url_actions_require_source_evidence():
@@ -89,7 +89,7 @@ def test_research_variants_and_url_actions_require_source_evidence():
         assert plan["task_type"] == "research"
         assert plan["required_tools"] == ["research"]
         assert plan["requires_tool_evidence"] is True
-        assert plan["max_tool_calls"] == 24
+        assert plan["max_tool_calls"] == 12
 
 
 def test_time_sensitive_questions_require_research_evidence_without_search_verbs():
@@ -136,7 +136,7 @@ def test_plan_tool_limit_never_weakens_global_limit():
     research = build_execution_plan("搜索今天的 AI 新闻")
     command = build_execution_plan("运行服务器命令")
 
-    assert effective_tool_call_limit(research, 80) == 24
+    assert effective_tool_call_limit(research, 80) == 12
     assert effective_tool_call_limit(research, 10) == 10
     assert effective_tool_call_limit(command, 80) == 80
     assert effective_tool_call_limit({"max_tool_calls": "invalid"}, 17) == 17

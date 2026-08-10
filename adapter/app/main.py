@@ -10,8 +10,10 @@ import time
 import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -1607,11 +1609,20 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         settings.max_tool_calls,
     )
     if "research" in set((task.get("plan") or {}).get("capabilities") or []):
+        research_date = datetime.now(
+            ZoneInfo(settings.budget_timezone)
+        ).date().isoformat()
         system_message += (
-            "\n研究任务资源规则：通常使用 3-6 次搜索覆盖国内外独立来源，"
-            "再对最相关的 1-3 个结果提取正文；证据足够后立即停止检索并作答。"
-            "本任务工具调用硬上限为 %d 次，不得为了凑数量重复搜索。"
-            % tool_call_limit
+            "\n研究日期为 %s（%s）。搜索词必须保留问题主体，不能只搜索年份、"
+            "‘最新’或‘新闻’等泛词。使用短关键词，主体在前、ISO 日期放末尾；"
+            "不要把多个无关主题、媒体名和一串实体塞进同一条查询。涉及国内外动态时，"
+            "先分别用中文和英文各搜索一次；只有证据缺口明确时才换角度补搜，不得重复"
+            "同义查询。优先官方、一手资料和可信主流媒体，"
+            "聚合站、百科、论坛和 SEO 页面仅作线索。最多调用 web_search 4 次、"
+            "web_extract 3 次；拿到 2-4 个高相关独立来源后立即作答。最终先给结论，"
+            "再给必要事实和来源链接，明确日期与不确定项，不堆搜索过程。"
+            "本任务全部工具调用硬上限为 %d 次。"
+            % (research_date, settings.budget_timezone, tool_call_limit)
         )
 
     run_id = task.get("hermes_run_id")
@@ -1653,7 +1664,10 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         finish("failed", error="任务超过最大执行时长")
         return
 
+    tool_limit_stop_requested = False
+
     async def record_event(raw_event: dict[str, Any]) -> None:
+        nonlocal tool_limit_stop_requested
         event = normalize_run_event(raw_event)
         if event is None:
             return
@@ -1666,7 +1680,8 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         )
         if inserted and event["event_type"] == "tool.started":
             count = runtime.store.tool_call_count(task["id"], generation)
-            if count > tool_call_limit:
+            if count > tool_call_limit and not tool_limit_stop_requested:
+                tool_limit_stop_requested = True
                 runtime.store.set_resource_error(
                     task["id"],
                     "任务超过最大工具调用次数（上限 %d）" % tool_call_limit,

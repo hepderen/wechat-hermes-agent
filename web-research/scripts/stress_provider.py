@@ -33,8 +33,13 @@ CASES = (
     ("gov-cn", "中国政府网 国务院 最新政策", ("gov.cn",), "domestic"),
     ("tencent-cloud", "腾讯云 官方文档", ("cloud.tencent.com",), "domestic"),
     ("aliyun", "阿里云 官方文档", ("aliyun.com",), "domestic"),
-    ("current-ai-cn", "2026 人工智能 最新新闻", (), "domestic-news"),
-    ("current-ai-en", "2026 artificial intelligence latest news", (), "international-news"),
+    ("current-ai-cn", "{year} 人工智能 最新新闻", (), "domestic-news"),
+    (
+        "current-ai-en",
+        "{year} artificial intelligence latest news",
+        (),
+        "international-news",
+    ),
     (
         "explicit-domain",
         "Read platform.openai.com/docs before answering",
@@ -72,7 +77,9 @@ async def run(args) -> dict:
     durations = []
     case_results = []
     official_hits = {"domestic": 0, "international": 0, "direct": 0}
-    for label, query, expected, channel in CASES:
+    current_year = time.gmtime().tm_year
+    for label, query_template, expected, channel in CASES:
+        query = query_template.format(year=current_year)
         started = time.monotonic()
         first = provider.search(query, 8)
         first_duration = time.monotonic() - started
@@ -84,10 +91,20 @@ async def run(args) -> dict:
             raise RuntimeError("search reliability failed for case %s" % label)
         rows = first.get("data", {}).get("web", [])
         hosts = sorted({urlsplit(str(item.get("url") or "")).hostname or "" for item in rows})
-        if len(rows) < 5 or (not expected and len(hosts) < 3):
+        minimum_rows = 4 if channel.endswith("news") else 1
+        minimum_hosts = 3 if channel.endswith("news") else 1
+        if len(rows) < minimum_rows or len(hosts) < minimum_hosts:
             raise RuntimeError(
-                "search diversity failed case=%s channel=%s rows=%d hosts=%s"
-                % (label, channel, len(rows), ",".join(hosts))
+                "search diversity failed case=%s channel=%s rows=%d/%d hosts=%d/%d values=%s"
+                % (
+                    label,
+                    channel,
+                    len(rows),
+                    minimum_rows,
+                    len(hosts),
+                    minimum_hosts,
+                    ",".join(hosts),
+                )
             )
         matched = not expected or any(host_matches(host, expected) for host in hosts)
         relevant_top_five = sum(

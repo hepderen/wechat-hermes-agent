@@ -15,9 +15,14 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
+from email.utils import parsedate_to_datetime
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -33,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "2"
+SEARCH_CACHE_VERSION = "5"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -56,6 +61,31 @@ DOMESTIC_SEARCH_ENDPOINTS = (
     ("baidu-mobile", "https://m.baidu.com/s", "word"),
 )
 DOMESTIC_SEARCH_HOSTS = frozenset({"m.sogou.com", "m.so.com", "m.baidu.com"})
+TRUSTED_FEED_ENDPOINTS = (
+    ("the-verge", "https://www.theverge.com/rss/index.xml"),
+    ("techcrunch", "https://techcrunch.com/feed/"),
+    ("ars-technica", "https://feeds.arstechnica.com/arstechnica/technology-lab"),
+    ("openai", "https://openai.com/news/rss.xml"),
+    ("google-ai", "https://blog.google/technology/ai/rss/"),
+    (
+        "nvidia-ai",
+        "https://blogs.nvidia.com/blog/category/generative-ai/feed/",
+    ),
+)
+TRUSTED_FEED_HOSTS = frozenset(
+    (urlsplit(endpoint).hostname or "").lower()
+    for _name, endpoint in TRUSTED_FEED_ENDPOINTS
+)
+TRUSTED_FEED_CONTENT_TYPES = frozenset(
+    {
+        "application/atom+xml",
+        "application/rss+xml",
+        "application/xml",
+        "text/xml",
+    }
+)
+_trusted_feed_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_trusted_feed_cache_lock = threading.Lock()
 SEARCH_CHALLENGE_MARKERS = (
     "captcha",
     "punish",
@@ -75,8 +105,78 @@ DOMAIN_TOKEN_RE = re.compile(
 )
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
 FRESHNESS_RE = re.compile(
-    r"(?:\blatest\b|\bcurrent\b|\bnews\b|最新|新闻|近期|今日)",
+    r"(?:\blatest\b|\bcurrent\b|\brecent\b|\btoday\b|\bnews\b|"
+    r"最新|最近|近期|今天|今日|当前|目前|新闻|热点|实时)",
     re.IGNORECASE,
+)
+TODAY_QUERY_RE = re.compile(r"(?:今天|今日|\btoday(?:'s)?\b)", re.IGNORECASE)
+YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+ENGLISH_TEMPORAL_TERMS_RE = re.compile(
+    r"\b(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|"
+    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?|jan(?:uary)?|feb(?:ruary)?|"
+    r"mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b",
+    re.IGNORECASE,
+)
+QUALITY_RANKING_RE = re.compile(
+    r"(?:官方|官网|文档|政策|公告|来源|"
+    r"\bofficial\b|\bdocumentation\b|\bdocs?\b|\bpolicy\b|\bsources?\b)",
+    re.IGNORECASE,
+)
+GENERIC_QUERY_TERMS_RE = re.compile(
+    r"(?:最新|最近|近期|今天|今日|当前|目前|新闻|消息|热点|实时|更新|"
+    r"版本|发布|公告|政策|价格|天气|官方|官网|文档|资料|来源|"
+    r"是什么|有哪些|有什么|重要|重大|国内外|"
+    r"搜索|搜一下|搜一搜|查找|查询|查查|看看|请|帮我|帮忙|给出|"
+    r"\blatest\b|\brecent\b|\bcurrent\b|\btoday\b|\bnews\b|"
+    r"\bupdate\b|\bversion\b|\brelease\b|\bofficial\b|"
+    r"\bdocumentation\b|\bdocs?\b|\bpolicy\b|\bprice\b|"
+    r"\bweather\b|\bsources?\b|\bwhat\b|\bwhich\b|\bthe\b|"
+    r"\bis\b|\bare\b|\bplease\b|\bcite\b|\bimportant\b|\bmajor\b|"
+    r"\bglobal\b|\binternational\b|\bdomestic\b|\bworldwide\b|"
+    r"\bsearch\b|\bfind\b|\blook\s+up\b)",
+    re.IGNORECASE,
+)
+REFERENCE_FRESH_HOST_SUFFIXES = (
+    "baike.baidu.com",
+    "zhidao.baidu.com",
+    "baike.com",
+    "wikipedia.org",
+    "britannica.com",
+    "merriam-webster.com",
+    "dictionary.cambridge.org",
+    "dictionary.com",
+    "imdb.com",
+    "edurank.org",
+)
+LOW_VALUE_FRESH_HOST_SUFFIXES = (
+    "csdn.net",
+    "cnblogs.com",
+    "toutiao.com",
+    "bilibili.com",
+)
+AUTHORITATIVE_HOST_SUFFIXES = (
+    "gov.cn",
+    "apnews.com",
+    "reuters.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "bloomberg.com",
+    "ft.com",
+    "theverge.com",
+    "techcrunch.com",
+    "arstechnica.com",
+    "wired.com",
+    "openai.com",
+    "anthropic.com",
+    "blog.google",
+    "microsoft.com",
+    "research.meta.ai",
+    "nvidia.com",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinanews.com.cn",
 )
 BLOCK_TAGS = frozenset(
     {
@@ -436,14 +536,191 @@ def _bing_rss_results(response: httpx.Response) -> List[Dict[str, Any]]:
     root = ET.fromstring(response.content)
     results: List[Dict[str, Any]] = []
     for item in root.findall(".//item"):
-        results.append(
-            {
-                "title": item.findtext("title") or "",
-                "url": item.findtext("link") or "",
-                "content": _strip_html_fragment(item.findtext("description") or ""),
-            }
-        )
+        result = {
+            "title": item.findtext("title") or "",
+            "url": item.findtext("link") or "",
+            "content": _strip_html_fragment(item.findtext("description") or ""),
+        }
+        published_at = _clean_text(item.findtext("pubDate"), 200)
+        if published_at:
+            result["published_at"] = published_at
+        results.append(result)
     return results
+
+
+def _trusted_feed_redirect_guard(response: httpx.Response) -> None:
+    target = redirect_target_from_response(response)
+    if not target:
+        return
+    parsed_target = urlsplit(target)
+    if (
+        parsed_target.scheme.lower() != "https"
+        or (parsed_target.hostname or "").lower() not in TRUSTED_FEED_HOSTS
+    ):
+        raise _BlockedFetch("Trusted feed redirect target was rejected")
+
+
+def _trusted_feed_results_from_response(
+    response: httpx.Response,
+    source_name: str,
+    max_response: int,
+) -> List[Dict[str, Any]]:
+    parsed_url = urlsplit(str(response.url))
+    if (
+        parsed_url.scheme.lower() != "https"
+        or (parsed_url.hostname or "").lower() not in TRUSTED_FEED_HOSTS
+    ):
+        raise _BlockedFetch("Trusted feed final URL was rejected")
+    if response.status_code in RETRYABLE_STATUS:
+        raise httpx.HTTPStatusError(
+            "retryable trusted feed response",
+            request=response.request,
+            response=response,
+        )
+    response.raise_for_status()
+    if len(response.content) > max_response:
+        raise _ResponseTooLarge("Trusted feed response exceeded configured limit")
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type and content_type not in TRUSTED_FEED_CONTENT_TYPES:
+        raise _BlockedFetch("Trusted feed returned an unsupported content type")
+
+    root = ET.fromstring(response.content)
+    rows: List[Dict[str, Any]] = []
+    for item in root.findall(".//item"):
+        row = {
+            "title": _clean_text(unescape(item.findtext("title") or ""), 500),
+            "url": _clean_text(item.findtext("link"), 4096),
+            "content": _strip_html_fragment(item.findtext("description") or ""),
+            "source": source_name,
+        }
+        published_at = _clean_text(item.findtext("pubDate"), 200)
+        if published_at:
+            row["published_at"] = published_at
+        rows.append(row)
+        if len(rows) >= 40:
+            return rows
+
+    for entry in root.findall(".//{*}entry"):
+        link = ""
+        for candidate in entry.findall("{*}link"):
+            if candidate.get("rel", "alternate") in {"", "alternate"}:
+                link = candidate.get("href", "")
+                if link:
+                    break
+        row = {
+            "title": _clean_text(
+                unescape(entry.findtext("{*}title") or ""),
+                500,
+            ),
+            "url": _clean_text(link, 4096),
+            "content": _strip_html_fragment(
+                entry.findtext("{*}summary")
+                or entry.findtext("{*}content")
+                or ""
+            ),
+            "source": source_name,
+        }
+        published_at = _clean_text(
+            entry.findtext("{*}published") or entry.findtext("{*}updated"),
+            200,
+        )
+        if published_at:
+            row["published_at"] = published_at
+        rows.append(row)
+        if len(rows) >= 40:
+            break
+    return rows
+
+
+def _fetch_trusted_feed(
+    source_name: str,
+    endpoint: str,
+    timeout: float,
+    max_response: int,
+) -> List[Dict[str, Any]]:
+    now = time.monotonic()
+    with _trusted_feed_cache_lock:
+        cached = _trusted_feed_cache.get(endpoint)
+        if cached is not None and now < cached[0]:
+            return copy.deepcopy(cached[1])
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        max_redirects=2,
+        trust_env=False,
+        event_hooks={"response": [_trusted_feed_redirect_guard]},
+        headers={
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml",
+            "User-Agent": USER_AGENT,
+        },
+    ) as client:
+        response = client.get(endpoint)
+    rows = _trusted_feed_results_from_response(response, source_name, max_response)
+    cache_seconds = _env_int("WECHAT_WEB_TRUSTED_FEED_CACHE_SECONDS", 120, 30, 900)
+    with _trusted_feed_cache_lock:
+        _trusted_feed_cache[endpoint] = (
+            time.monotonic() + cache_seconds,
+            copy.deepcopy(rows),
+        )
+    return rows
+
+
+def _technology_feed_query(query: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:人工智能|大模型|科技|技术|\bartificial\s+intelligence\b|"
+            r"\bai\b|\bllms?\b|\bopenai\b|"
+            r"\banthropic\b|\bdeepmind\b|\bdeepseek\b|\bnvidia\b|"
+            r"\btechnology\b|\btech\b)",
+            query,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _trusted_feed_results(
+    query: str,
+    max_response: int,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    if (
+        not _env_bool("WECHAT_WEB_TRUSTED_FEEDS_ENABLED", False)
+        or not FRESHNESS_RE.search(query)
+        or not _technology_feed_query(query)
+    ):
+        return [], []
+    timeout = _env_float("WECHAT_WEB_TRUSTED_FEED_TIMEOUT_SECONDS", 6.0, 2.0, 15.0)
+    workers = _env_int(
+        "WECHAT_WEB_TRUSTED_FEED_WORKERS",
+        6,
+        1,
+        len(TRUSTED_FEED_ENDPOINTS),
+    )
+    ranked_sources: List[List[Dict[str, Any]]] = []
+    errors: List[str] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(
+                _fetch_trusted_feed,
+                source_name,
+                endpoint,
+                timeout,
+                max_response,
+            )
+            for source_name, endpoint in TRUSTED_FEED_ENDPOINTS
+        ]
+        for (source_name, _endpoint), future in zip(TRUSTED_FEED_ENDPOINTS, futures):
+            try:
+                ranked_sources.append(
+                    _rank_search_results(query, future.result())[:4]
+                )
+            except Exception as exc:  # noqa: BLE001 - independent fixed feed
+                errors.append("%s:%s" % (source_name, type(exc).__name__))
+    merged: List[Dict[str, Any]] = []
+    for index in range(4):
+        for rows in ranked_sources:
+            if index < len(rows):
+                merged.append(rows[index])
+    return merged, errors
 
 
 def _bing_html_results(response: httpx.Response) -> List[Dict[str, Any]]:
@@ -718,16 +995,461 @@ def _bing_market_params(query: str) -> Dict[str, str]:
     }
 
 
-def _upstream_query(query: str) -> str:
-    current_year = str(time.gmtime().tm_year)
-    if FRESHNESS_RE.search(query) and re.search(
-        r"(?<!\d)" + re.escape(current_year) + r"(?!\d)", query
-    ):
-        rewritten = re.sub(
-            r"(?<!\d)" + re.escape(current_year) + r"(?!\d)", " ", query
+def _current_search_date() -> date:
+    timezone_name = os.getenv("WECHAT_WEB_TIMEZONE", "Asia/Shanghai").strip()
+    try:
+        timezone = ZoneInfo(timezone_name or "Asia/Shanghai")
+    except (ValueError, ZoneInfoNotFoundError):
+        timezone = ZoneInfo("UTC")
+    return datetime.now(timezone).date()
+
+
+def _extract_full_date(value: str) -> Optional[Tuple[str, date]]:
+    numeric = re.search(
+        r"(?<!\d)((?:19|20)\d{2})\s*(?:年|[-/.])\s*(\d{1,2})"
+        r"\s*(?:月|[-/.])\s*(\d{1,2})\s*日?",
+        value,
+    )
+    if numeric:
+        try:
+            parsed = date(
+                int(numeric.group(1)),
+                int(numeric.group(2)),
+                int(numeric.group(3)),
+            )
+        except ValueError:
+            return None
+        subject = _clean_text(value[: numeric.start()] + " " + value[numeric.end() :], 480)
+        return subject, parsed
+
+    english = re.search(
+        r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+        r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+        r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+"
+        r"(\d{1,2})(?:st|nd|rd|th)?(?:,|\s)+\s*((?:19|20)\d{2})\b",
+        value,
+        re.IGNORECASE,
+    )
+    if not english:
+        return None
+    month_lookup = {
+        name: month
+        for month, name in enumerate(
+            ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+            start=1,
         )
-        return _clean_text(rewritten, 500) or query
-    return query
+    }
+    try:
+        parsed = date(
+            int(english.group(3)),
+            month_lookup[english.group(1).lower()[:3]],
+            int(english.group(2)),
+        )
+    except (KeyError, ValueError):
+        return None
+    subject = _clean_text(value[: english.start()] + " " + value[english.end() :], 480)
+    return subject, parsed
+
+
+def _compact_today_query(value: str) -> str:
+    original = str(value or "")
+    terms = _query_relevance_terms(original)
+    selected: List[str] = []
+    if CJK_RE.search(original):
+        selected.extend(term for term in terms if CJK_RE.search(term))
+        selected.extend(
+            term
+            for term in terms
+            if not CJK_RE.search(term) and _contains_term(original.lower(), term)
+        )
+    else:
+        selected.extend(term for term in terms if not CJK_RE.search(term))
+    if "人工智能" in selected and "大模型" in selected:
+        selected.remove("人工智能")
+        selected.insert(0, "人工智能")
+    intent = ""
+    if re.search(r"(?:新闻|消息|热点|\bnews\b)", original, re.IGNORECASE):
+        intent = "新闻" if CJK_RE.search(original) else "news"
+    elif re.search(r"(?:政策|\bpolicy\b)", original, re.IGNORECASE):
+        intent = "政策" if CJK_RE.search(original) else "policy"
+    elif re.search(r"(?:天气|\bweather\b)", original, re.IGNORECASE):
+        intent = "天气" if CJK_RE.search(original) else "weather"
+    elif re.search(r"(?:价格|\bprice\b)", original, re.IGNORECASE):
+        intent = "价格" if CJK_RE.search(original) else "price"
+    elif re.search(r"(?:版本|发布|\bversion\b|\brelease\b)", original, re.IGNORECASE):
+        intent = "版本" if CJK_RE.search(original) else "release"
+    if intent and intent not in selected:
+        selected.append(intent)
+    compact = _clean_text(" ".join(selected[:6]), 400)
+    if compact:
+        return compact
+    return _clean_text(TODAY_QUERY_RE.sub(" ", original), 400)
+
+
+def _upstream_query(query: str) -> str:
+    value = _clean_text(query, 500)
+    if not value or not FRESHNESS_RE.search(value):
+        return value
+    explicit_date = _extract_full_date(value)
+    if explicit_date is not None:
+        subject, parsed_date = explicit_date
+        return _clean_text("%s %s" % (subject, parsed_date.isoformat()), 500)
+    current_date = _current_search_date()
+    if TODAY_QUERY_RE.search(value):
+        subject = _compact_today_query(value)
+        return _clean_text("%s %s" % (subject, current_date.isoformat()), 500)
+    if not YEAR_TOKEN_RE.search(value):
+        return _clean_text("%s %d" % (value, current_date.year), 500)
+    return value
+
+
+def _query_relevance_terms(query: str) -> List[str]:
+    original = str(query or "").lower()
+    value = original
+    value = re.sub(
+        r"(?<!\d)\d{4}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])"
+        r"\s*\d{1,2}\s*日?",
+        " ",
+        value,
+    )
+    value = re.sub(
+        r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+        r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+        r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}"
+        r"(?:st|nd|rd|th)?(?:,|\s)+\s*\d{4}\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = YEAR_TOKEN_RE.sub(" ", value)
+    value = ENGLISH_TEMPORAL_TERMS_RE.sub(" ", value)
+    value = GENERIC_QUERY_TERMS_RE.sub(" ", value)
+    terms: List[str] = []
+    for term in re.findall(r"[a-z][a-z0-9.+#-]{1,40}", value):
+        if term not in terms:
+            terms.append(term)
+    for term in re.findall(r"[\u3400-\u9fff]{2,16}", value):
+        if term not in terms:
+            terms.append(term)
+    aliases = []
+    if "人工智能" in original or re.search(r"\bai\b", original):
+        aliases.extend(["人工智能", "artificial intelligence", "ai"])
+    if "大模型" in original or "大型语言模型" in original or re.search(
+        r"\bllms?\b",
+        original,
+    ):
+        aliases.extend(
+            [
+                "大模型",
+                "人工智能",
+                "large language model",
+                "llm",
+                "artificial intelligence",
+                "ai",
+            ]
+        )
+    for term in aliases:
+        if term not in terms:
+            terms.append(term)
+    return terms[:12]
+
+
+def _host_matches(host: str, expected: str) -> bool:
+    return host == expected or host.endswith("." + expected)
+
+
+def _authoritative_host(host: str) -> bool:
+    return any(
+        _host_matches(host, expected)
+        for expected in AUTHORITATIVE_HOST_SUFFIXES
+    ) or host.endswith(".gov")
+
+
+def _contains_term(value: str, term: str) -> bool:
+    if not value or not term:
+        return False
+    if CJK_RE.search(term):
+        return term in value
+    return bool(
+        re.search(
+            r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _query_target_year_month(query: str) -> Optional[Tuple[int, int]]:
+    current_date = _current_search_date()
+    if TODAY_QUERY_RE.search(query):
+        return current_date.year, current_date.month
+    numeric = re.search(
+        r"(?<!\d)((?:19|20)\d{2})\s*(?:年|[-/.])\s*(\d{1,2})"
+        r"\s*(?:月|[-/.])?",
+        query,
+    )
+    if numeric:
+        month = int(numeric.group(2))
+        if 1 <= month <= 12:
+            return int(numeric.group(1)), month
+    month_names = (
+        "jan(?:uary)?",
+        "feb(?:ruary)?",
+        "mar(?:ch)?",
+        "apr(?:il)?",
+        "may",
+        "jun(?:e)?",
+        "jul(?:y)?",
+        "aug(?:ust)?",
+        "sep(?:t(?:ember)?)?",
+        "oct(?:ober)?",
+        "nov(?:ember)?",
+        "dec(?:ember)?",
+    )
+    year_match = YEAR_TOKEN_RE.search(query)
+    if year_match:
+        for month, pattern in enumerate(month_names, start=1):
+            if re.search(r"\b(?:%s)\b" % pattern, query, re.IGNORECASE):
+                return int(year_match.group(0)), month
+    return None
+
+
+def _has_strict_freshness_evidence(
+    query: str,
+    title: str,
+    description: str,
+    published_at: str,
+) -> bool:
+    target = _query_target_year_month(query)
+    if target is None:
+        return True
+    temporal_text = " ".join((title, description, published_at))
+    if re.search(
+        r"(?:\b\d+\s*(?:minutes?|hours?|days?)\s+ago\b|"
+        r"\d+\s*(?:分钟|小时|天)前)",
+        temporal_text,
+        re.IGNORECASE,
+    ):
+        return True
+    year, month = target
+    if re.search(
+        r"(?<!\d)%d\s*(?:年|[-/.])\s*0?%d(?:\s*(?:月|[-/.])|\b)"
+        % (year, month),
+        temporal_text,
+    ):
+        return True
+    english_month = (
+        "jan", "feb", "mar", "apr", "may", "jun",
+        "jul", "aug", "sep", "oct", "nov", "dec",
+    )[month - 1]
+    return str(year) in temporal_text and bool(
+        re.search(r"\b" + english_month + r"[a-z]*\b", temporal_text, re.IGNORECASE)
+    )
+
+
+def _query_target_date(query: str) -> Optional[date]:
+    if TODAY_QUERY_RE.search(query):
+        return _current_search_date()
+    extracted = _extract_full_date(query)
+    return extracted[1] if extracted is not None else None
+
+
+def _result_publication_date(
+    title: str,
+    description: str,
+    published_at: str,
+) -> Optional[date]:
+    if published_at:
+        try:
+            return parsedate_to_datetime(published_at).date()
+        except (TypeError, ValueError):
+            try:
+                return datetime.fromisoformat(
+                    published_at.replace("Z", "+00:00")
+                ).date()
+            except ValueError:
+                pass
+    for value in (title, description):
+        extracted = _extract_full_date(value)
+        if extracted is not None:
+            return extracted[1]
+    return None
+
+
+def _freshness_result_score(
+    query: str,
+    title: str,
+    description: str,
+    published_at: str,
+) -> int:
+    target_date = _query_target_date(query)
+    publication_date = _result_publication_date(
+        title,
+        description,
+        published_at,
+    )
+    years = [int(value) for value in YEAR_TOKEN_RE.findall(query)]
+    target_year = years[0] if years else _current_search_date().year
+    title_years = [int(value) for value in YEAR_TOKEN_RE.findall(title)]
+    description_years = [
+        int(value)
+        for value in YEAR_TOKEN_RE.findall(description + " " + published_at)
+    ]
+    score = 0
+    if re.search(
+        r"(?:\b\d+\s*(?:minutes?|hours?|days?)\s+ago\b|"
+        r"\d+\s*(?:分钟|小时|天)前)",
+        description,
+        re.IGNORECASE,
+    ):
+        score += 5
+    if target_year in title_years:
+        score += 5
+    elif title_years:
+        distance = min(abs(value - target_year) for value in title_years)
+        score -= min(14, 6 + (distance * 2))
+    if target_year in description_years:
+        score += 2
+    elif description_years:
+        distance = min(abs(value - target_year) for value in description_years)
+        score -= min(8, 2 + (distance * 2))
+    if target_date is not None and publication_date is not None:
+        age_days = (target_date - publication_date).days
+        if age_days < -1:
+            score -= 6
+        elif age_days <= 1:
+            score += 10
+        elif age_days <= 3:
+            score += 8
+        elif age_days <= 7:
+            score += 4
+        elif age_days <= 31:
+            score += 1
+        else:
+            score -= min(12, 4 + (age_days // 30))
+    return score
+
+
+def _result_relevance_score(
+    query: str,
+    item: Dict[str, Any],
+    terms: List[str],
+) -> int:
+    title = _clean_text(item.get("title"), 500).lower()
+    description = _clean_text(
+        item.get("description") or item.get("content"),
+        2000,
+    ).lower()
+    published_at = _clean_text(item.get("published_at"), 200).lower()
+    try:
+        host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if FRESHNESS_RE.search(query) and any(
+        _host_matches(host, suffix)
+        for suffix in REFERENCE_FRESH_HOST_SUFFIXES
+    ):
+        return 0
+    score = 0
+    government_quality_match = bool(
+        QUALITY_RANKING_RE.search(query)
+        and re.search(r"(?:国务院|政府|政策|\bgovernment\b)", query, re.IGNORECASE)
+        and (_host_matches(host, "gov.cn") or host.endswith(".gov"))
+    )
+    title_matches = set()
+    host_matches = set()
+    description_matches = set()
+    for term in terms:
+        if _contains_term(title, term):
+            title_matches.add(term)
+            score += 5
+        if _contains_term(host, term):
+            host_matches.add(term)
+            score += 3
+        if _contains_term(description, term):
+            description_matches.add(term)
+            score += 2
+        if term in host.split("."):
+            score += 3
+    if not (
+        title_matches
+        or host_matches
+        or description_matches
+        or government_quality_match
+    ):
+        return 0
+    if (
+        FRESHNESS_RE.search(query)
+        and not (title_matches or host_matches)
+        and not government_quality_match
+    ):
+        return 0
+    if FRESHNESS_RE.search(query) and not _has_strict_freshness_evidence(
+        query,
+        title,
+        description,
+        published_at,
+    ):
+        return 0
+    if government_quality_match:
+        score += 8
+
+    if QUALITY_RANKING_RE.search(query):
+        if _host_matches(host, "gov.cn") or host.endswith(".gov"):
+            score += 6
+        if any(term in host.split(".") for term in terms):
+            score += 4
+    if _authoritative_host(host):
+        score += 12
+    if FRESHNESS_RE.search(query):
+        score += _freshness_result_score(
+            query,
+            title,
+            description,
+            published_at,
+        )
+        if any(
+            _host_matches(host, suffix)
+            for suffix in LOW_VALUE_FRESH_HOST_SUFFIXES
+        ):
+            score -= 8
+        elif "blog" in host.split(".") and not _authoritative_host(host):
+            score -= 4
+    return score
+
+
+def _rank_search_results(
+    query: str,
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not (FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query)):
+        return list(items)
+    terms = _query_relevance_terms(query)
+    if not terms:
+        return list(items)
+    scored = [
+        (_result_relevance_score(query, item, terms), index, item)
+        for index, item in enumerate(items)
+    ]
+    relevant = [entry for entry in scored if entry[0] > 0]
+    if not relevant:
+        return []
+    relevant.sort(key=lambda entry: (-entry[0], entry[1]))
+    if not FRESHNESS_RE.search(query):
+        return [entry[2] for entry in relevant]
+    diverse = []
+    seen_hosts = set()
+    for _score, _index, item in relevant:
+        try:
+            host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host and host in seen_hosts:
+            continue
+        if host:
+            seen_hosts.add(host)
+        diverse.append(item)
+    return diverse
 
 
 def _decode_body(body: bytes, content_type: str) -> str:
@@ -1095,6 +1817,7 @@ class WechatCloudWebProvider(WebSearchProvider):
         if not normalized_query:
             return {"success": False, "error": "Search query is required"}
         safe_limit = max(1, min(int(limit or 5), 10))
+        candidate_limit = min(40, max(10, safe_limit * 5))
         key = hashlib.sha256(
             (
                 SEARCH_CACHE_VERSION
@@ -1147,6 +1870,12 @@ class WechatCloudWebProvider(WebSearchProvider):
             try:
                 direct_results = _query_domain_results(normalized_query)
                 raw_results: List[Dict[str, Any]] = list(direct_results)
+                trusted_results, trusted_errors = _trusted_feed_results(
+                    normalized_query,
+                    max_response,
+                )
+                raw_results.extend(trusted_results)
+                upstream_errors.extend(trusted_errors)
 
                 if _env_bool("WECHAT_WEB_BING_HTML_ENABLED", True):
                     try:
@@ -1169,7 +1898,7 @@ class WechatCloudWebProvider(WebSearchProvider):
                                 bing_url,
                                 params={
                                     "q": upstream_query,
-                                    "count": safe_limit,
+                                    "count": candidate_limit,
                                     **market_params,
                                 },
                             )
@@ -1320,7 +2049,7 @@ class WechatCloudWebProvider(WebSearchProvider):
                 elif regional_results:
                     raw_results.extend(regional_results)
 
-                results: List[Dict[str, Any]] = []
+                candidates: List[Dict[str, Any]] = []
                 seen = set()
                 for raw in raw_results:
                     if not isinstance(raw, dict):
@@ -1329,16 +2058,34 @@ class WechatCloudWebProvider(WebSearchProvider):
                     if not url or url in seen:
                         continue
                     seen.add(url)
+                    candidate = {
+                        "title": _clean_text(raw.get("title"), 500),
+                        "url": url,
+                        "description": _clean_text(raw.get("content"), 2000),
+                    }
+                    published_at = _clean_text(
+                        raw.get("published_at")
+                        or raw.get("publishedDate")
+                        or raw.get("published_date"),
+                        200,
+                    )
+                    if published_at:
+                        candidate["published_at"] = published_at
+                    source_name = _clean_text(raw.get("source"), 80)
+                    if source_name:
+                        candidate["source"] = source_name
+                    candidates.append(candidate)
+                    if len(candidates) >= candidate_limit:
+                        break
+                ranked = _rank_search_results(normalized_query, candidates)
+                results = []
+                for item in ranked[:safe_limit]:
                     results.append(
                         {
-                            "title": _clean_text(raw.get("title"), 500),
-                            "url": url,
-                            "description": _clean_text(raw.get("content"), 2000),
+                            **item,
                             "position": len(results) + 1,
                         }
                     )
-                    if len(results) >= safe_limit:
-                        break
                 if not results:
                     raise ValueError(
                         "search returned no usable public results (%s)"
