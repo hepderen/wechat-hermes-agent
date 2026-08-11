@@ -605,7 +605,9 @@ def test_explicit_public_domain_is_first_result_without_guessing(
 
 def test_known_official_entry_does_not_depend_on_search_upstreams(
     provider_module,
+    monkeypatch,
 ):
+    monkeypatch.setenv("WECHAT_WEB_SEARCH_URL", "http://127.0.0.1:9")
     result = provider_module.WechatCloudWebProvider().search(
         "OpenAI official documentation",
         1,
@@ -933,11 +935,13 @@ def test_bing_market_params_follow_query_language(provider_module):
         "setlang": "en-US",
         "cc": "US",
         "mkt": "en-US",
+        "adlt": "strict",
     }
     assert provider_module._bing_market_params("人工智能新闻") == {
         "setlang": "zh-Hans",
         "cc": "CN",
         "mkt": "zh-CN",
+        "adlt": "strict",
     }
 
 
@@ -1051,6 +1055,9 @@ def test_query_intents_cover_decision_and_verification_shapes(provider_module):
     assert provider_module._query_intents("最新手机推荐") == {
         "freshness",
         "recommendation",
+    }
+    assert provider_module._query_intents("人工智能行业报告") == {
+        "analysis"
     }
 
 
@@ -1252,6 +1259,30 @@ def test_generic_official_entry_does_not_hide_a_specific_document(provider_modul
     assert ranked[0]["url"].endswith("free-threading-python.html")
 
 
+def test_official_query_does_not_treat_a_community_subdomain_as_official(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "OpenAI official documentation",
+        [
+            {
+                "title": "OpenAI community categories",
+                "url": "https://community.openai.com/categories",
+                "description": "Community discussions about OpenAI",
+            },
+            {
+                "title": "OpenAI official documentation",
+                "url": "https://platform.openai.com/docs/",
+                "description": "Known public official entry point",
+                "source": "official-entry",
+                "search_channel": "official",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"] == "https://platform.openai.com/docs/"
+
+
 def test_freshness_ranking_prefers_authoritative_news_source(provider_module):
     ranked = provider_module._rank_search_results(
         "2026 artificial intelligence latest news",
@@ -1312,6 +1343,36 @@ def test_short_ai_term_uses_word_boundaries(provider_module):
     assert provider_module._technology_feed_query(
         "artificial intelligence latest news"
     )
+
+
+def test_ai_freshness_requires_the_actual_topic_not_one_generic_word(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "2026 artificial intelligence latest news",
+        [
+            {
+                "title": "Business intelligence market update",
+                "url": "https://finance.example/intelligence",
+                "description": "2026 enterprise analytics news",
+            },
+            {
+                "title": "Artificial intelligence model update",
+                "url": "https://news.example/ai-model",
+                "description": "2026 artificial intelligence news",
+            },
+            {
+                "title": "New AI policy announced",
+                "url": "https://policy.example/ai",
+                "description": "2026 policy news",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://news.example/ai-model",
+        "https://policy.example/ai",
+    ]
 
 
 def test_freshness_ranking_excludes_reference_sites_and_deduplicates_hosts(

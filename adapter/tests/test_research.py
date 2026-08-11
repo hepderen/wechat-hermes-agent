@@ -82,3 +82,11 @@ def test_general_research_does_not_waste_social_calls():
     assert "web_extract 3 次" in value
     assert "一次 web_extract 调用中并行读取" in value
     assert "硬上限为 12 次" in value
+
+
+def test_report_research_checks_methodology_instead_of_citing_mirrors():
+    value = instructions("研究人工智能行业报告和统计数据")
+
+    assert "报告或数据研究题" in value
+    assert "发布日期、统计口径、样本和方法" in value
+    assert "文档搬运站" in value

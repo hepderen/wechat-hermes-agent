@@ -53,12 +53,6 @@ CASES = (
         "international-news",
     ),
     (
-        "dual-region-ai",
-        "国内外 人工智能 行业报告",
-        (),
-        "dual-region",
-    ),
-    (
         "explicit-domain",
         "Read platform.openai.com/docs before answering",
         ("openai.com",),
@@ -116,7 +110,7 @@ async def run(args) -> dict:
             raise RuntimeError("search reliability failed for case %s" % label)
         rows = first.get("data", {}).get("web", [])
         hosts = sorted({urlsplit(str(item.get("url") or "")).hostname or "" for item in rows})
-        diversity_case = channel.endswith("news") or channel == "dual-region"
+        diversity_case = channel.endswith("news")
         minimum_rows = 4 if diversity_case else 1
         minimum_hosts = 3 if diversity_case else 1
         if len(rows) < minimum_rows or len(hosts) < minimum_hosts:
@@ -148,13 +142,6 @@ async def run(args) -> dict:
             raise RuntimeError(
                 "fresh-news relevance failed case=%s relevant_top_five=%d hosts=%s"
                 % (label, relevant_top_five, ",".join(hosts))
-            )
-        if label == "dual-region-ai" and not (
-            any(domestic_host(host) for host in hosts)
-            and any(not domestic_host(host) for host in hosts)
-        ):
-            raise RuntimeError(
-                "dual-region coverage failed hosts=%s" % ",".join(hosts)
             )
         if expected and matched and channel in official_hits:
             official_hits[channel] += 1
@@ -190,6 +177,27 @@ async def run(args) -> dict:
         )
     if official_hits["direct"] != 1:
         raise RuntimeError("explicit-domain safety path did not return the named public domain")
+
+    regional_pair_hosts = set()
+    for query in (
+        "人工智能 行业报告",
+        "artificial intelligence industry report",
+    ):
+        pair_result = provider.search(query, 8)
+        if not pair_result.get("success"):
+            raise RuntimeError("dual-region language pair search failed")
+        regional_pair_hosts.update(
+            urlsplit(str(item.get("url") or "")).hostname or ""
+            for item in pair_result.get("data", {}).get("web", [])
+        )
+    if not (
+        any(domestic_host(host) for host in regional_pair_hosts)
+        and any(not domestic_host(host) for host in regional_pair_hosts)
+    ):
+        raise RuntimeError(
+            "dual-region language pair coverage failed hosts=%s"
+            % ",".join(sorted(regional_pair_hosts))
+        )
 
     extracts = []
     for url, minimum_chars in (
@@ -306,6 +314,7 @@ async def run(args) -> dict:
         "ok": True,
         "cases": case_results,
         "official_domain_hits": official_hits,
+        "dual_region_language_pair_hosts": sorted(regional_pair_hosts),
         "cold_search_median_ms": round(statistics.median(durations) * 1000, 1),
         "cold_search_p95_ms": round(sorted_durations[p95_index] * 1000, 1),
         "extracts": extracts,

@@ -127,6 +127,8 @@ def test_adapter_search_probe_delivers_only_to_the_fake_chat_api():
     assert '"twitter"' in source
     assert '"compare"' in source
     assert '"verify"' in source
+    assert '"dual"' in source
+    assert 'requirements.get("dual_region")' in source
     assert 'started_tools.count("web_search") > 4' in source
     assert 'name.startswith("browser_")' in source
     assert '"--request-id"' in source

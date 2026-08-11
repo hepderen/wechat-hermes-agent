@@ -43,6 +43,11 @@ PROBE_MESSAGES = {
         "web_search 和 web_extract，先找原始官方文档，再找佐证，引用至少两个"
         "公开来源 URL，并用中文简要回答。"
     ),
+    "dual": (
+        "请搜索今天国内外 AI 重要新闻，中文和英文主题分别检索，核对发布日期。"
+        "必须调用 web_search 和 web_extract，引用至少两个公开来源 URL，并用中文"
+        "简要回答。"
+    ),
 }
 
 PROFILE_REQUIREMENTS = {
@@ -51,6 +56,7 @@ PROFILE_REQUIREMENTS = {
     "twitter": {"hosts": (), "terms": ()},
     "compare": {"hosts": ("python.org",), "terms": ("3.13", "3.14")},
     "verify": {"hosts": ("python.org",), "terms": ("3.13",)},
+    "dual": {"hosts": (), "terms": (), "dual_region": True},
 }
 
 
@@ -316,6 +322,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if term.casefold() not in output.casefold():
                     raise RuntimeError(
                         "research result missed required answer term %s" % term
+                    )
+            if requirements.get("dual_region"):
+                domestic = any(
+                    host.endswith(".cn")
+                    or host == "gov.cn"
+                    or host.endswith(".gov.cn")
+                    for host in source_hosts
+                )
+                international = any(
+                    not host.endswith(".cn")
+                    and host != "gov.cn"
+                    and not host.endswith(".gov.cn")
+                    for host in source_hosts
+                )
+                if started_tools.count("web_search") < 2:
+                    raise RuntimeError(
+                        "dual-region research did not issue separate searches"
+                    )
+                if not domestic or not international:
+                    raise RuntimeError(
+                        "dual-region research did not retain both source regions"
                     )
             if ("text", "confirmed") not in states:
                 raise RuntimeError("fake Chat API did not confirm the final text item")

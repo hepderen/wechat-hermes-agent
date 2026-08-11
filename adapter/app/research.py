@@ -28,6 +28,12 @@ OFFICIAL_RE = re.compile(
     r"\bofficial\b|\bdocumentation\b|\bdocs?\b|\bannouncement\b|\bpolicy\b)",
     re.IGNORECASE,
 )
+ANALYSIS_RE = re.compile(
+    r"(?:行业报告|市场报告|研究报告|白皮书|调研报告|统计数据|数据分析|趋势分析|"
+    r"\bindustry\s+report\b|\bmarket\s+report\b|\bresearch\s+report\b|"
+    r"\bwhite\s*paper\b|\bstatistics\b|\bdata\s+analysis\b)",
+    re.IGNORECASE,
+)
 DUAL_REGION_RE = re.compile(
     r"(?:国内外|海内外|中外|中国和海外|中国与海外|"
     r"\bchina\s+(?:and|&)\s+(?:global|international|overseas)\b|"
@@ -51,6 +57,7 @@ def classify_research_modes(message: str) -> tuple[str, ...]:
         ("recommendation", RECOMMENDATION_RE),
         ("freshness", FRESHNESS_RE),
         ("official", OFFICIAL_RE),
+        ("analysis", ANALYSIS_RE),
         ("dual_region", DUAL_REGION_RE),
         ("social", SOCIAL_RE),
     ):
@@ -98,6 +105,10 @@ def build_research_instructions(
     if "official" in modes:
         guidance.append(
             "用户要官方资料：搜索具体实体、版本和文档主题，选择精确正文页；官网首页只作入口，不当作已经回答问题的证据。"
+        )
+    if "analysis" in modes:
+        guidance.append(
+            "这是报告或数据研究题：优先发布机构原文，核对发布日期、统计口径、样本和方法；词典、文档搬运站与二手解读只作线索。"
         )
     if "dual_region" in modes:
         guidance.append(

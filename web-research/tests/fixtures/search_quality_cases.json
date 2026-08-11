@@ -88,6 +88,28 @@
     ]
   },
   {
+    "id": "institutional_report_over_dictionary",
+    "query": "artificial intelligence industry report",
+    "expected_top_host": "oecd.org",
+    "results": [
+      {
+        "title": "Artificial intelligence definition and industry report",
+        "url": "https://www.britannica.com/technology/artificial-intelligence",
+        "description": "Reference article and definition"
+      },
+      {
+        "title": "Artificial intelligence industry report and statistics",
+        "url": "https://www.oecd.org/digital/artificial-intelligence/report.html",
+        "description": "Institutional report with methodology and data"
+      },
+      {
+        "title": "AI industry report download",
+        "url": "https://www.book118.com/report/ai",
+        "description": "Document sharing mirror"
+      }
+    ]
+  },
+  {
     "id": "freshness_over_stale_rank",
     "query": "2026-08-12 artificial intelligence latest news",
     "expected_top_host": "reuters.com",

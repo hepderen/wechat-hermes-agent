@@ -104,6 +104,11 @@ DOMAIN_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
+AI_TOPIC_RE = re.compile(
+    r"(?:人工智能|大模型|大型语言模型|\bartificial\s+intelligence\b|"
+    r"\bai\b|\bllms?\b|\blarge\s+language\s+models?\b)",
+    re.IGNORECASE,
+)
 FRESHNESS_RE = re.compile(
     r"(?:\blatest\b|\bcurrent\b|\brecent\b|\btoday\b|\bnews\b|"
     r"最新|最近|近期|今天|今日|当前|目前|新闻|热点|实时|"
@@ -147,6 +152,12 @@ FACT_CHECK_RE = re.compile(
 HOW_TO_RE = re.compile(
     r"(?:怎么|如何|教程|步骤|配置|安装|用法|"
     r"\bhow\s+to\b|\btutorial\b|\bconfigure\b|\binstall\b|\busage\b)",
+    re.IGNORECASE,
+)
+ANALYSIS_RE = re.compile(
+    r"(?:行业报告|市场报告|研究报告|白皮书|调研报告|统计数据|数据分析|趋势分析|"
+    r"\bindustry\s+report\b|\bmarket\s+report\b|\bresearch\s+report\b|"
+    r"\bwhite\s*paper\b|\bstatistics\b|\bdata\s+analysis\b|\btrend\s+analysis\b)",
     re.IGNORECASE,
 )
 DUAL_REGION_RE = re.compile(
@@ -222,6 +233,17 @@ LOW_VALUE_HOST_SUFFIXES = (
     "csdn.net",
     "cnblogs.com",
     "toutiao.com",
+    "baijiahao.baidu.com",
+    "book118.com",
+    "mbalib.com",
+)
+COMMUNITY_HOST_SUFFIXES = (
+    "community.openai.com",
+    "stackoverflow.com",
+    "stackexchange.com",
+    "reddit.com",
+    "zhihu.com",
+    "v2ex.com",
 )
 AUTHORITATIVE_HOST_SUFFIXES = (
     "gov.cn",
@@ -241,6 +263,16 @@ AUTHORITATIVE_HOST_SUFFIXES = (
     "microsoft.com",
     "research.meta.ai",
     "nvidia.com",
+    "caict.ac.cn",
+    "oecd.org",
+    "worldbank.org",
+    "imf.org",
+    "who.int",
+    "nature.com",
+    "science.org",
+    "acm.org",
+    "ieee.org",
+    "arxiv.org",
     "python.org",
     "kubernetes.io",
     "systemd.io",
@@ -740,9 +772,9 @@ def _fetch_trusted_feed(
 
 def _technology_feed_query(query: str) -> bool:
     return bool(
-        re.search(
-            r"(?:人工智能|大模型|科技|技术|\bartificial\s+intelligence\b|"
-            r"\bai\b|\bllms?\b|\bopenai\b|"
+        AI_TOPIC_RE.search(query)
+        or re.search(
+            r"(?:科技|技术|\bopenai\b|"
             r"\banthropic\b|\bdeepmind\b|\bdeepseek\b|\bnvidia\b|"
             r"\btechnology\b|\btech\b)",
             query,
@@ -1115,6 +1147,8 @@ def _query_intents(query: str) -> frozenset[str]:
         intents.add("fact_check")
     if HOW_TO_RE.search(query):
         intents.add("how_to")
+    if ANALYSIS_RE.search(query):
+        intents.add("analysis")
     if not intents:
         intents.add("general")
     return frozenset(intents)
@@ -1201,11 +1235,17 @@ def _interleave_results(
 
 def _bing_market_params(query: str) -> Dict[str, str]:
     if CJK_RE.search(query):
-        return {"setlang": "zh-Hans", "cc": "CN", "mkt": "zh-CN"}
+        return {
+            "setlang": "zh-Hans",
+            "cc": "CN",
+            "mkt": "zh-CN",
+            "adlt": "strict",
+        }
     return {
         "setlang": "en-US",
         "cc": "US",
         "mkt": "en-US",
+        "adlt": "strict",
     }
 
 
@@ -1362,7 +1402,11 @@ def _query_relevance_terms(
         if term not in terms:
             terms.append(term)
     aliases = []
-    if "人工智能" in original or re.search(r"\bai\b", original):
+    if (
+        "人工智能" in original
+        or "artificial intelligence" in original
+        or re.search(r"\bai\b", original)
+    ):
         aliases.extend(["人工智能", "artificial intelligence", "ai"])
     if "大模型" in original or "大型语言模型" in original or re.search(
         r"\bllms?\b",
@@ -1415,6 +1459,16 @@ def _low_value_host(host: str) -> bool:
     return any(_host_matches(host, expected) for expected in LOW_VALUE_HOST_SUFFIXES)
 
 
+def _community_host(host: str) -> bool:
+    return any(_host_matches(host, expected) for expected in COMMUNITY_HOST_SUFFIXES)
+
+
+def _reference_host(host: str) -> bool:
+    return any(
+        _host_matches(host, expected) for expected in REFERENCE_FRESH_HOST_SUFFIXES
+    )
+
+
 def _result_source_type(item: Dict[str, Any], host: str) -> str:
     channel = _clean_text(
         item.get("_search_channel") or item.get("search_channel"),
@@ -1427,6 +1481,8 @@ def _result_source_type(item: Dict[str, Any], host: str) -> str:
         return "official"
     if _low_value_host(host):
         return "secondary"
+    if _community_host(host):
+        return "community"
     if _authoritative_host(host) or source in {
         "the-verge",
         "techcrunch",
@@ -1678,6 +1734,12 @@ def _result_relevance_score(
         for suffix in REFERENCE_FRESH_HOST_SUFFIXES
     ):
         return 0
+    if (
+        FRESHNESS_RE.search(query)
+        and AI_TOPIC_RE.search(query)
+        and not AI_TOPIC_RE.search(title + " " + description)
+    ):
+        return 0
     score = 0
     government_quality_match = bool(
         QUALITY_RANKING_RE.search(query)
@@ -1731,21 +1793,26 @@ def _result_relevance_score(
     if source_type == "specified":
         score += 40
     elif source_type == "official":
-        score += 10
+        coverage = len(matched_terms) / max(1, len(terms))
+        score += 24 if coverage >= 0.7 else 8
     elif source_type == "authoritative":
         score += 10
     elif source_type == "secondary":
         score -= 6
+    elif source_type == "community":
+        score -= 4
 
     if QUALITY_RANKING_RE.search(query):
         if _host_matches(host, "gov.cn") or host.endswith(".gov"):
             score += 6
         if any(term in host.split(".") for term in terms):
             score += 4
+        if source_type == "community":
+            score -= 10
     if "fact_check" in intents:
         if source_type in {"official", "authoritative", "specified"}:
             score += 10
-        elif source_type == "secondary":
+        elif source_type in {"secondary", "community"}:
             score -= 10
     if "how_to" in intents and source_type in {
         "official",
@@ -1762,6 +1829,22 @@ def _result_relevance_score(
             re.IGNORECASE,
         ):
             score -= 12
+    if "analysis" in intents:
+        if _reference_host(host):
+            score -= 12
+        if re.search(
+            r"(?:报告|白皮书|统计|数据|\breport\b|\bwhite\s*paper\b|"
+            r"\bstatistics\b|\bdataset\b)",
+            title,
+            re.IGNORECASE,
+        ):
+            score += 6
+    region = _result_region(item)
+    if not DUAL_REGION_RE.search(query):
+        if CJK_RE.search(query) and region == "domestic":
+            score += 2
+        elif not CJK_RE.search(query):
+            score += 3 if region == "international" else -2
     if FRESHNESS_RE.search(query):
         score += _freshness_result_score(
             query,
