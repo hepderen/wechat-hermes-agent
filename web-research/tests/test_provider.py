@@ -1400,6 +1400,36 @@ def test_official_query_does_not_treat_a_community_subdomain_as_official(
     assert ranked[0]["url"] == "https://platform.openai.com/docs/"
 
 
+def test_official_query_drops_non_authoritative_single_term_noise(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "Python 3.13 free-threaded official documentation",
+        [
+            {
+                "title": "Python 3.13 free-threaded documentation",
+                "url": "https://docs.python.org/3.13/howto/free-threading-python.html",
+                "description": "Official build and runtime documentation",
+            },
+            {
+                "title": "Python games",
+                "url": "https://www.poki.com/en/python-games",
+                "description": "Play online games",
+            },
+            {
+                "title": "Python free-threaded build guide",
+                "url": "https://realpython.com/python-free-threading/",
+                "description": "Independent guide for Python 3.13",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://docs.python.org/3.13/howto/free-threading-python.html",
+        "https://realpython.com/python-free-threading/",
+    ]
+
+
 def test_freshness_ranking_prefers_authoritative_news_source(provider_module):
     ranked = provider_module._rank_search_results(
         "2026 artificial intelligence latest news",

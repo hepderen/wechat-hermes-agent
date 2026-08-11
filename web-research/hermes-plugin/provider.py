@@ -38,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "7"
+SEARCH_CACHE_VERSION = "8"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -289,6 +289,7 @@ AUTHORITATIVE_HOST_SUFFIXES = (
     "openai.com",
     "anthropic.com",
     "blog.google",
+    "research.google",
     "microsoft.com",
     "research.meta.ai",
     "nvidia.com",
@@ -1863,6 +1864,12 @@ def _result_relevance_score(
         score += 8
 
     matched_terms = title_matches | host_matches | description_matches
+    if (
+        QUALITY_RANKING_RE.search(query)
+        and source_type not in {"specified", "official", "authoritative"}
+        and len(matched_terms) < min(2, len(terms))
+    ):
+        return 0
     if matched_terms:
         score += min(10, int((len(matched_terms) / max(1, len(terms))) * 12))
     if len(title_matches | host_matches) >= min(2, len(terms)):
