@@ -96,6 +96,8 @@ def test_candidate_gateway_is_loopback_and_uses_private_vendor():
     assert 'export PYTHONPATH="$plugin_vendor"' in source
     assert 'WECHAT_WEB_SEARCH_URL="$search_url"' in source
     assert "set API_SERVER_KEY for the candidate Gateway" in source
+    assert "candidate_api_key=$API_SERVER_KEY" in source
+    assert 'export API_SERVER_KEY="$candidate_api_key"' in source
     assert "runuser -m -u wechat-hermes-runner" in source
     assert 'API_SERVER_KEY="$api_key"' not in source
     assert "PORT API_KEY" not in source
