@@ -93,8 +93,12 @@ def test_probe_is_read_only_and_does_not_call_wechat():
 def test_candidate_gateway_is_loopback_and_uses_private_vendor():
     source = (ROOT / "scripts" / "run_candidate_gateway.sh").read_text(encoding="utf-8")
     assert "API_SERVER_HOST=127.0.0.1" in source
-    assert 'PYTHONPATH="$plugin_vendor"' in source
+    assert 'export PYTHONPATH="$plugin_vendor"' in source
     assert 'WECHAT_WEB_SEARCH_URL="$search_url"' in source
+    assert "set API_SERVER_KEY for the candidate Gateway" in source
+    assert "runuser -m -u wechat-hermes-runner" in source
+    assert 'API_SERVER_KEY="$api_key"' not in source
+    assert "PORT API_KEY" not in source
     assert "wechat-chat-api" not in source
     assert "systemctl" not in source
 
