@@ -990,6 +990,27 @@ def test_freshness_query_preserves_dates_and_expands_relative_time(
     )
 
 
+def test_domestic_freshness_query_relaxes_exact_day_and_duplicate_alias(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 12),
+    )
+
+    assert provider_module._domestic_search_query(
+        "人工智能 AI 2026年8月12日"
+    ) == "人工智能 最新消息 2026年8月"
+    assert provider_module._domestic_search_query(
+        "中国 AI 人工智能 2026年8月12日 发布"
+    ) == "中国 人工智能 发布 最新消息 2026年8月"
+    assert provider_module._domestic_search_query(
+        "今天国内外大模型重要消息"
+    ) == "国内 人工智能 大模型 新闻 2026年8月"
+
+
 def test_query_terms_exclude_english_date_and_intent_words(provider_module):
     terms = provider_module._query_relevance_terms(
         "August 11, 2026 global artificial intelligence latest news"
@@ -1187,6 +1208,102 @@ def test_dual_region_query_balances_domestic_and_international_results(
         "domestic",
         "international",
         "domestic",
+    ]
+
+
+def test_domestic_region_recognizes_major_publishers_without_cn_tld(
+    provider_module,
+):
+    for url in (
+        "https://www.sohu.com/a/1",
+        "https://www.ifeng.com/c/1",
+        "https://36kr.com/p/1",
+        "https://www.leiphone.com/category/ai/1",
+    ):
+        assert provider_module._result_region({"url": url}) == "domestic"
+
+
+def test_chinese_freshness_keeps_both_regions_in_the_first_two_results(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "2026年8月12日 人工智能 最新新闻",
+        [
+            {
+                "title": "Artificial intelligence model update",
+                "url": "https://www.reuters.com/technology/ai/",
+                "description": "2026年8月12日 artificial intelligence news",
+            },
+            {
+                "title": "Artificial intelligence product announcement",
+                "url": "https://openai.com/news/product/",
+                "description": "2026年8月12日 AI news",
+            },
+            {
+                "title": "中国人工智能产业发布最新模型",
+                "url": "https://www.sohu.com/a/ai-model",
+                "description": "2026年8月12日人工智能动态",
+            },
+        ],
+    )
+
+    assert {
+        provider_module._result_region(item) for item in ranked[:2]
+    } == {"domestic", "international"}
+
+
+def test_analysis_ranking_removes_dictionaries_and_document_mirrors(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "artificial intelligence industry report",
+        [
+            {
+                "title": "Artificial intelligence industry report definition",
+                "url": "https://www.britannica.com/technology/artificial-intelligence",
+                "description": "Reference article",
+            },
+            {
+                "title": "Artificial intelligence industry report download",
+                "url": "https://www.book118.com/report/ai",
+                "description": "Document mirror",
+            },
+            {
+                "title": "Artificial intelligence industry report and statistics",
+                "url": "https://www.oecd.org/digital/artificial-intelligence/report.html",
+                "description": "Institutional methodology and data",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://www.oecd.org/digital/artificial-intelligence/report.html"
+    ]
+
+
+def test_explicit_domain_query_does_not_append_unrelated_results(
+    provider_module,
+):
+    ranked = provider_module._rank_search_results(
+        "Read platform.openai.com/docs before answering",
+        [
+            {
+                "title": "OpenAI official documentation",
+                "url": "https://platform.openai.com/docs/",
+                "description": "Official API documentation",
+                "source": "query-url",
+                "search_channel": "direct",
+            },
+            {
+                "title": "Definition of read",
+                "url": "https://dictionary.cambridge.org/dictionary/english/read",
+                "description": "Dictionary definition",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://platform.openai.com/docs/"
     ]
 
 

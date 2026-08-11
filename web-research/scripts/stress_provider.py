@@ -60,6 +60,34 @@ CASES = (
     ),
 )
 AI_RELEVANCE_RE = re.compile(r"(?:\bartificial\s+intelligence\b|\bAI\b|人工智能)", re.I)
+DOMESTIC_HOST_SUFFIXES = (
+    "gov.cn",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinanews.com.cn",
+    "china.com.cn",
+    "ce.cn",
+    "china.org.cn",
+    "qq.com",
+    "163.com",
+    "sina.com.cn",
+    "sohu.com",
+    "ifeng.com",
+    "thepaper.cn",
+    "yicai.com",
+    "caixin.com",
+    "jiemian.com",
+    "36kr.com",
+    "leiphone.com",
+    "huxiu.com",
+    "guancha.cn",
+    "cls.cn",
+    "stcn.com",
+    "eastmoney.com",
+    "cnstock.com",
+    "caict.ac.cn",
+)
 
 
 def load_provider(path: Path):
@@ -78,7 +106,7 @@ def host_matches(host: str, expected: tuple[str, ...]) -> bool:
 def domestic_host(host: str) -> bool:
     return host.endswith(".cn") or host_matches(
         host,
-        ("gov.cn", "xinhuanet.com", "people.com.cn", "cctv.com"),
+        DOMESTIC_HOST_SUFFIXES,
     )
 
 

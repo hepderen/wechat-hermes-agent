@@ -58,6 +58,41 @@ PROFILE_REQUIREMENTS = {
     "verify": {"hosts": ("python.org",), "terms": ("3.13",)},
     "dual": {"hosts": (), "terms": (), "dual_region": True},
 }
+DOMESTIC_HOST_SUFFIXES = (
+    "gov.cn",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinanews.com.cn",
+    "china.com.cn",
+    "ce.cn",
+    "china.org.cn",
+    "qq.com",
+    "163.com",
+    "sina.com.cn",
+    "sohu.com",
+    "ifeng.com",
+    "thepaper.cn",
+    "yicai.com",
+    "caixin.com",
+    "jiemian.com",
+    "36kr.com",
+    "leiphone.com",
+    "huxiu.com",
+    "guancha.cn",
+    "cls.cn",
+    "stcn.com",
+    "eastmoney.com",
+    "cnstock.com",
+    "caict.ac.cn",
+)
+
+
+def domestic_host(host: str) -> bool:
+    return host.endswith(".cn") or any(
+        host == expected or host.endswith("." + expected)
+        for expected in DOMESTIC_HOST_SUFFIXES
+    )
 
 
 def load_fake_stack(adapter_root: Path):
@@ -277,11 +312,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ]
             tools = [str(item.get("tool_name") or "") for item in completed]
             sources = []
+            extracted_sources = []
             for item in completed:
                 for value in str(item.get("source") or "").split(","):
                     parsed = urlsplit(value.strip())
                     if parsed.scheme in {"http", "https"} and parsed.hostname:
                         sources.append(value.strip())
+                        if item.get("tool_name") == "web_extract":
+                            extracted_sources.append(value.strip())
 
             with fake.STATE.lock:
                 chat_calls = [
@@ -324,17 +362,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "research result missed required answer term %s" % term
                     )
             if requirements.get("dual_region"):
+                extracted_hosts = {
+                    (urlsplit(value).hostname or "").lower()
+                    for value in extracted_sources
+                }
                 domestic = any(
-                    host.endswith(".cn")
-                    or host == "gov.cn"
-                    or host.endswith(".gov.cn")
-                    for host in source_hosts
+                    domestic_host(host) for host in extracted_hosts
                 )
                 international = any(
-                    not host.endswith(".cn")
-                    and host != "gov.cn"
-                    and not host.endswith(".gov.cn")
-                    for host in source_hosts
+                    not domestic_host(host) for host in extracted_hosts
                 )
                 if started_tools.count("web_search") < 2:
                     raise RuntimeError(
@@ -358,6 +394,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "started_tool_count": len(started_tools),
                 "source_hosts": sorted(
                     source_hosts
+                ),
+                "extracted_source_hosts": sorted(
+                    {
+                        (urlsplit(value).hostname or "").lower()
+                        for value in extracted_sources
+                    }
                 ),
                 "output_chars": len(output),
                 "outbox": states,

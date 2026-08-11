@@ -41,6 +41,10 @@ def test_dual_region_prompt_requires_separate_language_queries():
     value = instructions("搜索今天国内外大模型新闻")
 
     assert "简短中文查询和英文查询各搜一次" in value
+    assert "中国机构或国内媒体原文" in value
+    assert "海外机构或媒体原文" in value
+    assert "放宽到最近 7 天" in value
+    assert "不用另一区域的结果冒充覆盖" in value
     assert "两边无关热点" in value
 
 

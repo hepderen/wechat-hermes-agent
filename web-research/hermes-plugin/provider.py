@@ -38,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "6"
+SEARCH_CACHE_VERSION = "7"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -202,6 +202,7 @@ GENERIC_QUERY_TERMS_RE = re.compile(
     r"\bweather\b|\bsources?\b|\bwhat\b|\bwhich\b|\bthe\b|"
     r"\bis\b|\bare\b|\bhow\b|\bto\b|\bfor\b|\bof\b|\band\b|\bor\b|"
     r"\bwith\b|\bwithout\b|\babout\b|\bplease\b|\bcite\b|"
+    r"\bread\b|\bbefore\b|\banswer(?:ing)?\b|"
     r"\bimportant\b|\bmajor\b|"
     r"\bglobal\b|\binternational\b|\bdomestic\b|\bworldwide\b|"
     r"\bsearch\b|\bfind\b|\blook\s+up\b)",
@@ -244,6 +245,34 @@ COMMUNITY_HOST_SUFFIXES = (
     "reddit.com",
     "zhihu.com",
     "v2ex.com",
+)
+DOMESTIC_HOST_SUFFIXES = (
+    "gov.cn",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinanews.com.cn",
+    "china.com.cn",
+    "ce.cn",
+    "china.org.cn",
+    "qq.com",
+    "163.com",
+    "sina.com.cn",
+    "sohu.com",
+    "ifeng.com",
+    "thepaper.cn",
+    "yicai.com",
+    "caixin.com",
+    "jiemian.com",
+    "36kr.com",
+    "leiphone.com",
+    "huxiu.com",
+    "guancha.cn",
+    "cls.cn",
+    "stcn.com",
+    "eastmoney.com",
+    "cnstock.com",
+    "caict.ac.cn",
 )
 AUTHORITATIVE_HOST_SUFFIXES = (
     "gov.cn",
@@ -1357,6 +1386,41 @@ def _upstream_query(query: str) -> str:
     return value
 
 
+def _domestic_search_query(query: str) -> str:
+    """Build a concise Chinese query without overfitting to an exact day."""
+    original = _strip_query_filler(query)
+    if not CJK_RE.search(original):
+        return _upstream_query(original)
+
+    value = original
+    month_token = ""
+    explicit_date = _extract_full_date(value)
+    if explicit_date is not None:
+        value, parsed_date = explicit_date
+        month_token = "%d年%d月" % (parsed_date.year, parsed_date.month)
+    elif TODAY_QUERY_RE.search(value):
+        value = _compact_today_query(value)
+        current_date = _current_search_date()
+        month_token = "%d年%d月" % (current_date.year, current_date.month)
+    else:
+        return _upstream_query(value)
+
+    if "人工智能" in value or "大模型" in value or "大型语言模型" in value:
+        value = re.sub(
+            r"(?<![A-Za-z0-9])(?:ai|llms?)(?![A-Za-z0-9])",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+    if DUAL_REGION_RE.search(original) and not re.search(r"(?:中国|国内)", value):
+        value = "国内 " + value
+    if FRESHNESS_RE.search(original) and not re.search(
+        r"(?:最新|最近|近期|新闻|消息|热点|动态|进展)", value
+    ):
+        value += " 最新消息"
+    return _clean_text("%s %s" % (value, month_token), 400)
+
+
 def _query_relevance_terms(
     query: str,
     *,
@@ -1506,18 +1570,8 @@ def _result_region(item: Dict[str, Any]) -> str:
         host = (urlsplit(str(item.get("url") or "")).hostname or "").casefold()
     except ValueError:
         host = ""
-    domestic_hosts = (
-        "gov.cn",
-        "xinhuanet.com",
-        "people.com.cn",
-        "cctv.com",
-        "chinanews.com.cn",
-        "qq.com",
-        "163.com",
-        "sina.com.cn",
-    )
     if host.endswith(".cn") or any(
-        _host_matches(host, expected) for expected in domestic_hosts
+        _host_matches(host, expected) for expected in DOMESTIC_HOST_SUFFIXES
     ):
         return "domestic"
     return "international"
@@ -1545,6 +1599,30 @@ def _balance_dual_region_results(
         if index < len(second):
             merged.append(second[index])
     return merged
+
+
+def _balance_query_regions(
+    query: str,
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    balanced = _balance_dual_region_results(query, items)
+    if DUAL_REGION_RE.search(query) or not (
+        CJK_RE.search(query) and FRESHNESS_RE.search(query)
+    ):
+        return balanced
+
+    domestic = [item for item in balanced if _result_region(item) == "domestic"]
+    international = [
+        item for item in balanced if _result_region(item) == "international"
+    ]
+    if not domestic or not international:
+        return balanced
+
+    first_region = _result_region(balanced[0])
+    needed = domestic[0] if first_region == "international" else international[0]
+    result = [item for item in balanced if item is not needed]
+    result.insert(1, needed)
+    return result
 
 
 def _contains_term(value: str, term: str) -> bool:
@@ -1859,6 +1937,16 @@ def _result_relevance_score(
     return score
 
 
+def _result_is_hard_excluded(query: str, item: Dict[str, Any]) -> bool:
+    if "analysis" not in _query_intents(query):
+        return False
+    try:
+        host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
+    except ValueError:
+        return True
+    return _reference_host(host) or _low_value_host(host)
+
+
 def _rank_search_results(
     query: str,
     items: List[Dict[str, Any]],
@@ -1868,16 +1956,25 @@ def _rank_search_results(
         return list(items)
     scored = []
     for index, item in enumerate(items):
+        if _result_is_hard_excluded(query, item):
+            continue
         relevance = _result_relevance_score(query, item, terms)
         score = relevance + max(0, 5 - min(index, 5)) if relevance > 0 else 0
         scored.append((score, index, item))
     relevant = [entry for entry in scored if entry[0] > 0]
+    intents = _query_intents(query)
+    strict_query = bool(
+        FRESHNESS_RE.search(query)
+        or QUALITY_RANKING_RE.search(query)
+        or DOMAIN_TOKEN_RE.search(query)
+        or "analysis" in intents
+    )
     if not relevant:
-        if FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query):
+        if strict_query:
             return []
-        return list(items)
+        return [entry[2] for entry in scored]
     relevant.sort(key=lambda entry: (-entry[0], entry[1]))
-    if not (FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query)):
+    if not strict_query:
         matched_indexes = {entry[1] for entry in relevant}
         relevant.extend(entry for entry in scored if entry[1] not in matched_indexes)
 
@@ -1898,7 +1995,7 @@ def _rank_search_results(
         diverse.append(item)
     if not FRESHNESS_RE.search(query):
         diverse.extend(overflow)
-    return _balance_dual_region_results(query, diverse)
+    return _balance_query_regions(query, diverse)
 
 
 def _decode_body(body: bytes, content_type: str) -> str:
@@ -2498,7 +2595,10 @@ class WechatCloudWebProvider(WebSearchProvider):
                     )
                 ):
                     domestic_results, domestic_errors = self._search_domestic_mobile(
-                        upstream_query, safe_limit, timeout, max_response
+                        _domestic_search_query(normalized_query),
+                        safe_limit,
+                        timeout,
+                        max_response,
                     )
                     upstream_errors.extend(domestic_errors)
 
@@ -2558,7 +2658,7 @@ class WechatCloudWebProvider(WebSearchProvider):
                         continue
                     seen.add(identity)
                     candidates.append(candidate)
-                    if len(candidates) >= candidate_limit:
+                    if len(candidates) >= 160:
                         break
                 for raw in official_results:
                     candidate = normalize_candidate(raw)
