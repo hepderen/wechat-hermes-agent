@@ -52,6 +52,8 @@ class Settings:
         "/var/lib/wechat-hermes/adapter-data/cleanup-status.json"
     )
     cleanup_max_age_seconds: int = 172800
+    delivery_reconcile_attempts: int = 5
+    delivery_reconcile_delay_seconds: float = 0.75
 
     def validate_startup(self) -> None:
         credentials = {
@@ -115,6 +117,10 @@ class Settings:
             "artifact_retention_days": self.artifact_retention_days,
             "audit_retention_days": self.audit_retention_days,
             "cleanup_max_age_seconds": self.cleanup_max_age_seconds,
+            "delivery_reconcile_attempts": self.delivery_reconcile_attempts,
+            "delivery_reconcile_delay_seconds": (
+                self.delivery_reconcile_delay_seconds
+            ),
         }
         for name, value in positive_limits.items():
             if not isfinite(float(value)) or float(value) <= 0:
@@ -294,6 +300,30 @@ class Settings:
                         "HERMES_WECHAT_CLEANUP_MAX_AGE_SECONDS",
                         "172800",
                     )
+                ),
+            ),
+            delivery_reconcile_attempts=max(
+                1,
+                min(
+                    10,
+                    int(
+                        os.getenv(
+                            "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS",
+                            "5",
+                        )
+                    ),
+                ),
+            ),
+            delivery_reconcile_delay_seconds=max(
+                0.05,
+                min(
+                    5.0,
+                    float(
+                        os.getenv(
+                            "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS",
+                            "0.75",
+                        )
+                    ),
                 ),
             ),
         )

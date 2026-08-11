@@ -1,8 +1,7 @@
 [Unit]
 Description=Structured WeChat AI Group Bridge
 After=network-online.target wechat-chat-api.service
-Wants=network-online.target
-Requires=wechat-chat-api.service
+Wants=network-online.target wechat-chat-api.service
 
 [Service]
 Type=simple

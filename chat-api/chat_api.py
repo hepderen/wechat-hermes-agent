@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import faulthandler
 import hashlib
 import hmac
 import json
@@ -655,7 +656,6 @@ class SnapshotReader:
         self._last_refresh_at = 0.0
         self._last_refresh_duration_ms = 0.0
         self._last_wal_frames = 0
-        self._decompressor = zstandard.ZstdDecompressor()
         self.enc_key = self._load_key()
 
     def _load_key(self):
@@ -869,6 +869,10 @@ class SnapshotReader:
         return [self._serialize_row(row) for row in reversed(rows)]
 
     def _serialize_row(self, row):
+        # Zstd decompression contexts are not safe to share across request and
+        # monitor threads. Keep the context local to this serialization.
+        decompressor = zstandard.ZstdDecompressor()
+
         def row_value(name, default=None):
             try:
                 return row[name]
@@ -878,12 +882,12 @@ class SnapshotReader:
         content = decode_message_content(
             row["message_content"],
             row["WCDB_CT_message_content"],
-            self._decompressor,
+            decompressor,
         )
         message_source = decode_message_content(
             row_value("source"),
             row_value("WCDB_CT_source", 0),
-            self._decompressor,
+            decompressor,
         )
         native_at_user_list = parse_native_at_user_list(message_source)
         bot_wxid = str(getattr(self, "bot_wxid", "") or "").strip()
@@ -3434,6 +3438,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    faulthandler.enable(all_threads=True)
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
     application = ChatApiApplication(config)
     application.run_self_check(force_snapshot=True)

@@ -60,6 +60,9 @@ class FakeState:
         self.barriers: list[dict[str, Any]] = []
         self.chat_calls: list[dict[str, Any]] = []
         self.media_calls: list[dict[str, Any]] = []
+        self.delivery_states: dict[str, dict[str, Any]] = {}
+        self.delivery_checks: list[str] = []
+        self.drop_next_text_response = False
         self.fail_next_image = True
 
     def record(self, event: str, **fields: Any) -> None:
@@ -231,6 +234,18 @@ class HermesHandler(JsonHandler):
                         "exit_code": 0,
                     }
                 )
+            elif "evidence-drop-response" in prompt:
+                events.append(
+                    {
+                        "event": "tool.completed",
+                        "tool": "terminal",
+                        "duration": 0.01,
+                        "error": False,
+                        "exit_code": 0,
+                    }
+                )
+                with STATE.lock:
+                    STATE.drop_next_text_response = True
             elif "hold-stop" in prompt:
                 status = "running"
                 output = ""
@@ -298,6 +313,17 @@ class ChatHandler(JsonHandler):
         if parsed.path == "/health":
             self.send_json(200, {"status": "ready", "ready": True})
             return
+        if parsed.path == "/delivery/status":
+            values = urllib.parse.parse_qs(parsed.query)
+            request_id = values.get("request_id", [""])[0]
+            with STATE.lock:
+                STATE.delivery_checks.append(request_id)
+                delivery = dict(
+                    STATE.delivery_states.get(request_id)
+                    or {"status": "not_submitted"}
+                )
+            self.send_json(200, {"ok": True, **delivery})
+            return
         if parsed.path == "/control/check":
             values = urllib.parse.parse_qs(parsed.query)
             room_id = values.get("room_id", [""])[0]
@@ -352,17 +378,38 @@ class ChatHandler(JsonHandler):
         if path.startswith("/groups/") and path.endswith("/messages"):
             with STATE.lock:
                 STATE.chat_calls.append(dict(payload))
+                confirmed_local_id = 9000 + len(STATE.chat_calls)
+                request_id = str(payload.get("request_id") or "")
+                STATE.delivery_states[request_id] = {
+                    "status": "confirmed",
+                    "confirmed_local_id": confirmed_local_id,
+                }
+                drop_response = STATE.drop_next_text_response
+                STATE.drop_next_text_response = False
             STATE.record(
                 "chat.text",
-                request_id=str(payload.get("request_id") or ""),
+                request_id=request_id,
                 task_id=str(payload.get("task_id") or ""),
             )
+            if drop_response:
+                STATE.record(
+                    "chat.text.response_dropped",
+                    request_id=request_id,
+                    task_id=str(payload.get("task_id") or ""),
+                )
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.connection.close()
+                return
             self.send_json(
                 200,
                 {
                     "ok": True,
                     "status": "sent",
-                    "confirmed_local_id": 9000 + len(STATE.chat_calls),
+                    "confirmed_local_id": confirmed_local_id,
                 },
             )
             return
@@ -372,9 +419,19 @@ class ChatHandler(JsonHandler):
                 fail = payload.get("type") == "image" and STATE.fail_next_image
                 if fail:
                     STATE.fail_next_image = False
+                confirmed_local_id = 10000 + len(STATE.media_calls)
+                request_id = str(payload.get("request_id") or "")
+                STATE.delivery_states[request_id] = (
+                    {"status": "uncertain", "error_type": "send_uncertain"}
+                    if fail
+                    else {
+                        "status": "confirmed",
+                        "confirmed_local_id": confirmed_local_id,
+                    }
+                )
             STATE.record(
                 "chat.media",
-                request_id=str(payload.get("request_id") or ""),
+                request_id=request_id,
                 task_id=str(payload.get("task_id") or ""),
                 uncertain=fail,
             )
@@ -386,7 +443,7 @@ class ChatHandler(JsonHandler):
                     {
                         "ok": True,
                         "status": "sent",
-                        "confirmed_local_id": 10000 + len(STATE.media_calls),
+                        "confirmed_local_id": confirmed_local_id,
                     },
                 )
             return
@@ -453,6 +510,8 @@ def adapter_environment(
         "ALLOW_PRIVATE_WECHAT_CHAT": "false",
         "HERMES_WECHAT_WORKER_POLL_SECONDS": "0.05",
         "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "2",
+        "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "3",
+        "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.02",
     }
     return environment
 
@@ -700,6 +759,56 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                         "successful evidence task summary was not confirmed"
                     )
 
+                dropped_reply = post_chat(
+                    client,
+                    adapter_url,
+                    message="mcp command evidence-drop-response",
+                    local_id=203,
+                    request_id="fake-command-drop-response",
+                )
+                dropped_id = str(dropped_reply.get("task_id") or "")
+                if not dropped_id:
+                    raise AssertionError(
+                        "dropped-response request was not queued as a task"
+                    )
+                wait_task(
+                    client,
+                    adapter_url,
+                    dropped_id,
+                    {"succeeded"},
+                )
+                dropped_outbox = wait_outbox_terminal(database, dropped_id)
+                if ("text", "confirmed") not in dropped_outbox:
+                    raise AssertionError(
+                        "dropped HTTP response was not reconciled as confirmed"
+                    )
+                with STATE.lock:
+                    dropped_sends = sum(
+                        item.get("task_id") == dropped_id
+                        for item in STATE.chat_calls
+                    )
+                    dropped_checks = sum(
+                        value.startswith("task:%s:" % dropped_id)
+                        for value in STATE.delivery_checks
+                    )
+                if dropped_sends != 1:
+                    raise AssertionError(
+                        "dropped HTTP response caused a duplicate text send"
+                    )
+                if dropped_checks < 1:
+                    raise AssertionError(
+                        "dropped HTTP response did not trigger status reconciliation"
+                    )
+                reconciliation_metrics = client.get(adapter_url + "/metrics")
+                reconciliation_metrics.raise_for_status()
+                if (
+                    "wechat_hermes_outbox_reconciled_confirmed_total 1"
+                    not in reconciliation_metrics.text
+                ):
+                    raise AssertionError(
+                        "Adapter metrics omitted confirmed reconciliation"
+                    )
+
                 failed_reply = post_chat(
                     client,
                     adapter_url,
@@ -814,12 +923,17 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                 metrics.raise_for_status()
                 if "wechat_hermes_outbox" not in metrics.text:
                     raise AssertionError("Adapter metrics omitted Outbox state")
+                if "wechat_hermes_outbox_reconciled_confirmed_total" not in metrics.text:
+                    raise AssertionError("Adapter metrics omitted reconciliation counter")
 
                 return {
                     "status": "ok",
                     "checks": {
                         "three_structured_mentions": 3,
                         "execution_with_evidence": success["status"],
+                        "dropped_response_outbox": dropped_outbox,
+                        "dropped_response_sends": dropped_sends,
+                        "dropped_response_checks": dropped_checks,
                         "execution_without_evidence": failed["status"],
                         "stop_barrier_before_run_stop": True,
                         "stopped_outbox": stopped_outbox,

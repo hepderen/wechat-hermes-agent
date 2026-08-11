@@ -120,6 +120,77 @@ class MessageParsingTests(unittest.TestCase):
         self.assertEqual([first["local_id"], second["local_id"], third["local_id"]], [11, 12, 13])
         self.assertEqual([first["prompt"], second["prompt"], third["prompt"]], ["same"] * 3)
 
+    def test_concurrent_rows_use_independent_zstd_contexts(self):
+        created = []
+
+        class GuardedDecompressor:
+            def __init__(self):
+                self.thread_ids = set()
+                created.append(self)
+
+            def decompress(self, _value):
+                self.thread_ids.add(threading.get_ident())
+                time.sleep(0.02)
+                return b"wxid_member:\nhello"
+
+        class FakeReader:
+            group_id = "group"
+            mention = "@Hermes"
+            bot_wxid = "wxid_bot"
+            _decompressor = GuardedDecompressor()
+
+        base = {
+            "server_id": 1,
+            "local_type": 1,
+            "sort_seq": 10,
+            "real_sender_id": 7,
+            "create_time": 100,
+            "status": 3,
+            "origin_source": 2,
+            "message_content": b"compressed",
+            "WCDB_CT_message_content": 4,
+            "source": "",
+            "WCDB_CT_source": 0,
+        }
+        reader = FakeReader()
+        reader._serialize_row = chat_api.SnapshotReader._serialize_row.__get__(
+            reader, FakeReader
+        )
+        start = threading.Barrier(3)
+        results = []
+        errors = []
+
+        def parse(local_id):
+            try:
+                start.wait()
+                results.append(
+                    reader._serialize_row(dict(base, local_id=local_id))
+                )
+            except Exception as exc:  # pragma: no cover - assertion captures it
+                errors.append(exc)
+
+        threads = [threading.Thread(target=parse, args=(value,)) for value in (41, 42)]
+        with mock.patch.object(
+            chat_api.zstandard,
+            "ZstdDecompressor",
+            side_effect=GuardedDecompressor,
+        ):
+            for thread in threads:
+                thread.start()
+            start.wait()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertFalse(errors)
+        self.assertEqual(sorted(item["local_id"] for item in results), [41, 42])
+        self.assertEqual(len(created), 3)
+        per_row_contexts = created[1:]
+        self.assertTrue(all(len(item.thread_ids) == 1 for item in per_row_contexts))
+        self.assertEqual(
+            len(set().union(*(item.thread_ids for item in per_row_contexts))),
+            2,
+        )
+
     def test_quoted_reply_uses_title_as_instruction_and_reference_as_metadata(self):
         row = {
             "local_id": 21,

@@ -1147,9 +1147,19 @@ def prepare_task_outbox(
     return runtime.store.prepare_outbox(task["id"], generation, items)
 
 
-async def reconcile_outbox_recovery(runtime: Runtime) -> int:
-    recovered = 0
-    for item in runtime.store.list_recoverable_outbox():
+async def probe_delivery_confirmation(
+    runtime: Runtime,
+    item: dict[str, Any],
+    *,
+    allow_not_submitted: bool,
+    initial_error: str = "",
+) -> dict[str, Any]:
+    last_error = str(initial_error or "")
+    attempts = max(1, int(runtime.settings.delivery_reconcile_attempts))
+    delay = max(0.0, float(runtime.settings.delivery_reconcile_delay_seconds))
+    for attempt in range(attempts):
+        if attempt:
+            await asyncio.sleep(delay)
         try:
             result = await runtime.chat_api.delivery_status(
                 item["room_id"],
@@ -1159,34 +1169,101 @@ async def reconcile_outbox_recovery(runtime: Runtime) -> int:
                 task_id=item["task_id"],
                 generation=int(item["generation"]),
             )
-            status = str(result.get("status") or "").strip().lower()
-            if status == "confirmed":
-                recovered_state = "confirmed"
-            elif status == "not_submitted":
-                recovered_state = "prepared"
-            elif status == "suppressed":
-                recovered_state = "suppressed"
-            elif status == "failed":
-                recovered_state = "failed"
-            else:
-                recovered_state = "uncertain"
-            error = str(result.get("error_type") or "")
-            confirmed_local_id = result.get("confirmed_local_id")
-            media_fingerprint = str(result.get("media_fingerprint") or "")
-        except Exception as exc:
-            recovered_state = "uncertain"
-            error = exception_summary(
-                exc,
-                operation="outbox recovery reconciliation",
+            runtime.counters["outbox_reconcile_checks_total"] = (
+                runtime.counters.get("outbox_reconcile_checks_total", 0) + 1
             )
-            confirmed_local_id = None
-            media_fingerprint = ""
+            status = str(result.get("status") or "").strip().lower()
+            if status in {"confirmed", "sent"}:
+                return {
+                    "state": "confirmed",
+                    "error": "",
+                    "confirmed_local_id": result.get("confirmed_local_id"),
+                    "media_fingerprint": str(
+                        result.get("media_fingerprint") or ""
+                    ),
+                }
+            if status in {"suppressed", "failed"}:
+                return {
+                    "state": status,
+                    "error": str(result.get("error_type") or ""),
+                    "confirmed_local_id": None,
+                    "media_fingerprint": "",
+                }
+            if status == "not_submitted" and allow_not_submitted:
+                return {
+                    "state": "prepared",
+                    "error": "",
+                    "confirmed_local_id": None,
+                    "media_fingerprint": "",
+                }
+            last_error = str(
+                result.get("error_type") or "confirmation_not_found"
+            )
+        except Exception as exc:
+            runtime.counters["outbox_reconcile_checks_total"] = (
+                runtime.counters.get("outbox_reconcile_checks_total", 0) + 1
+            )
+            last_error = exception_summary(
+                exc,
+                operation="outbox delivery confirmation",
+            )
+    return {
+        "state": "uncertain",
+        "error": last_error or "confirmation_not_found",
+        "confirmed_local_id": None,
+        "media_fingerprint": "",
+    }
+
+
+async def settle_submitted_outbox(
+    runtime: Runtime,
+    task: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    initial_error: str,
+) -> str:
+    reconciliation = await probe_delivery_confirmation(
+        runtime,
+        {**item, "room_id": task["room_id"]},
+        allow_not_submitted=False,
+        initial_error=initial_error,
+    )
+    state = str(reconciliation["state"])
+    runtime.store.mark_outbox_state(
+        item["id"],
+        state,
+        error=str(reconciliation.get("error") or ""),
+        confirmed_local_id=reconciliation.get("confirmed_local_id"),
+        media_fingerprint=str(reconciliation.get("media_fingerprint") or ""),
+    )
+    if state != "uncertain":
+        key = "outbox_reconciled_%s_total" % state
+        runtime.counters[key] = runtime.counters.get(key, 0) + 1
+    log_event(
+        "outbox_delivery_reconciled",
+        task_id=task["id"],
+        room_id=task["room_id"],
+        item_id=item["id"],
+        kind=item["kind"],
+        state=state,
+    )
+    return state
+
+
+async def reconcile_outbox_recovery(runtime: Runtime) -> int:
+    recovered = 0
+    for item in runtime.store.list_recoverable_outbox():
+        reconciliation = await probe_delivery_confirmation(
+            runtime,
+            item,
+            allow_not_submitted=True,
+        )
         if runtime.store.reconcile_outbox_item(
             item["id"],
-            recovered_state,
-            error=error,
-            confirmed_local_id=confirmed_local_id,
-            media_fingerprint=media_fingerprint,
+            str(reconciliation["state"]),
+            error=str(reconciliation.get("error") or ""),
+            confirmed_local_id=reconciliation.get("confirmed_local_id"),
+            media_fingerprint=str(reconciliation.get("media_fingerprint") or ""),
         ):
             recovered += 1
     return recovered
@@ -1387,7 +1464,13 @@ async def deliver_outbox_item(
         ):
             state = "prepared"
         elif exc.delivery_uncertain or not exc.pre_submission:
-            state = "uncertain"
+            await settle_submitted_outbox(
+                runtime,
+                task,
+                item,
+                initial_error=error,
+            )
+            return
         else:
             state = "failed"
         runtime.store.mark_outbox_state(item["id"], state, error=error)
@@ -1403,19 +1486,11 @@ async def deliver_outbox_item(
         return
     except Exception as exc:
         error = exception_summary(exc, operation="outbox delivery")
-        runtime.store.mark_outbox_state(
-            item["id"],
-            "uncertain",
-            error=error,
-        )
-        log_event(
-            "outbox_delivery_error",
-            task_id=task["id"],
-            room_id=task["room_id"],
-            item_id=item["id"],
-            kind=item["kind"],
-            state="uncertain",
-            error_type=type(exc).__name__,
+        await settle_submitted_outbox(
+            runtime,
+            task,
+            item,
+            initial_error=error,
         )
         return
 
@@ -1430,6 +1505,14 @@ async def deliver_outbox_item(
         final_state = "failed"
     else:
         final_state = "uncertain"
+    if final_state == "uncertain":
+        await settle_submitted_outbox(
+            runtime,
+            task,
+            item,
+            initial_error=str(result.get("error_type") or "send_uncertain"),
+        )
+        return
     runtime.store.mark_outbox_state(
         item["id"],
         final_state,
@@ -2144,6 +2227,12 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 "# TYPE wechat_hermes_last_stop_latency_ms gauge",
                 "wechat_hermes_last_stop_latency_ms %d"
                 % runtime.counters.get("last_stop_latency_ms", 0),
+                "# TYPE wechat_hermes_outbox_reconcile_checks_total counter",
+                "wechat_hermes_outbox_reconcile_checks_total %d"
+                % runtime.counters.get("outbox_reconcile_checks_total", 0),
+                "# TYPE wechat_hermes_outbox_reconciled_confirmed_total counter",
+                "wechat_hermes_outbox_reconciled_confirmed_total %d"
+                % runtime.counters.get("outbox_reconciled_confirmed_total", 0),
             ]
         )
         return "\n".join(lines) + "\n"

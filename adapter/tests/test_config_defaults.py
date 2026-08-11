@@ -19,11 +19,24 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
         "/var/lib/wechat-hermes/adapter-data/cleanup-status.json"
     )
     assert settings.cleanup_max_age_seconds == 172800
+    assert settings.delivery_reconcile_attempts == 5
+    assert settings.delivery_reconcile_delay_seconds == 0.75
 
 
 def test_delivery_media_limit_is_clamped_to_three(monkeypatch):
     monkeypatch.setenv("HERMES_WECHAT_MAX_DELIVERY_MEDIA_ITEMS", "99")
     assert Settings.from_env().max_delivery_media_items == 3
+
+
+def test_delivery_reconciliation_limits_are_clamped(monkeypatch):
+    monkeypatch.setenv("HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS", "99")
+    monkeypatch.setenv(
+        "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS",
+        "0",
+    )
+    settings = Settings.from_env()
+    assert settings.delivery_reconcile_attempts == 10
+    assert settings.delivery_reconcile_delay_seconds == 0.05
 
 
 def test_fake_stack_uses_platform_absolute_cleanup_status_path(tmp_path):

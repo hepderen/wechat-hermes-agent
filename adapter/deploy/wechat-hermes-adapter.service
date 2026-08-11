@@ -1,8 +1,8 @@
 [Unit]
 Description=WeChat Hermes API Adapter
 After=network-online.target hermes-worker.service wechat-chat-api.service
-Wants=network-online.target
-Requires=hermes-worker.service wechat-chat-api.service
+Wants=network-online.target wechat-chat-api.service
+Requires=hermes-worker.service
 
 [Service]
 Type=simple

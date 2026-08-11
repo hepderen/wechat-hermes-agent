@@ -13,6 +13,7 @@ WorkingDirectory=/home/ubuntu/wechat-chat-api
 Environment=DISPLAY=:99
 Environment=LANG=C.UTF-8
 Environment=LC_ALL=C.UTF-8
+Environment=PYTHONFAULTHANDLER=1
 EnvironmentFile=/etc/wechat-hermes/chat-api.env
 ExecStart=/home/ubuntu/wechat-chat-api/.venv/bin/python /home/ubuntu/wechat-chat-api/chat_api.py --config /home/ubuntu/wechat-chat-api/config.json
 Restart=always

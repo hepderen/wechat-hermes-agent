@@ -257,6 +257,8 @@ def make_settings(tmp_path: Path, **changes) -> Settings:
         allow_private_chat=False,
         worker_poll_seconds=0.2,
         cleanup_status_path=tmp_path / "cleanup-status.json",
+        delivery_reconcile_attempts=2,
+        delivery_reconcile_delay_seconds=0.001,
     )
     return replace(settings, **changes)
 
@@ -395,7 +397,12 @@ def test_lifespan_reconciles_sending_outbox_before_ready(
 
     recovered = runtime.store.list_outbox(task["id"], task["generation"])
     assert recovered[0]["state"] == expected_state
-    assert len(runtime.chat_api.delivery_checks) == 1
+    expected_checks = (
+        runtime.settings.delivery_reconcile_attempts
+        if remote_status == "uncertain"
+        else 1
+    )
+    assert len(runtime.chat_api.delivery_checks) == expected_checks
     if expected_state == "confirmed":
         assert recovered[0]["confirmed_local_id"] == 88
         assert runtime.store.get_task(task["id"])["final_sent"] is True
@@ -1336,6 +1343,65 @@ def test_uncertain_media_send_is_never_retried(tmp_path):
     assert stored["delivery_suppressed"] is True
     assert stored["delivery_attempts"] == 2
     assert runtime.store.next_delivery() is None
+
+
+def test_dropped_delivery_response_reconciles_without_resending(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        delivery_reconcile_attempts=3,
+        delivery_reconcile_delay_seconds=0.001,
+    )
+    runtime.store.initialize()
+    task = create_task(runtime.store, request_id="dropped-delivery-response")
+    runtime.store.complete(task["id"], "succeeded", output="done")
+
+    class DroppedResponseChatApi(FakeChatApi):
+        async def send_text_item(
+            self,
+            room_id,
+            text,
+            request_id,
+            *,
+            source_local_id,
+            task_id="",
+            generation=0,
+        ):
+            self.text.append((room_id, text, request_id))
+            raise RemoteAPIError(
+                "response connection dropped",
+                error_type="RemoteProtocolError",
+                delivery_uncertain=True,
+            )
+
+        async def delivery_status(self, *args, **kwargs):
+            await super().delivery_status(*args, **kwargs)
+            if len(self.delivery_checks) == 1:
+                raise RemoteAPIError(
+                    "Chat API is restarting",
+                    error_type="connection_failed",
+                    pre_submission=True,
+                    retryable=True,
+                )
+            return {
+                "ok": True,
+                "status": "confirmed",
+                "confirmed_local_id": 991,
+            }
+
+    runtime.chat_api = DroppedResponseChatApi()
+    asyncio.run(deliver_task(runtime, runtime.store.next_delivery()))
+
+    outbox = runtime.store.list_outbox(task["id"], task["generation"])
+    assert [(item["kind"], item["state"]) for item in outbox] == [
+        ("text", "confirmed")
+    ]
+    assert outbox[0]["confirmed_local_id"] == 991
+    assert len(runtime.chat_api.text) == 1
+    assert len(runtime.chat_api.delivery_checks) == 2
+    assert runtime.counters["outbox_reconciled_confirmed_total"] == 1
+
+    asyncio.run(deliver_task(runtime, runtime.store.get_task(task["id"])))
+    assert len(runtime.chat_api.text) == 1
 
 
 def test_text_delivery_retry_limit_is_bounded(tmp_path):

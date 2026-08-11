@@ -181,6 +181,30 @@ def test_structured_bridge_uses_scoped_tokens_without_loading_ocr_module():
     assert "OCR_FALLBACK" not in bridge
 
 
+def test_chat_api_restart_is_isolated_and_fatal_stacks_are_enabled():
+    root = Path(__file__).resolve().parents[2]
+    adapter_unit = (
+        root / "adapter" / "deploy" / "wechat-hermes-adapter.service"
+    ).read_text(encoding="utf-8")
+    bridge_unit = (root / "chat-api" / "linux-wechat-bridge.service").read_text(
+        encoding="utf-8"
+    )
+    chat_unit = (root / "chat-api" / "wechat-chat-api.service").read_text(
+        encoding="utf-8"
+    )
+    chat_source = (root / "chat-api" / "chat_api.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Wants=network-online.target wechat-chat-api.service" in adapter_unit
+    assert "Requires=hermes-worker.service\n" in adapter_unit
+    assert "Requires=hermes-worker.service wechat-chat-api.service" not in adapter_unit
+    assert "Wants=network-online.target wechat-chat-api.service" in bridge_unit
+    assert "Requires=wechat-chat-api.service" not in bridge_unit
+    assert "Environment=PYTHONFAULTHANDLER=1" in chat_unit
+    assert "faulthandler.enable(all_threads=True)" in chat_source
+
+
 def test_cleanup_and_log_rotation_cover_hermes_runtime_records():
     root = Path(__file__).resolve().parents[1]
     cleanup_service = (
@@ -213,6 +237,8 @@ def test_environment_examples_match_production_generation_and_budget():
         example = (root / relative_path).read_text(encoding="utf-8")
         assert "HERMES_WECHAT_SESSION_GENERATION=5" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
+        assert "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS=5" in example
+        assert "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS=0.75" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
         assert "WECHAT_CHAT_API_TOKEN=" in example
@@ -228,6 +254,7 @@ def test_environment_examples_match_production_generation_and_budget():
         encoding="utf-8"
     )
     assert "HERMES_HOME_MODE=2770" in hermes_example
+    assert '"HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "5"' in SCRIPT
 
 
 def test_environment_writer_removes_legacy_skill_runtime_variables():

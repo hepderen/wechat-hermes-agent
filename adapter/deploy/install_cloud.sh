@@ -1015,6 +1015,8 @@ for key, value in {
         "/var/lib/wechat-hermes/adapter-data/cleanup-status.json"
     ),
     "HERMES_WECHAT_CLEANUP_MAX_AGE_SECONDS": "172800",
+    "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "5",
+    "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.75",
 }.items():
     adapter.setdefault(key, value)
 
