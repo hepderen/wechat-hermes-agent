@@ -38,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "8"
+SEARCH_CACHE_VERSION = "9"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -71,6 +71,9 @@ TRUSTED_FEED_ENDPOINTS = (
         "nvidia-ai",
         "https://blogs.nvidia.com/blog/category/generative-ai/feed/",
     ),
+    ("leiphone", "https://www.leiphone.com/feed"),
+    ("qbitai", "https://www.qbitai.com/feed"),
+    ("infoq-cn", "https://www.infoq.cn/feed"),
 )
 TRUSTED_FEED_HOSTS = frozenset(
     (urlsplit(endpoint).hostname or "").lower()
@@ -273,6 +276,7 @@ DOMESTIC_HOST_SUFFIXES = (
     "eastmoney.com",
     "cnstock.com",
     "caict.ac.cn",
+    "qbitai.com",
 )
 AUTHORITATIVE_HOST_SUFFIXES = (
     "gov.cn",
@@ -290,6 +294,9 @@ AUTHORITATIVE_HOST_SUFFIXES = (
     "anthropic.com",
     "blog.google",
     "research.google",
+    "qbitai.com",
+    "leiphone.com",
+    "infoq.cn",
     "microsoft.com",
     "research.meta.ai",
     "nvidia.com",
@@ -1555,6 +1562,9 @@ def _result_source_type(item: Dict[str, Any], host: str) -> str:
         "openai",
         "google-ai",
         "nvidia-ai",
+        "leiphone",
+        "qbitai",
+        "infoq-cn",
     }:
         return "authoritative"
     return "web"

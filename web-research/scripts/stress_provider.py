@@ -87,6 +87,7 @@ DOMESTIC_HOST_SUFFIXES = (
     "eastmoney.com",
     "cnstock.com",
     "caict.ac.cn",
+    "qbitai.com",
 )
 
 
@@ -170,6 +171,18 @@ async def run(args) -> dict:
             raise RuntimeError(
                 "fresh-news relevance failed case=%s relevant_top_five=%d hosts=%s"
                 % (label, relevant_top_five, ",".join(hosts))
+            )
+        if label == "current-ai-cn" and not any(domestic_host(host) for host in hosts):
+            raise RuntimeError(
+                "Chinese fresh-news search retained no domestic source hosts=%s"
+                % ",".join(hosts)
+            )
+        if label == "current-ai-en" and not any(
+            not domestic_host(host) for host in hosts
+        ):
+            raise RuntimeError(
+                "English fresh-news search retained no international source hosts=%s"
+                % ",".join(hosts)
             )
         if expected and matched and channel in official_hits:
             official_hits[channel] += 1

@@ -85,6 +85,7 @@ DOMESTIC_HOST_SUFFIXES = (
     "eastmoney.com",
     "cnstock.com",
     "caict.ac.cn",
+    "qbitai.com",
 )
 
 

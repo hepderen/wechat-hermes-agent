@@ -51,6 +51,9 @@ def test_domestic_fallbacks_are_fixed_https_endpoints_and_cache_is_hash_keyed():
     assert '"https://m.so.com/s"' in source
     assert '"https://m.baidu.com/s"' in source
     assert '"https://global.bing.com/news/search"' in source
+    assert '"https://www.leiphone.com/feed"' in source
+    assert '"https://www.qbitai.com/feed"' in source
+    assert '"https://www.infoq.cn/feed"' in source
     assert "follow_redirects=False" in source
     assert "cache_key TEXT PRIMARY KEY" in source
     assert "WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED=true" in environment
@@ -58,6 +61,7 @@ def test_domestic_fallbacks_are_fixed_https_endpoints_and_cache_is_hash_keyed():
     assert "WECHAT_WEB_EXTRACT_WORKERS=3" in environment
     assert "WECHAT_WEB_BING_NEWS_RSS_ENABLED=true" in environment
     assert "WECHAT_WEB_SEARCH_STALE_IF_ERROR_SECONDS=86400" in environment
+    assert "WECHAT_WEB_TRUSTED_FEED_WORKERS=9" in environment
 
 
 def test_extractor_dependencies_are_version_and_hash_locked():

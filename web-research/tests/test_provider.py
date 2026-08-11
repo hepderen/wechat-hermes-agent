@@ -402,6 +402,25 @@ def test_freshness_search_merges_relevant_trusted_feed(
     assert result["data"]["web"][0]["source"] == "the-verge"
 
 
+def test_domestic_trusted_feeds_are_authoritative_regional_sources(
+    provider_module,
+):
+    endpoints = dict(provider_module.TRUSTED_FEED_ENDPOINTS)
+    assert endpoints["leiphone"] == "https://www.leiphone.com/feed"
+    assert endpoints["qbitai"] == "https://www.qbitai.com/feed"
+    assert endpoints["infoq-cn"] == "https://www.infoq.cn/feed"
+
+    for source, url in (
+        ("leiphone", "https://www.leiphone.com/category/ai/1.html"),
+        ("qbitai", "https://www.qbitai.com/2026/08/1.html"),
+        ("infoq-cn", "https://www.infoq.cn/article/1"),
+    ):
+        item = {"source": source, "url": url}
+        host = urlsplit(url).hostname or ""
+        assert provider_module._result_source_type(item, host) == "authoritative"
+        assert provider_module._result_region(item) == "domestic"
+
+
 def test_bing_html_is_primary_and_parses_result_cards(provider_module, monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
     monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "true")
@@ -1219,6 +1238,8 @@ def test_domestic_region_recognizes_major_publishers_without_cn_tld(
         "https://www.ifeng.com/c/1",
         "https://36kr.com/p/1",
         "https://www.leiphone.com/category/ai/1",
+        "https://www.qbitai.com/2026/08/1.html",
+        "https://www.infoq.cn/article/1",
     ):
         assert provider_module._result_region({"url": url}) == "domestic"
 
