@@ -9,7 +9,7 @@ import sys
 import time
 import types
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 import pytest
@@ -101,6 +101,7 @@ def provider_module(monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_TRUSTED_FEEDS_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_SEARX_MERGE_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_DOMESTIC_MERGE_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_SEARCH_CACHE_DB", "disabled")
     monkeypatch.setenv("WECHAT_WEB_SEARCH_ATTEMPTS", "1")
     monkeypatch.setenv("WECHAT_WEB_EXTRACT_ATTEMPTS", "1")
@@ -738,11 +739,69 @@ def test_chinese_search_falls_back_to_direct_sogou(provider_module, monkeypatch)
         raise AssertionError("unexpected upstream: %s" % request.url.host)
 
     monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
-    result = provider_module.WechatCloudWebProvider().search("腾讯云 官方文档", 1)
+    result = provider_module.WechatCloudWebProvider().search("腾讯云 产品说明", 1)
 
     assert result["success"] is True
     assert result["data"]["web"][0]["url"] == "https://cloud.tencent.com/"
     assert calls == ["127.0.0.1", "m.sogou.com"]
+
+
+def test_chinese_dual_region_search_merges_global_and_domestic_sources(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
+    monkeypatch.setenv("WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED", "true")
+    monkeypatch.setenv("WECHAT_WEB_DOMESTIC_MERGE_ENABLED", "true")
+    calls = []
+    bing_html = b"""
+    <li class="b_algo"><h2><a href="https://openai.com/news/research/">AI research report</a></h2>
+      <div class="b_caption"><p>International large language model research.</p></div></li>
+    <li class="b_algo"><h2><a href="https://www.reuters.com/technology/ai/">AI industry report</a></h2>
+      <div class="b_caption"><p>Global large language model industry reporting.</p></div></li>
+    """
+    domestic_html = (
+        '<a class="resultLink" href="./tc?url=https%3A%2F%2Fwww.gov.cn%2Fai">'
+        "国内大模型行业报告</a>"
+        '<a class="resultLink" href="./tc?url=https%3A%2F%2Fwww.xinhuanet.com%2Fai">'
+        "中国人工智能行业动态</a>"
+        '<a class="resultLink" href="./tc?url=https%3A%2F%2Fwww.people.com.cn%2Fai">'
+        "国内人工智能研究报告</a>"
+        '<a class="resultLink" href="./tc?url=https%3A%2F%2Fwww.cctv.com%2Fai">'
+        "中国大模型产业观察</a>"
+    ).encode()
+
+    def handler(request):
+        calls.append(request.url.host)
+        if request.url.host == "www.bing.com":
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "text/html"},
+                content=bing_html,
+            )
+        if request.url.host == "127.0.0.1":
+            return httpx.Response(200, request=request, json={"results": []})
+        if request.url.host == "m.sogou.com":
+            return httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "text/html; charset=utf-8"},
+                content=domestic_html,
+            )
+        raise AssertionError("unexpected upstream: %s" % request.url.host)
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
+    result = provider_module.WechatCloudWebProvider().search(
+        "国内外大模型行业报告",
+        4,
+    )
+
+    assert result["success"] is True
+    hosts = [urlsplit(item["url"]).hostname or "" for item in result["data"]["web"]]
+    assert calls == ["www.bing.com", "127.0.0.1", "m.sogou.com"]
+    assert any(host.endswith(".cn") for host in hosts[:2])
+    assert any(not host.endswith(".cn") for host in hosts[:2])
 
 
 def test_domestic_challenge_falls_back_to_360(provider_module, monkeypatch):
@@ -775,7 +834,7 @@ def test_domestic_challenge_falls_back_to_360(provider_module, monkeypatch):
         raise AssertionError("unexpected upstream: %s" % request.url.host)
 
     monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
-    result = provider_module.WechatCloudWebProvider().search("国务院 最新政策", 1)
+    result = provider_module.WechatCloudWebProvider().search("国务院 部门动态", 1)
 
     assert result["success"] is True
     assert result["data"]["web"][0]["url"] == "https://www.gov.cn/"
@@ -820,7 +879,7 @@ def test_domestic_challenges_fall_back_to_baidu(provider_module, monkeypatch):
         raise AssertionError("unexpected upstream: %s" % request.url.host)
 
     monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
-    result = provider_module.WechatCloudWebProvider().search("国务院 最新政策", 1)
+    result = provider_module.WechatCloudWebProvider().search("国务院 部门动态", 1)
 
     assert result["success"] is True
     assert result["data"]["web"][0]["url"] == "https://www.gov.cn/"
@@ -940,6 +999,188 @@ def test_query_terms_exclude_english_date_and_intent_words(provider_module):
     global_terms = provider_module._query_relevance_terms("全球化最新趋势")
     assert "全球化" in global_terms
     assert "趋势" in global_terms
+    how_to_terms = provider_module._query_relevance_terms(
+        "How to configure Python free-threaded build with official documentation"
+    )
+    assert "how" not in how_to_terms
+    assert "to" not in how_to_terms
+    assert "with" not in how_to_terms
+    assert "python" in how_to_terms
+    assert "free-threaded" in how_to_terms
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(
+        (ROOT / "tests" / "fixtures" / "search_quality_cases.json").read_text(
+            encoding="utf-8"
+        )
+    ),
+    ids=lambda case: case["id"],
+)
+def test_search_quality_regression_corpus(provider_module, monkeypatch, case):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 12),
+    )
+
+    ranked = provider_module._rank_search_results(case["query"], case["results"])
+
+    assert ranked
+    host = urlsplit(ranked[0]["url"]).hostname or ""
+    assert host == case["expected_top_host"] or host.endswith(
+        "." + case["expected_top_host"]
+    )
+
+
+def test_query_planning_strips_chat_filler_without_losing_subject(provider_module):
+    assert provider_module._upstream_query(
+        "帮我联网搜一下 荣耀 Magic V5 和 vivo X Fold5 续航对比，并给出来源"
+    ) == "荣耀 Magic V5 和 vivo X Fold5 续航对比"
+    assert provider_module._upstream_query("研究生报名条件") == "研究生报名条件"
+
+
+def test_query_intents_cover_decision_and_verification_shapes(provider_module):
+    assert provider_module._query_intents("A 和 B 参数对比") == {
+        "comparison"
+    }
+    assert provider_module._query_intents("核实这个消息是不是真的") == {
+        "fact_check"
+    }
+    assert provider_module._query_intents("最新手机推荐") == {
+        "freshness",
+        "recommendation",
+    }
+
+
+def test_chinese_product_query_extracts_entities_and_topic(provider_module):
+    terms = provider_module._query_relevance_terms(
+        "荣耀 Magic V5 和 vivo X Fold5 续航对比"
+    )
+
+    assert "荣耀" in terms
+    assert "magic" in terms
+    assert "vivo" in terms
+    assert "fold5" in terms
+    assert "续航" in terms
+    assert "对比" not in terms
+
+
+def test_general_comparison_ranking_uses_topic_coverage(provider_module):
+    ranked = provider_module._rank_search_results(
+        "荣耀 Magic V5 和 vivo X Fold5 续航对比",
+        [
+            {
+                "title": "荣耀 Magic V5 壁纸下载",
+                "url": "https://wallpaper.example/honor",
+                "description": "手机壁纸合集",
+            },
+            {
+                "title": "荣耀 Magic V5 与 vivo X Fold5 续航实测对比",
+                "url": "https://review.example/foldable-battery",
+                "description": "两款折叠屏的电池、充电和重载续航数据。",
+            },
+            {
+                "title": "vivo X Fold5 参数",
+                "url": "https://www.vivo.com.cn/x-fold5",
+                "description": "官方产品参数。",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"] == "https://review.example/foldable-battery"
+
+
+def test_fact_check_ranking_prefers_authoritative_evidence(provider_module):
+    ranked = provider_module._rank_search_results(
+        "核实 OpenAI 已发布新模型这个消息是否属实",
+        [
+            {
+                "title": "网友称 OpenAI 已发布新模型",
+                "url": "https://zhidao.baidu.com/question/1",
+                "description": "未经证实的讨论。",
+            },
+            {
+                "title": "OpenAI announces a new model",
+                "url": "https://openai.com/index/new-model/",
+                "description": "Official announcement from OpenAI.",
+            },
+            {
+                "title": "OpenAI releases new model",
+                "url": "https://www.reuters.com/technology/openai-model/",
+                "description": "Independent reporting on the announcement.",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked[:2]] == [
+        "https://openai.com/index/new-model/",
+        "https://www.reuters.com/technology/openai-model/",
+    ]
+
+
+def test_general_ranking_diversifies_hosts_before_overflow(provider_module):
+    ranked = provider_module._rank_search_results(
+        "Python typing documentation",
+        [
+            {
+                "title": "Python typing documentation one",
+                "url": "https://docs.python.org/3/library/typing.html",
+                "description": "Python typing docs",
+            },
+            {
+                "title": "Python typing documentation two",
+                "url": "https://docs.python.org/3/reference/compound_stmts.html",
+                "description": "Python typing reference",
+            },
+            {
+                "title": "Python typing documentation three",
+                "url": "https://docs.python.org/3/whatsnew/3.14.html",
+                "description": "Python typing updates",
+            },
+            {
+                "title": "Python typing specification",
+                "url": "https://typing.python.org/",
+                "description": "Python typing specification",
+            },
+        ],
+    )
+
+    assert "https://typing.python.org/" in [item["url"] for item in ranked[:3]]
+    assert ranked[-1]["url"] == "https://docs.python.org/3/whatsnew/3.14.html"
+
+
+def test_tracking_parameters_do_not_create_duplicate_results(provider_module):
+    first = provider_module._canonical_result_key(
+        "https://example.com/article?utm_source=feed&id=7#top"
+    )
+    second = provider_module._canonical_result_key(
+        "https://EXAMPLE.com/article?id=7&utm_medium=social"
+    )
+
+    assert first == second
+
+
+def test_dual_region_query_balances_domestic_and_international_results(
+    provider_module,
+):
+    ranked = provider_module._balance_dual_region_results(
+        "国内外人工智能行业动态",
+        [
+            {"url": "https://openai.com/news/one"},
+            {"url": "https://www.reuters.com/technology/two"},
+            {"url": "https://www.gov.cn/zhengce/three"},
+            {"url": "https://www.xinhuanet.com/four"},
+        ],
+    )
+
+    assert [provider_module._result_region(item) for item in ranked] == [
+        "international",
+        "domestic",
+        "international",
+        "domestic",
+    ]
 
 
 def test_freshness_ranking_drops_zero_relevance_dictionary_results(
@@ -987,6 +1228,28 @@ def test_official_ranking_prefers_exact_entity_domain(provider_module):
         ],
     )
     assert ranked[0]["url"] == "https://www.python.org/downloads/"
+
+
+def test_generic_official_entry_does_not_hide_a_specific_document(provider_module):
+    ranked = provider_module._rank_search_results(
+        "Python official documentation how to configure free-threaded build",
+        [
+            {
+                "title": "Python support for free threading",
+                "url": "https://docs.python.org/3/howto/free-threading-python.html",
+                "description": "Official Python documentation and build configuration",
+            },
+            {
+                "title": "Python official documentation",
+                "url": "https://docs.python.org/3/",
+                "description": "Known public official entry point",
+                "source": "official-entry",
+                "search_channel": "official",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"].endswith("free-threading-python.html")
 
 
 def test_freshness_ranking_prefers_authoritative_news_source(provider_module):
@@ -1344,3 +1607,30 @@ def test_extract_preserves_order_and_limits_url_count(provider_module, monkeypat
 
     assert result[0]["content"] == "first"
     assert "limit exceeded" in result[1]["error"]
+
+
+def test_extract_runs_selected_pages_with_bounded_parallelism(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_EXTRACT_MAX_URLS", "5")
+    monkeypatch.setenv("WECHAT_WEB_EXTRACT_WORKERS", "2")
+    provider = provider_module.WechatCloudWebProvider()
+    active = 0
+    maximum_active = 0
+
+    async def fake_extract(url):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return {"url": url, "title": "", "content": "ok"}
+
+    monkeypatch.setattr(provider, "_extract_one", fake_extract)
+    urls = ["https://%d.example/" % index for index in range(4)]
+
+    results = asyncio.run(provider.extract(urls))
+
+    assert [item["url"] for item in results] == urls
+    assert maximum_active == 2

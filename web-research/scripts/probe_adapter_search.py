@@ -33,6 +33,24 @@ PROBE_MESSAGES = {
         "上推特帮我搜一搜今天的 AI 热点新闻。必须调用 web_search 和 "
         "web_extract，引用至少两个公开来源 URL，并用中文简要回答。"
     ),
+    "compare": (
+        "请对比 Python 3.13 与 Python 3.14 官方文档中的 free-threaded mode "
+        "状态。必须调用 web_search 和 web_extract，核对具体版本，引用至少两个"
+        "公开来源 URL，并用中文简要回答。"
+    ),
+    "verify": (
+        "请核实 Python 3.13 是否首次支持可选 free-threaded build。必须调用 "
+        "web_search 和 web_extract，先找原始官方文档，再找佐证，引用至少两个"
+        "公开来源 URL，并用中文简要回答。"
+    ),
+}
+
+PROFILE_REQUIREMENTS = {
+    "python": {"hosts": ("python.org",), "terms": ()},
+    "china": {"hosts": ("gov.cn", "cloud.tencent.com"), "terms": ()},
+    "twitter": {"hosts": (), "terms": ()},
+    "compare": {"hosts": ("python.org",), "terms": ("3.13", "3.14")},
+    "verify": {"hosts": ("python.org",), "terms": ("3.13",)},
 }
 
 
@@ -246,6 +264,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             completed = [
                 item for item in events if item["event_type"] == "tool.completed"
             ]
+            started_tools = [
+                str(item.get("tool_name") or "")
+                for item in events
+                if item["event_type"] == "tool.started"
+            ]
             tools = [str(item.get("tool_name") or "") for item in completed]
             sources = []
             for item in completed:
@@ -270,6 +293,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError("research task lacked search and extraction evidence")
             if len(set(sources)) < 2:
                 raise RuntimeError("research task recorded fewer than two source URLs")
+            if started_tools.count("web_search") > 4:
+                raise RuntimeError("research task exceeded the four-search strategy limit")
+            if started_tools.count("web_extract") > 3:
+                raise RuntimeError("research task exceeded the three-extraction strategy limit")
+            if any(name.startswith("browser_") for name in started_tools):
+                raise RuntimeError("research-only task attempted a browser fallback")
+            requirements = PROFILE_REQUIREMENTS[args.profile]
+            source_hosts = {
+                (urlsplit(value).hostname or "").lower() for value in sources
+            }
+            for expected in requirements["hosts"]:
+                if not any(
+                    host == expected or host.endswith("." + expected)
+                    for host in source_hosts
+                ):
+                    raise RuntimeError(
+                        "research task missed required source host %s" % expected
+                    )
+            output = str(task.get("output") or "")
+            for term in requirements["terms"]:
+                if term.casefold() not in output.casefold():
+                    raise RuntimeError(
+                        "research result missed required answer term %s" % term
+                    )
             if ("text", "confirmed") not in states:
                 raise RuntimeError("fake Chat API did not confirm the final text item")
             if len(chat_calls) != 1 or media_count != 0:
@@ -281,9 +328,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "run_id": str(task.get("hermes_run_id") or ""),
                 "status": task.get("status"),
                 "completed_tools": tools,
+                "started_tool_count": len(started_tools),
                 "source_hosts": sorted(
-                    {urlsplit(value).hostname for value in sources}
+                    source_hosts
                 ),
+                "output_chars": len(output),
                 "outbox": states,
                 "fake_text_deliveries": len(chat_calls),
                 "fake_media_deliveries": media_count,

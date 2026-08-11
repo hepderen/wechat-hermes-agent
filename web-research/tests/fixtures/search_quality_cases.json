@@ -1,0 +1,114 @@
+[
+  {
+    "id": "ordinary_comparison",
+    "query": "荣耀 Magic V5 和 vivo X Fold5 续航对比",
+    "expected_top_host": "review.example",
+    "results": [
+      {
+        "title": "荣耀 Magic V5 壁纸下载",
+        "url": "https://wallpaper.example/honor",
+        "description": "手机壁纸合集"
+      },
+      {
+        "title": "荣耀 Magic V5 与 vivo X Fold5 续航实测对比",
+        "url": "https://review.example/foldable-battery",
+        "description": "两款折叠屏的电池、充电和重载续航数据"
+      },
+      {
+        "title": "vivo X Fold5 参数",
+        "url": "https://www.vivo.com.cn/x-fold5",
+        "description": "官方产品参数"
+      }
+    ]
+  },
+  {
+    "id": "fact_check",
+    "query": "核实 OpenAI 已发布新模型这个消息是否属实",
+    "expected_top_host": "openai.com",
+    "results": [
+      {
+        "title": "网友称 OpenAI 已发布新模型",
+        "url": "https://zhidao.baidu.com/question/1",
+        "description": "未经证实的讨论"
+      },
+      {
+        "title": "OpenAI announces a new model",
+        "url": "https://openai.com/index/new-model/",
+        "description": "Official announcement from OpenAI"
+      },
+      {
+        "title": "OpenAI releases new model",
+        "url": "https://www.reuters.com/technology/openai-model/",
+        "description": "Independent reporting on the announcement"
+      }
+    ]
+  },
+  {
+    "id": "recommendation_not_affiliate",
+    "query": "预算 5000 元，推荐一台拍照好的手机",
+    "expected_top_host": "review.example",
+    "results": [
+      {
+        "title": "2026 手机推荐榜单，点击购买领优惠券",
+        "url": "https://shopping.example/top-phone",
+        "description": "推广返利链接"
+      },
+      {
+        "title": "5000 元价位手机拍照横评",
+        "url": "https://review.example/camera-phone",
+        "description": "统一场景比较人像、夜景和长焦实拍"
+      },
+      {
+        "title": "旗舰手机产品参数",
+        "url": "https://manufacturer.example/phone",
+        "description": "摄像头和价格参数"
+      }
+    ]
+  },
+  {
+    "id": "official_how_to",
+    "query": "Python 官方文档如何配置 free-threaded build",
+    "expected_top_host": "docs.python.org",
+    "results": [
+      {
+        "title": "How do I build Python without the GIL?",
+        "url": "https://stackoverflow.example/questions/1",
+        "description": "Community answers about free-threaded Python"
+      },
+      {
+        "title": "Python support for free threading",
+        "url": "https://docs.python.org/3/howto/free-threading-python.html",
+        "description": "Official Python documentation and build configuration"
+      },
+      {
+        "title": "Python free-threaded build notes",
+        "url": "https://blog.example/python-free-threading",
+        "description": "A personal setup note"
+      }
+    ]
+  },
+  {
+    "id": "freshness_over_stale_rank",
+    "query": "2026-08-12 artificial intelligence latest news",
+    "expected_top_host": "reuters.com",
+    "results": [
+      {
+        "title": "Artificial intelligence outlook for 2024",
+        "url": "https://old.example/ai-outlook",
+        "description": "A 2024 market report"
+      },
+      {
+        "title": "Artificial intelligence model update",
+        "url": "https://www.reuters.com/technology/ai-update/",
+        "description": "Artificial intelligence news",
+        "published_at": "Wed, 12 Aug 2026 02:00:00 GMT"
+      },
+      {
+        "title": "Artificial intelligence weekly update",
+        "url": "https://news.example/ai-weekly",
+        "description": "Artificial intelligence news",
+        "published_at": "Wed, 05 Aug 2026 02:00:00 GMT"
+      }
+    ]
+  }
+]

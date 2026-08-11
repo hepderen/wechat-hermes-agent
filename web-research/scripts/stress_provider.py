@@ -30,6 +30,18 @@ CASES = (
         ("kubernetes.io",),
         "international",
     ),
+    (
+        "python-free-threaded",
+        "Python free-threaded build official documentation",
+        ("python.org",),
+        "international",
+    ),
+    (
+        "python-version-comparison",
+        "Python 3.13 vs Python 3.14 free-threaded mode comparison documentation",
+        ("python.org",),
+        "international",
+    ),
     ("gov-cn", "中国政府网 国务院 最新政策", ("gov.cn",), "domestic"),
     ("tencent-cloud", "腾讯云 官方文档", ("cloud.tencent.com",), "domestic"),
     ("aliyun", "阿里云 官方文档", ("aliyun.com",), "domestic"),
@@ -39,6 +51,12 @@ CASES = (
         "{year} artificial intelligence latest news",
         (),
         "international-news",
+    ),
+    (
+        "dual-region-ai",
+        "国内外 人工智能 行业报告",
+        (),
+        "dual-region",
     ),
     (
         "explicit-domain",
@@ -61,6 +79,13 @@ def load_provider(path: Path):
 
 def host_matches(host: str, expected: tuple[str, ...]) -> bool:
     return any(host == item or host.endswith("." + item) for item in expected)
+
+
+def domestic_host(host: str) -> bool:
+    return host.endswith(".cn") or host_matches(
+        host,
+        ("gov.cn", "xinhuanet.com", "people.com.cn", "cctv.com"),
+    )
 
 
 def reset_source_circuits(module) -> None:
@@ -91,8 +116,9 @@ async def run(args) -> dict:
             raise RuntimeError("search reliability failed for case %s" % label)
         rows = first.get("data", {}).get("web", [])
         hosts = sorted({urlsplit(str(item.get("url") or "")).hostname or "" for item in rows})
-        minimum_rows = 4 if channel.endswith("news") else 1
-        minimum_hosts = 3 if channel.endswith("news") else 1
+        diversity_case = channel.endswith("news") or channel == "dual-region"
+        minimum_rows = 4 if diversity_case else 1
+        minimum_hosts = 3 if diversity_case else 1
         if len(rows) < minimum_rows or len(hosts) < minimum_hosts:
             raise RuntimeError(
                 "search diversity failed case=%s channel=%s rows=%d/%d hosts=%d/%d values=%s"
@@ -122,6 +148,13 @@ async def run(args) -> dict:
             raise RuntimeError(
                 "fresh-news relevance failed case=%s relevant_top_five=%d hosts=%s"
                 % (label, relevant_top_five, ",".join(hosts))
+            )
+        if label == "dual-region-ai" and not (
+            any(domestic_host(host) for host in hosts)
+            and any(not domestic_host(host) for host in hosts)
+        ):
+            raise RuntimeError(
+                "dual-region coverage failed hosts=%s" % ",".join(hosts)
             )
         if expected and matched and channel in official_hits:
             official_hits[channel] += 1

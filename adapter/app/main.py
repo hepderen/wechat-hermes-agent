@@ -53,8 +53,10 @@ from .persona import (
     PERSONA_TASK_PROMPT,
     chat_turn_prompt,
     compact_chat_reply,
+    visible_user_request,
 )
 from .process_lock import AdapterProcessLock
+from .research import build_research_instructions
 from .security import exception_summary, redact_sensitive_text
 from .store import AdapterStore, HERMES_STATUS_MAP
 
@@ -1695,20 +1697,15 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
         research_date = datetime.now(
             ZoneInfo(settings.budget_timezone)
         ).date().isoformat()
-        system_message += (
-            "\n研究日期为 %s（%s）。搜索词必须保留问题主体，不能只搜索年份、"
-            "‘最新’或‘新闻’等泛词。使用短关键词，主体在前、ISO 日期放末尾；"
-            "不要把多个无关主题、媒体名和一串实体塞进同一条查询。涉及国内外动态时，"
-            "先分别用‘中文主题 新闻 YYYY-MM-DD’和‘English topic news YYYY-MM-DD’"
-            "各搜索一次；只有证据缺口明确时才换角度补搜，不得重复同义查询。检查每批"
-            "结果的标题、日期和域名，丢弃无关项。优先官方、一手资料和可信主流媒体，"
-            "聚合站、百科、论坛和 SEO 页面仅作线索。最多调用 web_search 4 次、"
-            "web_extract 3 次；普通研究不得用 browser_* 继续搜索，只有 web_extract "
-            "对已选高相关页面明确失败后才可用浏览器读取该页。拿到 2-4 个高相关独立"
-            "来源后立即作答。最终先给结论，"
-            "再给必要事实和来源链接，明确日期与不确定项，不堆搜索过程。"
-            "本任务全部工具调用硬上限为 %d 次。"
-            % (research_date, settings.budget_timezone, tool_call_limit)
+        capabilities = set(
+            (task.get("plan") or {}).get("capabilities") or []
+        )
+        system_message += build_research_instructions(
+            visible_user_request(task.get("prompt") or ""),
+            research_date=research_date,
+            timezone=settings.budget_timezone,
+            tool_call_limit=tool_call_limit,
+            browser_allowed="browser" in capabilities,
         )
 
     run_id = task.get("hermes_run_id")

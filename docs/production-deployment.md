@@ -177,7 +177,10 @@ sudo WECHAT_PID=PID \
   /var/lib/wechat-hermes/candidates/web-research/RELEASE_ID RELEASE_ID
 ```
 
-默认 `WECHAT_WEB_SEARX_MERGE_ENABLED=false`。SearXNG 仍作为可选后端运行；显式启用合并前，应确认其引擎在服务器网络环境下稳定。
+默认 `WECHAT_WEB_SEARX_MERGE_ENABLED=false`，并启用
+`WECHAT_WEB_DOMESTIC_MERGE_ENABLED=true`。中文查询会把固定国内搜索端点与
+国际结果共同重排；每个国内端点有独立熔断。SearXNG 仍作为可选后端运行，
+显式启用合并前应确认其引擎在服务器网络环境下稳定。
 
 ## 切换
 

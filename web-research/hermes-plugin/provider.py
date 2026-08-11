@@ -21,7 +21,7 @@ from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -38,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "5"
+SEARCH_CACHE_VERSION = "6"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -129,6 +129,57 @@ QUALITY_RANKING_RE = re.compile(
     r"\bofficial\b|\bdocumentation\b|\bdocs?\b|\bpolicy\b|\bsources?\b)",
     re.IGNORECASE,
 )
+COMPARISON_RE = re.compile(
+    r"(?:对比|比较|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
+    r"\bcompare\b|\bcomparison\b|\bdifference(?:s)?\b|\bversus\b|\bvs\.?\b)",
+    re.IGNORECASE,
+)
+RECOMMENDATION_RE = re.compile(
+    r"(?:推荐|选购|怎么选|值得买|值不值得|适合|性价比|排行|榜单|"
+    r"\brecommend(?:ation|ed|s)?\b|\bbest\b|\bworth\b|\bbuying guide\b)",
+    re.IGNORECASE,
+)
+FACT_CHECK_RE = re.compile(
+    r"(?:真假|真伪|属实|辟谣|核实|查证|事实核查|来源可靠吗|"
+    r"\bverify\b|\bfact[-\s]?check\b|\bis (?:it|this|that) true\b)",
+    re.IGNORECASE,
+)
+HOW_TO_RE = re.compile(
+    r"(?:怎么|如何|教程|步骤|配置|安装|用法|"
+    r"\bhow\s+to\b|\btutorial\b|\bconfigure\b|\binstall\b|\busage\b)",
+    re.IGNORECASE,
+)
+DUAL_REGION_RE = re.compile(
+    r"(?:国内外|海内外|中外|中国和海外|中国与海外|"
+    r"\bchina\s+(?:and|&)\s+(?:global|international|overseas)\b|"
+    r"\bdomestic\s+(?:and|&)\s+(?:global|international)\b)",
+    re.IGNORECASE,
+)
+QUERY_LEADING_FILLER_RE = re.compile(
+    r"^\s*(?:(?:请|麻烦|劳驾)\s*)?"
+    r"(?:(?:帮|替|给)我\s*)?"
+    r"(?:(?:上网|联网|网上)\s*)?"
+    r"(?:搜一搜|搜搜|搜一下|搜下|搜索一下|搜索\s+|检索一下|检索\s+|"
+    r"查一查|查查|查一下|查下|查询一下|查询\s+|找一找|找找|找一下|找下|"
+    r"调研一下|调研\s+|研究一下|研究\s+|"
+    r"(?:please\s+)?(?:search(?:\s+for)?|look\s+up|research|find)\s+)",
+    re.IGNORECASE,
+)
+QUERY_TRAILING_FILLER_RE = re.compile(
+    r"(?:[，,；;]\s*|\s+)(?:并\s*)?(?:给出|附上|带上|注明|列出)?\s*"
+    r"(?:可靠|公开|参考)?\s*(?:来源|出处|引用|链接|网址|"
+    r"sources?|citations?|links?)\s*[。.!！?？\s]*$",
+    re.IGNORECASE,
+)
+QUERY_RELATION_TERMS_RE = re.compile(
+    r"(?:对比|比较|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
+    r"推荐|选购|值得买|值不值得|适合|性价比|排行|榜单|"
+    r"真假|真伪|属实|辟谣|核实|查证|事实核查|"
+    r"\bcompare\b|\bcomparison\b|\bdifference(?:s)?\b|\bversus\b|"
+    r"\bvs\.?\b|\brecommend(?:ation|ed|s)?\b|\bbest\b|"
+    r"\bverify\b|\bfact[-\s]?check\b)",
+    re.IGNORECASE,
+)
 GENERIC_QUERY_TERMS_RE = re.compile(
     r"(?:最新|最近|近期|今天|今日|当前|目前|新闻|消息|热点|实时|更新|"
     r"版本|发布|公告|政策|价格|天气|官方|官网|文档|资料|来源|"
@@ -138,7 +189,9 @@ GENERIC_QUERY_TERMS_RE = re.compile(
     r"\bupdate\b|\bversion\b|\brelease\b|\bofficial\b|"
     r"\bdocumentation\b|\bdocs?\b|\bpolicy\b|\bprice\b|"
     r"\bweather\b|\bsources?\b|\bwhat\b|\bwhich\b|\bthe\b|"
-    r"\bis\b|\bare\b|\bplease\b|\bcite\b|\bimportant\b|\bmajor\b|"
+    r"\bis\b|\bare\b|\bhow\b|\bto\b|\bfor\b|\bof\b|\band\b|\bor\b|"
+    r"\bwith\b|\bwithout\b|\babout\b|\bplease\b|\bcite\b|"
+    r"\bimportant\b|\bmajor\b|"
     r"\bglobal\b|\binternational\b|\bdomestic\b|\bworldwide\b|"
     r"\bsearch\b|\bfind\b|\blook\s+up\b)",
     re.IGNORECASE,
@@ -161,6 +214,15 @@ LOW_VALUE_FRESH_HOST_SUFFIXES = (
     "toutiao.com",
     "bilibili.com",
 )
+LOW_VALUE_HOST_SUFFIXES = (
+    "baike.baidu.com",
+    "zhidao.baidu.com",
+    "baike.com",
+    "wenku.baidu.com",
+    "csdn.net",
+    "cnblogs.com",
+    "toutiao.com",
+)
 AUTHORITATIVE_HOST_SUFFIXES = (
     "gov.cn",
     "apnews.com",
@@ -179,6 +241,11 @@ AUTHORITATIVE_HOST_SUFFIXES = (
     "microsoft.com",
     "research.meta.ai",
     "nvidia.com",
+    "python.org",
+    "kubernetes.io",
+    "systemd.io",
+    "cloud.tencent.com",
+    "aliyun.com",
     "xinhuanet.com",
     "people.com.cn",
     "cctv.com",
@@ -963,6 +1030,8 @@ def _query_domain_results(query: str) -> List[Dict[str, Any]]:
                 "title": "Website explicitly named in the query",
                 "url": url,
                 "content": "Direct public URL supplied in the search query; verify it with web_extract.",
+                "source": "query-url",
+                "search_channel": "direct",
             }
         )
         if len(results) >= 3:
@@ -1026,9 +1095,87 @@ def _official_entry_results(query: str) -> List[Dict[str, Any]]:
                     "with web_extract before answering."
                 ),
                 "source": "official-entry",
+                "search_channel": "official",
             }
         )
     return results
+
+
+def _query_intents(query: str) -> frozenset[str]:
+    intents = set()
+    if FRESHNESS_RE.search(query):
+        intents.add("freshness")
+    if QUALITY_RANKING_RE.search(query):
+        intents.add("official")
+    if COMPARISON_RE.search(query):
+        intents.add("comparison")
+    if RECOMMENDATION_RE.search(query):
+        intents.add("recommendation")
+    if FACT_CHECK_RE.search(query):
+        intents.add("fact_check")
+    if HOW_TO_RE.search(query):
+        intents.add("how_to")
+    if not intents:
+        intents.add("general")
+    return frozenset(intents)
+
+
+def _strip_query_filler(value: str) -> str:
+    cleaned = _clean_text(value, 500)
+    previous = ""
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        cleaned = QUERY_LEADING_FILLER_RE.sub("", cleaned, count=1).strip()
+        cleaned = QUERY_TRAILING_FILLER_RE.sub("", cleaned, count=1).strip()
+    return _clean_text(cleaned or value, 500)
+
+
+def _canonical_result_key(value: str) -> str:
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except ValueError:
+        return str(value or "").strip()
+    filtered_query = []
+    for key, item_value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.casefold()
+        if (
+            lowered.startswith("utm_")
+            or lowered
+            in {
+                "fbclid",
+                "gclid",
+                "msclkid",
+                "spm",
+                "from",
+                "source",
+                "ref",
+                "referrer",
+            }
+        ):
+            continue
+        filtered_query.append((key, item_value))
+    host = (parsed.hostname or "").casefold()
+    try:
+        port = parsed.port
+    except ValueError:
+        return str(value or "").strip()
+    if port and not (
+        (parsed.scheme.casefold() == "http" and port == 80)
+        or (parsed.scheme.casefold() == "https" and port == 443)
+    ):
+        host += ":%d" % port
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    if path != "/":
+        path = path.rstrip("/")
+    return urlunsplit(
+        (
+            parsed.scheme.casefold(),
+            host,
+            path,
+            urlencode(filtered_query, doseq=True),
+            "",
+        )
+    )
 
 
 def _interleave_results(
@@ -1119,8 +1266,8 @@ def _extract_full_date(value: str) -> Optional[Tuple[str, date]]:
 
 
 def _compact_today_query(value: str) -> str:
-    original = str(value or "")
-    terms = _query_relevance_terms(original)
+    original = _strip_query_filler(str(value or ""))
+    terms = _query_relevance_terms(original, include_cjk_ngrams=False)
     selected: List[str] = []
     if CJK_RE.search(original):
         selected.extend(term for term in terms if CJK_RE.search(term))
@@ -1154,7 +1301,7 @@ def _compact_today_query(value: str) -> str:
 
 
 def _upstream_query(query: str) -> str:
-    value = _clean_text(query, 500)
+    value = _strip_query_filler(query)
     if not value or not FRESHNESS_RE.search(value):
         return value
     explicit_date = _extract_full_date(value)
@@ -1170,8 +1317,12 @@ def _upstream_query(query: str) -> str:
     return value
 
 
-def _query_relevance_terms(query: str) -> List[str]:
-    original = str(query or "").lower()
+def _query_relevance_terms(
+    query: str,
+    *,
+    include_cjk_ngrams: bool = True,
+) -> List[str]:
+    original = _strip_query_filler(str(query or "")).lower()
     value = original
     value = re.sub(
         r"(?<!\d)\d{4}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])"
@@ -1191,11 +1342,23 @@ def _query_relevance_terms(query: str) -> List[str]:
     value = YEAR_TOKEN_RE.sub(" ", value)
     value = ENGLISH_TEMPORAL_TERMS_RE.sub(" ", value)
     value = GENERIC_QUERY_TERMS_RE.sub(" ", value)
+    value = QUERY_RELATION_TERMS_RE.sub(" ", value)
     terms: List[str] = []
+    mixed_entities = re.findall(
+        r"(?:[\u3400-\u9fff]{1,12}[a-z0-9][a-z0-9.+#-]{0,20}|"
+        r"[a-z][a-z0-9.+#-]{0,20}[\u3400-\u9fff]{1,12})",
+        value,
+        re.IGNORECASE,
+    )
+    for term in mixed_entities:
+        normalized = term.casefold()
+        if normalized not in terms:
+            terms.append(normalized)
     for term in re.findall(r"[a-z][a-z0-9.+#-]{1,40}", value):
         if term not in terms:
             terms.append(term)
-    for term in re.findall(r"[\u3400-\u9fff]{2,16}", value):
+    cjk_runs = re.findall(r"[\u3400-\u9fff]{2,24}", value)
+    for term in cjk_runs:
         if term not in terms:
             terms.append(term)
     aliases = []
@@ -1218,7 +1381,23 @@ def _query_relevance_terms(query: str) -> List[str]:
     for term in aliases:
         if term not in terms:
             terms.append(term)
-    return terms[:12]
+    if include_cjk_ngrams:
+        connector_chars = frozenset("和与及或跟")
+        for run in cjk_runs:
+            if len(run) < 4:
+                continue
+            for size in (2, 3):
+                for index in range(0, len(run) - size + 1):
+                    gram = run[index : index + size]
+                    if any(char in connector_chars for char in gram):
+                        continue
+                    if GENERIC_QUERY_TERMS_RE.fullmatch(gram):
+                        continue
+                    if gram not in terms:
+                        terms.append(gram)
+                    if len(terms) >= 24:
+                        return terms
+    return terms[:24]
 
 
 def _host_matches(host: str, expected: str) -> bool:
@@ -1230,6 +1409,86 @@ def _authoritative_host(host: str) -> bool:
         _host_matches(host, expected)
         for expected in AUTHORITATIVE_HOST_SUFFIXES
     ) or host.endswith(".gov")
+
+
+def _low_value_host(host: str) -> bool:
+    return any(_host_matches(host, expected) for expected in LOW_VALUE_HOST_SUFFIXES)
+
+
+def _result_source_type(item: Dict[str, Any], host: str) -> str:
+    channel = _clean_text(
+        item.get("_search_channel") or item.get("search_channel"),
+        40,
+    ).casefold()
+    source = _clean_text(item.get("source"), 80).casefold()
+    if channel == "direct" or source == "query-url":
+        return "specified"
+    if channel == "official" or source == "official-entry":
+        return "official"
+    if _low_value_host(host):
+        return "secondary"
+    if _authoritative_host(host) or source in {
+        "the-verge",
+        "techcrunch",
+        "ars-technica",
+        "openai",
+        "google-ai",
+        "nvidia-ai",
+    }:
+        return "authoritative"
+    return "web"
+
+
+def _result_region(item: Dict[str, Any]) -> str:
+    channel = _clean_text(
+        item.get("_search_channel") or item.get("search_channel"),
+        40,
+    ).casefold()
+    if channel == "domestic":
+        return "domestic"
+    try:
+        host = (urlsplit(str(item.get("url") or "")).hostname or "").casefold()
+    except ValueError:
+        host = ""
+    domestic_hosts = (
+        "gov.cn",
+        "xinhuanet.com",
+        "people.com.cn",
+        "cctv.com",
+        "chinanews.com.cn",
+        "qq.com",
+        "163.com",
+        "sina.com.cn",
+    )
+    if host.endswith(".cn") or any(
+        _host_matches(host, expected) for expected in domestic_hosts
+    ):
+        return "domestic"
+    return "international"
+
+
+def _balance_dual_region_results(
+    query: str,
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not DUAL_REGION_RE.search(query):
+        return list(items)
+    domestic = [item for item in items if _result_region(item) == "domestic"]
+    international = [
+        item for item in items if _result_region(item) == "international"
+    ]
+    if not domestic or not international:
+        return list(items)
+    first_region = _result_region(items[0]) if items else "domestic"
+    first = domestic if first_region == "domestic" else international
+    second = international if first_region == "domestic" else domestic
+    merged: List[Dict[str, Any]] = []
+    for index in range(max(len(first), len(second))):
+        if index < len(first):
+            merged.append(first[index])
+        if index < len(second):
+            merged.append(second[index])
+    return merged
 
 
 def _contains_term(value: str, term: str) -> bool:
@@ -1402,6 +1661,7 @@ def _result_relevance_score(
     item: Dict[str, Any],
     terms: List[str],
 ) -> int:
+    intents = _query_intents(query)
     title = _clean_text(item.get("title"), 500).lower()
     description = _clean_text(
         item.get("description") or item.get("content"),
@@ -1412,6 +1672,7 @@ def _result_relevance_score(
         host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
     except ValueError:
         host = ""
+    source_type = _result_source_type(item, host)
     if FRESHNESS_RE.search(query) and any(
         _host_matches(host, suffix)
         for suffix in REFERENCE_FRESH_HOST_SUFFIXES
@@ -1461,13 +1722,46 @@ def _result_relevance_score(
     if government_quality_match:
         score += 8
 
+    matched_terms = title_matches | host_matches | description_matches
+    if matched_terms:
+        score += min(10, int((len(matched_terms) / max(1, len(terms))) * 12))
+    if len(title_matches | host_matches) >= min(2, len(terms)):
+        score += 5
+
+    if source_type == "specified":
+        score += 40
+    elif source_type == "official":
+        score += 10
+    elif source_type == "authoritative":
+        score += 10
+    elif source_type == "secondary":
+        score -= 6
+
     if QUALITY_RANKING_RE.search(query):
         if _host_matches(host, "gov.cn") or host.endswith(".gov"):
             score += 6
         if any(term in host.split(".") for term in terms):
             score += 4
-    if _authoritative_host(host):
-        score += 12
+    if "fact_check" in intents:
+        if source_type in {"official", "authoritative", "specified"}:
+            score += 10
+        elif source_type == "secondary":
+            score -= 10
+    if "how_to" in intents and source_type in {
+        "official",
+        "authoritative",
+        "specified",
+    }:
+        score += 6
+    if {"comparison", "recommendation"}.intersection(intents):
+        if source_type in {"official", "authoritative"}:
+            score += 4
+        if re.search(
+            r"(?:广告|推广|返利|优惠券|点击购买|\bsponsored\b|\baffiliate\b)",
+            title + " " + description,
+            re.IGNORECASE,
+        ):
+            score -= 12
     if FRESHNESS_RE.search(query):
         score += _freshness_result_score(
             query,
@@ -1475,10 +1769,7 @@ def _result_relevance_score(
             description,
             published_at,
         )
-        if any(
-            _host_matches(host, suffix)
-            for suffix in LOW_VALUE_FRESH_HOST_SUFFIXES
-        ):
+        if any(_host_matches(host, suffix) for suffix in LOW_VALUE_FRESH_HOST_SUFFIXES):
             score -= 8
         elif "blog" in host.split(".") and not _authoritative_host(host):
             score -= 4
@@ -1489,34 +1780,42 @@ def _rank_search_results(
     query: str,
     items: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    if not (FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query)):
-        return list(items)
     terms = _query_relevance_terms(query)
     if not terms:
         return list(items)
-    scored = [
-        (_result_relevance_score(query, item, terms), index, item)
-        for index, item in enumerate(items)
-    ]
+    scored = []
+    for index, item in enumerate(items):
+        relevance = _result_relevance_score(query, item, terms)
+        score = relevance + max(0, 5 - min(index, 5)) if relevance > 0 else 0
+        scored.append((score, index, item))
     relevant = [entry for entry in scored if entry[0] > 0]
     if not relevant:
-        return []
+        if FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query):
+            return []
+        return list(items)
     relevant.sort(key=lambda entry: (-entry[0], entry[1]))
-    if not FRESHNESS_RE.search(query):
-        return [entry[2] for entry in relevant]
-    diverse = []
-    seen_hosts = set()
+    if not (FRESHNESS_RE.search(query) or QUALITY_RANKING_RE.search(query)):
+        matched_indexes = {entry[1] for entry in relevant}
+        relevant.extend(entry for entry in scored if entry[1] not in matched_indexes)
+
+    diverse: List[Dict[str, Any]] = []
+    overflow: List[Dict[str, Any]] = []
+    host_counts: Dict[str, int] = {}
+    per_host_limit = 1 if FRESHNESS_RE.search(query) else 2
     for _score, _index, item in relevant:
         try:
             host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
         except ValueError:
             host = ""
-        if host and host in seen_hosts:
+        if host and host_counts.get(host, 0) >= per_host_limit:
+            overflow.append(item)
             continue
         if host:
-            seen_hosts.add(host)
+            host_counts[host] = host_counts.get(host, 0) + 1
         diverse.append(item)
-    return diverse
+    if not FRESHNESS_RE.search(query):
+        diverse.extend(overflow)
+    return _balance_dual_region_results(query, diverse)
 
 
 def _decode_body(body: bytes, content_type: str) -> str:
@@ -1867,6 +2166,7 @@ class WechatCloudWebProvider(WebSearchProvider):
                     seen.add(public_url)
                     normalized = dict(item)
                     normalized["url"] = public_url
+                    normalized["search_channel"] = "domestic"
                     usable_results.append(normalized)
                 if not usable_results:
                     raise ValueError("domestic search returned no usable results")
@@ -1942,6 +2242,8 @@ class WechatCloudWebProvider(WebSearchProvider):
                     normalized_query,
                     max_response,
                 )
+                for item in trusted_results:
+                    item.setdefault("search_channel", "trusted-feed")
                 raw_results.extend(trusted_results)
                 upstream_errors.extend(trusted_errors)
 
@@ -1971,7 +2273,10 @@ class WechatCloudWebProvider(WebSearchProvider):
                                 },
                             )
                         _validate_bing_response(response, max_response)
-                        raw_results.extend(_bing_html_results(response))
+                        web_results = _bing_html_results(response)
+                        for item in web_results:
+                            item["search_channel"] = "international"
+                        raw_results.extend(web_results)
                     except Exception as exc:  # noqa: BLE001 - bounded fallback below
                         upstream_errors.append("bing-html:%s" % type(exc).__name__)
 
@@ -1999,12 +2304,14 @@ class WechatCloudWebProvider(WebSearchProvider):
                         _validate_bing_response(response, max_response)
                         news_results = _bing_rss_results(response)
                         if news_results:
-                            direct_count = len(direct_results)
+                            for item in news_results:
+                                item["search_channel"] = "international"
+                            pinned_count = len(direct_results)
                             raw_results = (
-                                raw_results[:direct_count]
+                                raw_results[:pinned_count]
                                 + _interleave_results(
                                     news_results,
-                                    raw_results[direct_count:],
+                                    raw_results[pinned_count:],
                                     primary_weight=4,
                                 )
                             )
@@ -2036,7 +2343,10 @@ class WechatCloudWebProvider(WebSearchProvider):
                                 },
                             )
                         _validate_bing_response(response, max_response)
-                        raw_results.extend(_bing_rss_results(response))
+                        rss_results = _bing_rss_results(response)
+                        for item in rss_results:
+                            item["search_channel"] = "international"
+                        raw_results.extend(rss_results)
                     except Exception as exc:  # noqa: BLE001 - SearXNG is the fallback
                         upstream_errors.append("bing-rss:%s" % type(exc).__name__)
 
@@ -2085,14 +2395,24 @@ class WechatCloudWebProvider(WebSearchProvider):
                                 "SearXNG response did not contain a result list"
                             )
                         searx_results = list(searx_results)
+                        for item in searx_results:
+                            item.setdefault("source", "searxng")
+                            item.setdefault("search_channel", "regional")
                     except Exception as exc:  # noqa: BLE001 - normalized below
                         upstream_errors.append("searxng:%s" % type(exc).__name__)
 
                 domestic_results: List[Dict[str, Any]] = []
+                merge_domestic = _env_bool(
+                    "WECHAT_WEB_DOMESTIC_MERGE_ENABLED",
+                    True,
+                )
                 if (
                     CJK_RE.search(normalized_query)
                     and _env_bool("WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED", True)
-                    and len(searx_results) < min(safe_limit, 3)
+                    and (
+                        merge_domestic
+                        or len(searx_results) < min(safe_limit, 3)
+                    )
                 ):
                     domestic_results, domestic_errors = self._search_domestic_mobile(
                         upstream_query, safe_limit, timeout, max_response
@@ -2101,11 +2421,11 @@ class WechatCloudWebProvider(WebSearchProvider):
 
                 regional_results = searx_results + domestic_results
                 if merge_searx and regional_results:
-                    direct_count = len(direct_results)
+                    pinned_count = len(direct_results)
                     raw_results = (
-                        raw_results[:direct_count]
+                        raw_results[:pinned_count]
                         + _interleave_results(
-                            raw_results[direct_count:],
+                            raw_results[pinned_count:],
                             regional_results,
                             primary_weight=(
                                 4
@@ -2137,6 +2457,9 @@ class WechatCloudWebProvider(WebSearchProvider):
                     source_name = _clean_text(raw.get("source"), 80)
                     if source_name:
                         candidate["source"] = source_name
+                    search_channel = _clean_text(raw.get("search_channel"), 40)
+                    if search_channel:
+                        candidate["_search_channel"] = search_channel
                     return candidate
 
                 candidates: List[Dict[str, Any]] = []
@@ -2145,28 +2468,34 @@ class WechatCloudWebProvider(WebSearchProvider):
                     if not isinstance(raw, dict):
                         continue
                     candidate = normalize_candidate(raw)
-                    if candidate is None or candidate["url"] in seen:
+                    if candidate is None:
                         continue
-                    seen.add(candidate["url"])
+                    identity = _canonical_result_key(candidate["url"])
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
                     candidates.append(candidate)
                     if len(candidates) >= candidate_limit:
                         break
+                for raw in official_results:
+                    candidate = normalize_candidate(raw)
+                    if candidate is None:
+                        continue
+                    identity = _canonical_result_key(candidate["url"])
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    candidates.append(candidate)
                 ranked = _rank_search_results(normalized_query, candidates)
-                if not ranked and official_results:
-                    fallback_candidates = [
-                        candidate
-                        for raw in official_results
-                        if (candidate := normalize_candidate(raw)) is not None
-                    ]
-                    ranked = _rank_search_results(
-                        normalized_query,
-                        fallback_candidates,
-                    )
                 results = []
                 for item in ranked[:safe_limit]:
                     results.append(
                         {
-                            **item,
+                            **{
+                                key: value
+                                for key, value in item.items()
+                                if not key.startswith("_")
+                            },
                             "position": len(results) + 1,
                         }
                     )
@@ -2360,7 +2689,20 @@ class WechatCloudWebProvider(WebSearchProvider):
 
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         max_urls = _env_int("WECHAT_WEB_EXTRACT_MAX_URLS", 5, 1, 10)
-        results: List[Dict[str, Any]] = []
+        workers = _env_int(
+            "WECHAT_WEB_EXTRACT_WORKERS",
+            3,
+            1,
+            max_urls,
+        )
+        semaphore = asyncio.Semaphore(workers)
+
+        async def extract_one(url: str) -> Dict[str, Any]:
+            async with semaphore:
+                return await self._extract_one(str(url or ""))
+
+        scheduled = []
+        results: List[Optional[Dict[str, Any]]] = []
         for index, url in enumerate(urls):
             if index >= max_urls:
                 results.append(
@@ -2372,8 +2714,21 @@ class WechatCloudWebProvider(WebSearchProvider):
                     }
                 )
                 continue
-            results.append(await self._extract_one(str(url or "")))
-        return results
+            results.append(None)
+            scheduled.append((index, asyncio.create_task(extract_one(str(url or "")))))
+        for index, task in scheduled:
+            results[index] = await task
+        return [
+            item
+            if item is not None
+            else {
+                "url": "",
+                "title": "",
+                "content": "",
+                "error": "Page extraction did not return a result",
+            }
+            for item in results
+        ]
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

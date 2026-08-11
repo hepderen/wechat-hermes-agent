@@ -635,12 +635,12 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     assert runtime.hermes.stop_calls == ["run-research-tool-limit"]
     assert "web_search 4 次" in captured_instructions[0]
     assert "web_extract 3 次" in captured_instructions[0]
-    assert "官方、一手资料和可信主流媒体" in captured_instructions[0]
+    assert "官方消息与可信媒体" in captured_instructions[0]
     assert "研究日期为" in captured_instructions[0]
-    assert "主体在前、ISO 日期放末尾" in captured_instructions[0]
-    assert "中文主题 新闻 YYYY-MM-DD" in captured_instructions[0]
-    assert "English topic news YYYY-MM-DD" in captured_instructions[0]
-    assert "普通研究不得用 browser_* 继续搜索" in captured_instructions[0]
+    assert "必须回答的证据问题" in captured_instructions[0]
+    assert "简短中文查询和英文查询各搜一次" in captured_instructions[0]
+    assert "不调用 browser_*" in captured_instructions[0]
+    assert "页面读取失败时改选其他搜索结果" in captured_instructions[0]
 
 
 def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(

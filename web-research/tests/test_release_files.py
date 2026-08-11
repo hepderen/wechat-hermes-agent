@@ -54,6 +54,8 @@ def test_domestic_fallbacks_are_fixed_https_endpoints_and_cache_is_hash_keyed():
     assert "follow_redirects=False" in source
     assert "cache_key TEXT PRIMARY KEY" in source
     assert "WECHAT_WEB_DOMESTIC_FALLBACK_ENABLED=true" in environment
+    assert "WECHAT_WEB_DOMESTIC_MERGE_ENABLED=true" in environment
+    assert "WECHAT_WEB_EXTRACT_WORKERS=3" in environment
     assert "WECHAT_WEB_BING_NEWS_RSS_ENABLED=true" in environment
     assert "WECHAT_WEB_SEARCH_STALE_IF_ERROR_SECONDS=86400" in environment
 
@@ -123,6 +125,10 @@ def test_adapter_search_probe_delivers_only_to_the_fake_chat_api():
     assert '"--profile"' in source
     assert '"china"' in source
     assert '"twitter"' in source
+    assert '"compare"' in source
+    assert '"verify"' in source
+    assert 'started_tools.count("web_search") > 4' in source
+    assert 'name.startswith("browser_")' in source
     assert '"--request-id"' in source
     assert ":8765" not in source
     assert "/groups/" not in source

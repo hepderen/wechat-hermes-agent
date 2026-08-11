@@ -11,10 +11,10 @@ endpoint or requiring a third-party API key.
 - Global search uses Bing HTML with RSS fallback. Freshness and news queries
   prioritize Bing News RSS before interleaving general web results, after safely
   unwrapping the publisher URL. SearXNG merging is optional and disabled by
-  default. Chinese searches use fixed HTTPS mobile endpoints for Sogou, 360
-  Search, and Baidu when the global route has too few useful results. Each
-  domestic source has an independent circuit breaker, so a CAPTCHA on one
-  source does not disable the others.
+  default. Chinese searches merge results from fixed HTTPS mobile endpoints for
+  Sogou, 360 Search, and Baidu with the global route; the same sources remain a
+  fallback when global recall is sparse. Each domestic source has an independent
+  circuit breaker, so a CAPTCHA on one source does not disable the others.
 - AI and technology freshness searches also read a fixed allowlist of official
   and established international RSS/Atom feeds. Feed responses are fetched in
   parallel, cached independently of the user query, size checked, and re-ranked
@@ -23,12 +23,19 @@ endpoint or requiring a third-party API key.
   kept ahead of the date. Freshness ranking requires a real subject match,
   rejects dictionaries and stale cards, scores publication dates by day, and
   returns at most one result per host.
+- Conversational query filler is removed without changing the subject. General,
+  comparison, recommendation, fact-check, official and how-to searches are
+  ranked by topic coverage and source quality. Tracking variants are deduplicated,
+  domains are diversified, and explicit domestic/international requests balance
+  both regions before results are returned to Hermes.
 - Successful searches are cached by query hash in memory and in a private
   SQLite database. Fresh entries survive gateway restarts; expired entries may
   be used for up to 24 hours only when every live upstream fails. Query text is
   never stored in the cache.
 - Extraction is performed in the Hermes process with URL safety, redirect
-  re-validation, website policy, content-type and byte limits.
+  re-validation, website policy, content-type and byte limits. Selected pages
+  are read with bounded parallelism while preserving input order, so one slow
+  source does not serialize every other extraction.
 - Neither search queries nor page bodies are logged.
 
 ## Build a candidate
