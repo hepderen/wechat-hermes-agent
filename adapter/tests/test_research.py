@@ -20,6 +20,11 @@ def test_research_modes_can_combine_instead_of_forcing_one_label():
     )
 
 
+def test_mode_classifier_recognizes_relative_current_periods():
+    assert "freshness" in classify_research_modes("今年国内外 AI 行业趋势分析")
+    assert "freshness" in classify_research_modes("this month AI market report")
+
+
 def test_comparison_prompt_requires_same_versions_and_common_dimensions():
     value = instructions("对比两款折叠屏手机的续航，怎么选")
 

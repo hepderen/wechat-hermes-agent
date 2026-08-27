@@ -7,6 +7,8 @@ from scripts.live_fake_stack import adapter_environment
 def test_production_resource_defaults_match_v2_plan(monkeypatch):
     monkeypatch.delenv("HERMES_WECHAT_MAX_TASK_SECONDS", raising=False)
     monkeypatch.delenv("HERMES_WECHAT_DAILY_COST_LIMIT_USD", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_CHAT_ONLY", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_GROUP_LISTENER_ENABLED", raising=False)
 
     settings = Settings.from_env()
 
@@ -21,6 +23,47 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
     assert settings.cleanup_max_age_seconds == 172800
     assert settings.delivery_reconcile_attempts == 5
     assert settings.delivery_reconcile_delay_seconds == 0.75
+    assert settings.relationship_memory_enabled is True
+    assert settings.relationship_summary_timeout_seconds == 5
+    assert settings.chat_only_mode is False
+    assert settings.group_listener_enabled is True
+    assert settings.group_listener_min_reply_gap_seconds == 12
+    assert settings.group_listener_min_turns_between_replies == 2
+    assert settings.group_listener_names == ("小格", "Hermes")
+
+
+def test_chat_only_mode_is_read_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_WECHAT_CHAT_ONLY", "true")
+    assert Settings.from_env().chat_only_mode is True
+
+
+def test_relationship_memory_settings_are_read_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED", "false")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS", "3.5")
+    settings = Settings.from_env()
+    assert settings.relationship_memory_enabled is False
+    assert settings.relationship_summary_timeout_seconds == 3.5
+
+
+def test_group_listener_settings_are_read_and_bounded_from_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_WECHAT_GROUP_LISTENER_ENABLED", "false")
+    monkeypatch.setenv(
+        "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS",
+        "9999",
+    )
+    monkeypatch.setenv(
+        "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES",
+        "999",
+    )
+    monkeypatch.setenv(
+        "HERMES_WECHAT_GROUP_LISTENER_NAMES",
+        " 小格 , 阿格 ,",
+    )
+    settings = Settings.from_env()
+    assert settings.group_listener_enabled is False
+    assert settings.group_listener_min_reply_gap_seconds == 600
+    assert settings.group_listener_min_turns_between_replies == 100
+    assert settings.group_listener_names == ("小格", "阿格")
 
 
 def test_delivery_media_limit_is_clamped_to_three(monkeypatch):
@@ -59,3 +102,4 @@ def test_fake_stack_uses_platform_absolute_cleanup_status_path(tmp_path):
     )
     assert cleanup_status.is_absolute()
     assert cleanup_status.parent == database.parent
+    assert environment["HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED"] == "false"

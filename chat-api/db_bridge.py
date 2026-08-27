@@ -81,6 +81,18 @@ STRUCTURED_METADATA_WAIT_SECONDS = max(
         float(CONFIG.get("chat_structured_metadata_wait_seconds", 2.0)),
     ),
 )
+
+
+def config_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_GROUP_LISTENER_ENV = os.environ.get("HERMES_WECHAT_GROUP_LISTENER_ENABLED")
+GROUP_LISTENER_ENABLED = (
+    config_flag(_GROUP_LISTENER_ENV)
+    if _GROUP_LISTENER_ENV is not None
+    else config_flag(CONFIG.get("chat_group_listener_enabled", False))
+)
 PROCESSED_IDENTITY_LIMIT = max(
     256,
     min(8192, int(CONFIG.get("chat_processed_identity_limit", 2048))),
@@ -782,7 +794,7 @@ def should_handle(message):
         and message_room_id(message) == GROUP_ID
         and bool(message_sender_id(message))
         and message.get("structured_valid", True)
-        and trigger
+        and (trigger or GROUP_LISTENER_ENABLED)
         and has_current_text
     )
 
@@ -794,9 +806,16 @@ def message_may_have_pending_structured_metadata(message):
         or int(message.get("local_type", 0)) not in {1, 49}
         or not bool(message_sender_id(message))
         or is_control_message(message)
-        or trusted_mentions_bot(message)
-        or trusted_reply_to_bot(message)
     ):
+        return False
+    if GROUP_LISTENER_ENABLED:
+        # Full listening removes the need for @ as a trigger, but a visible
+        # candidate still deserves the short metadata window so a real native
+        # @ can bypass passive pacing once WeChat finishes writing its XML.
+        return bool(message.get("visible_mention_candidate")) or not bool(
+            message.get("structured_valid", True)
+        )
+    if trusted_mentions_bot(message) or trusted_reply_to_bot(message):
         return False
     return bool(message.get("visible_mention_candidate")) or not bool(
         message.get("structured_valid", True)

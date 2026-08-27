@@ -10,6 +10,7 @@ from deploy.harden_hermes_run_evidence import (
     EVIDENCE_HELPERS,
     INDENTED_CODE_RESULT_OLD,
     REPLACEMENTS,
+    WEB_EXTRACT_FAILURE_OLD,
     harden,
 )
 
@@ -40,6 +41,19 @@ def write_fixture(root: Path) -> None:
     code_path.parent.mkdir(parents=True, exist_ok=True)
     code_path.write_text(
         CODE_RESULT_OLD + "\n" + INDENTED_CODE_RESULT_OLD,
+        encoding="utf-8",
+    )
+    display_path = root / "agent/display.py"
+    display_path.parent.mkdir(parents=True, exist_ok=True)
+    display_path.write_text(
+        (
+            "import json\n"
+            "def safe_json_loads(value):\n"
+            "    return json.loads(value)\n"
+            "def detect(tool_name, result):\n"
+            + WEB_EXTRACT_FAILURE_OLD
+            + "    return False, ''\n"
+        ),
         encoding="utf-8",
     )
 
@@ -140,6 +154,83 @@ def test_research_evidence_only_uses_structured_sanitized_urls():
         '{"content":"https://ignored.example/not-a-source"}',
     ) == {}
     assert evidence("terminal", json.dumps(result)) == {}
+
+
+def test_extract_evidence_records_only_pages_with_successful_content():
+    evidence = helper()
+    result = {
+        "results": [
+            {
+                "url": "https://good.example/article?tracking=1",
+                "content": "verified page text " * 12,
+                "error": None,
+            },
+            {
+                "url": "https://failed.example/article",
+                "content": "",
+                "error": "timeout",
+            },
+            {
+                "url": "https://empty.example/article",
+                "content": "",
+                "error": None,
+            },
+            {
+                "url": "https://thin.example/article",
+                "content": "navigation only",
+                "error": None,
+            },
+        ]
+    }
+
+    assert evidence("web_extract", json.dumps(result)) == {
+        "source": "https://good.example/article"
+    }
+
+
+def test_web_extract_failure_detection_accepts_partial_evidence(tmp_path):
+    write_fixture(tmp_path)
+    harden(tmp_path, compile_files=False)
+    namespace = {}
+    exec(
+        (tmp_path / "agent/display.py").read_text(encoding="utf-8"),
+        namespace,
+    )
+    detect = namespace["detect"]
+
+    partial = {
+        "results": [
+            {"url": "https://failed.example", "content": "", "error": "timeout"},
+            {
+                "url": "https://good.example",
+                "content": "verified weather evidence " * 8,
+                "error": None,
+            },
+        ]
+    }
+    assert detect("web_extract", json.dumps(partial)) == (False, "")
+
+
+def test_web_extract_failure_detection_rejects_thin_or_failed_batches(tmp_path):
+    write_fixture(tmp_path)
+    harden(tmp_path, compile_files=False)
+    namespace = {}
+    exec(
+        (tmp_path / "agent/display.py").read_text(encoding="utf-8"),
+        namespace,
+    )
+    detect = namespace["detect"]
+
+    thin = {"results": [{"content": "navigation only", "error": None}]}
+    failed = {"results": [{"content": "", "error": "timeout"}]}
+    assert detect("web_extract", json.dumps(thin)) == (
+        True,
+        " [no extractable content]",
+    )
+    assert detect("web_extract", json.dumps(failed)) == (
+        True,
+        " [no extractable content]",
+    )
 
 
 def test_browser_evidence_is_categorical_and_excludes_page_content():

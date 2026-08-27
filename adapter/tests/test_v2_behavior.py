@@ -49,6 +49,7 @@ def install_completed_run(runtime, *, output: str, tool_event: dict | None = Non
         _history,
         *,
         idempotency_key,
+        enabled_toolsets=None,
     ):
         assert idempotency_key.startswith("task:T-")
         assert ":generation:" in idempotency_key
@@ -322,6 +323,79 @@ def test_sync_chat_timeout_is_queued_with_trusted_cursor(tmp_path):
     assert tasks[0]["source_local_id"] == 33
 
 
+def test_chat_only_execution_intent_stays_as_short_sync_chat(tmp_path):
+    runtime = make_runtime(tmp_path, chat_only_mode=True)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "搜索一下今天的新闻并整理成文件",
+                "request_id": "chat-only-execution-intent",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 34,
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["task_id"] is None
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
+    assert "纯聊天模式" in runtime.hermes.chat_calls[0][2]
+
+
+def test_chat_only_timeout_does_not_fall_back_to_a_task(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        chat_only_mode=True,
+        sync_chat_timeout_seconds=0.01,
+    )
+
+    async def slow_chat(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return "late", {}
+
+    runtime.hermes.chat = slow_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "生成一份报告",
+                "request_id": "chat-only-timeout",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 35,
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["task_id"] is None
+    assert runtime.store.list_tasks(ROOM_ID) == []
+
+
+def test_chat_only_quarantines_queued_production_task_without_delivery(tmp_path):
+    runtime = make_runtime(tmp_path, chat_only_mode=True)
+    runtime.store.initialize()
+    task = create_planned_task(runtime, "chat-only-run", "运行服务器命令")
+    claimed = runtime.store.claim_next()
+    assert claimed["id"] == task["id"]
+
+    asyncio.run(execute_task(runtime, claimed))
+
+    stored = runtime.store.get_task(task["id"])
+    assert stored["status"] == "canceled"
+    outbox = runtime.store.list_outbox(task["id"], stored["generation"])
+    assert outbox
+    assert all(item["state"] == "suppressed" for item in outbox)
+    assert runtime.hermes.chat_calls == []
+
+
 def test_queued_chat_disables_tools_and_rejects_execution_plan_without_evidence(
     tmp_path,
 ):
@@ -352,7 +426,7 @@ def test_queued_chat_disables_tools_and_rejects_execution_plan_without_evidence(
     assert "exit code 0" in stored["error"]
 
 
-def test_queued_chat_compacts_verbose_model_output(tmp_path):
+def test_queued_chat_keeps_a_natural_multi_sentence_model_output(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
     plan = build_execution_plan("普通问题")
@@ -374,7 +448,7 @@ def test_queued_chat_compacts_verbose_model_output(tmp_path):
     async def verbose_chat(*_args, **_kwargs):
         return (
             "没问题，核心是先修入口。其他功能都依赖它。"
-            "第三句应该被删掉。",
+            "第三句保留，别硬砍掉。",
             {"input_tokens": 5, "output_tokens": 15},
         )
 
@@ -383,7 +457,9 @@ def test_queued_chat_compacts_verbose_model_output(tmp_path):
 
     stored = runtime.store.get_task(task["id"])
     assert stored["status"] == "succeeded"
-    assert stored["output"] == "核心是先修入口。其他功能都依赖它。"
+    assert stored["output"] == (
+        "核心是先修入口。其他功能都依赖它。第三句保留，别硬砍掉。"
+    )
 
 
 def test_run_completed_without_execution_evidence_fails_task(tmp_path):
@@ -593,6 +669,7 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     claimed = runtime.store.claim_next()
     assert claimed["plan"]["max_tool_calls"] == 12
     captured_instructions = []
+    captured_toolsets = []
 
     async def session_history(_session_id):
         return []
@@ -605,6 +682,7 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
         **_kwargs,
     ):
         captured_instructions.append(instructions)
+        captured_toolsets.append(_kwargs.get("enabled_toolsets"))
         return "run-research-tool-limit"
 
     async def wait_run(
@@ -641,6 +719,91 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     assert "简短中文查询和英文查询各搜一次" in captured_instructions[0]
     assert "不调用 browser_*" in captured_instructions[0]
     assert "页面读取失败时改选其他搜索结果" in captured_instructions[0]
+    assert "不输出该失败页面的 URL" in captured_instructions[0]
+    assert captured_toolsets == [["web"]]
+
+
+def test_research_repairs_unextracted_citations_with_tools_disabled(tmp_path):
+    runtime = make_runtime(tmp_path)
+    runtime.store.initialize()
+    task = create_planned_task(
+        runtime,
+        "research-citation-repair",
+        "请核实今天的台风预警并给出来源",
+    )
+    claimed = runtime.store.claim_next()
+    sources = (
+        "https://www.nmc.cn/publish/alarm.html,"
+        "http://typhoon.weather.com.cn/"
+    )
+
+    async def session_history(_session_id):
+        return []
+
+    async def start_run(*_args, **_kwargs):
+        return "run-citation-repair"
+
+    async def wait_run(
+        _run_id,
+        *,
+        timeout_seconds,
+        cancel_requested,
+        event_callback,
+    ):
+        await event_callback(
+            {
+                "event": "tool.completed",
+                "tool": "web_search",
+                "source": sources,
+                "_adapter_event_key": "id:repair-search",
+            }
+        )
+        await event_callback(
+            {
+                "event": "tool.completed",
+                "tool": "web_extract",
+                "source": sources,
+                "_adapter_event_key": "id:repair-extract",
+            }
+        )
+        return {
+            "status": "completed",
+            "output": (
+                "结论 https://www.nmc.cn/publish/alarm.html "
+                "http://typhoon.weather.com.cn/ "
+                "失败页 https://typhoon.nmc.cn/web.html"
+            ),
+            "usage": {"input_tokens": 4, "output_tokens": 3},
+        }
+
+    async def chat(session_id, message, system_message, *, disable_tools, **_kwargs):
+        assert session_id.startswith("wechat-citation-repair:")
+        assert "https://typhoon.nmc.cn/web.html" in message
+        assert disable_tools is True
+        assert "不检索、不调用工具" in system_message
+        return (
+            "结论 https://www.nmc.cn/publish/alarm.html "
+            "http://typhoon.weather.com.cn/",
+            {"input_tokens": 2, "output_tokens": 2},
+        )
+
+    runtime.hermes.session_history = session_history
+    runtime.hermes.start_run = start_run
+    runtime.hermes.wait_run = wait_run
+    runtime.hermes.chat = chat
+    asyncio.run(execute_task(runtime, claimed))
+
+    stored = runtime.store.get_task(task["id"])
+    assert stored["status"] == "succeeded"
+    assert "typhoon.nmc.cn/web.html" not in stored["output"]
+    assert stored["usage"]["input_tokens"] == 6
+    assert stored["usage"]["output_tokens"] == 5
+    assert runtime.store.today_usage("Asia/Shanghai")["total_tokens"] == 11
+    event_types = {
+        item["event_type"] for item in runtime.store.list_task_events(task["id"])
+    }
+    assert "research_citation_repair_started" in event_types
+    assert "research_citation_repair_succeeded" in event_types
 
 
 def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(
@@ -666,6 +829,7 @@ def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(
         _history,
         *,
         idempotency_key,
+        enabled_toolsets=None,
     ):
         keys.append(idempotency_key)
         return runs_by_key.setdefault(

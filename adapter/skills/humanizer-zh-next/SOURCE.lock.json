@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "humanizer-zh-next",
+  "version": "1.2.0",
+  "source": "https://github.com/Hyacehila/humanizer-zh-next",
+  "commit": "cf08ea33910a094f6738cec01ed9c6fc19acc2f9",
+  "license": "MIT",
+  "reviewed_at": "2026-08-27",
+  "runtime_mode": "read_only_prompt_resource",
+  "audit": {
+    "executable_files": [],
+    "network_clients": [],
+    "wechat_senders": [],
+    "loaded_file": "SKILL.md",
+    "loaded_sha256": "19c4a1a2b86aabd47ac385a7da1011188d6edc6a61f16b896ffbe412ab0b40b7"
+  },
+  "files": {
+    ".gitignore": "ee1c66fbf7f1dd2f3d7a96fbdaf36b0e815898f27b3a6d88f1bba9d5ec315398",
+    "LICENSE": "ee22b9630ed75f4b473a80c344685aa652f8d24f34ad88860e90d4eff094b4b1",
+    "README.md": "f6f677d6b034cce5126ca6403ca7f23563c63f9d5f9e08423559b5f44b563e85",
+    "SKILL.md": "19c4a1a2b86aabd47ac385a7da1011188d6edc6a61f16b896ffbe412ab0b40b7",
+    "THIRD_PARTY_NOTICES.md": "583b418dca88c23bed2240a8e195d25b80c5f36bfc4e03f9b6b31d488f868a91"
+  }
+}

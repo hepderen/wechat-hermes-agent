@@ -128,6 +128,21 @@ class HermesClient:
         if response.status_code not in {201, 409}:
             raise response_error(response)
 
+    async def delete_session(self, session_id: str) -> None:
+        """Best-effort deletion for short-lived, Adapter-owned Sessions."""
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.delete(
+                    self.base_url
+                    + "/api/sessions/"
+                    + urllib.parse.quote(session_id, safe=""),
+                    headers=self.headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise RemoteAPIError("Hermes session deletion failed") from exc
+        if response.status_code not in {200, 202, 204, 404}:
+            raise response_error(response)
+
     async def chat(
         self,
         session_id: str,
@@ -210,6 +225,7 @@ class HermesClient:
         history: list[dict[str, str]],
         *,
         idempotency_key: str,
+        enabled_toolsets: list[str] | None = None,
     ) -> str:
         trusted_key = str(idempotency_key or "").strip()
         if not trusted_key:
@@ -218,19 +234,22 @@ class HermesClient:
         for attempt in range(2):
             try:
                 async with httpx.AsyncClient(timeout=30) as client:
+                    payload: dict[str, Any] = {
+                        "input": message,
+                        "instructions": instructions,
+                        "session_id": session_id,
+                        "conversation_history": history,
+                        "idempotency_key": trusted_key,
+                    }
+                    if enabled_toolsets is not None:
+                        payload["enabled_toolsets"] = list(enabled_toolsets)
                     response = await client.post(
                         self.base_url + "/v1/runs",
                         headers={
                             **self.headers(),
                             "Idempotency-Key": trusted_key,
                         },
-                        json={
-                            "input": message,
-                            "instructions": instructions,
-                            "session_id": session_id,
-                            "conversation_history": history,
-                            "idempotency_key": trusted_key,
-                        },
+                        json=payload,
                     )
                 break
             except httpx.HTTPError as exc:

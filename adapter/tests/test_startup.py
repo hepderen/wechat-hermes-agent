@@ -80,7 +80,13 @@ def test_second_adapter_stays_degraded_and_does_not_recover(tmp_path):
     first = make_runtime(tmp_path)
     second = make_runtime(tmp_path)
     with TestClient(create_app(first, start_worker=False)) as first_client:
-        assert first_client.get("/health").json()["ready"] is True
+        health = first_client.get("/health").json()
+        assert health["ready"] is True
+        assert health["persona"]["integrity"] is True
+        assert health["persona"]["version"].startswith("sophia@1.0.0+")
+        assert "wechat_hermes_persona_skill_integrity 1" in (
+            first_client.get("/metrics").text
+        )
         with TestClient(create_app(second, start_worker=False)) as second_client:
             health = second_client.get("/health").json()
             assert health["status"] == "degraded"
@@ -120,6 +126,18 @@ def test_failed_cleanup_status_degrades_health_and_metrics(tmp_path):
         metrics = client.get("/metrics").text
         assert "wechat_hermes_ready 0" in metrics
         assert "wechat_hermes_cleanup_healthy 0" in metrics
+
+
+def test_persona_integrity_degrades_health(monkeypatch, tmp_path):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "PERSONA_SKILL_INTEGRITY_OK", False)
+    runtime = make_runtime(tmp_path)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        health = client.get("/health").json()
+        assert health["ready"] is False
+        assert health["degraded_reason"] == "persona_skill_integrity"
+        assert health["persona"]["integrity"] is False
 
 
 def test_missing_cleanup_status_uses_bounded_startup_grace(tmp_path):

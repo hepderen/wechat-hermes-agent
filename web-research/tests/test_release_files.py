@@ -76,6 +76,7 @@ def test_probe_is_read_only_and_does_not_call_wechat():
         "probe_hermes_tools.py",
         "probe_gateway_run.py",
         "probe_adapter_search.py",
+        "probe_search_quality.py",
         "stress_provider.py",
     ):
         source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
@@ -139,6 +140,8 @@ def test_adapter_search_probe_delivers_only_to_the_fake_chat_api():
     assert '"verify"' in source
     assert '"dual"' in source
     assert 'requirements.get("dual_region")' in source
+    assert 'requirements.get("any_hosts", ())' in source
+    assert '"dxomark.com"' in source
     assert 'started_tools.count("web_search") > 4' in source
     assert 'name.startswith("browser_")' in source
     assert '"--request-id"' in source

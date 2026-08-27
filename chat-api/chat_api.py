@@ -44,6 +44,14 @@ class SnapshotRace(RuntimeError):
     pass
 
 
+class SearchPopupNotFoundError(RuntimeError):
+    """The Weixin search popup did not reach a usable state in time."""
+
+
+class SearchPopupAmbiguousError(RuntimeError):
+    """More than one usable search popup matched the window filter."""
+
+
 def fsync_parent_directory(path):
     if os.name == "nt":
         return
@@ -1095,6 +1103,30 @@ class TextSender:
             "search_popup_result_point", [100, 130]
         )
         self.search_delay = float(config.get("search_delay_seconds", 0.8))
+        self.search_popup_wait = max(
+            0.5,
+            min(
+                10.0,
+                float(config.get("search_popup_wait_seconds", 4.0)),
+            ),
+        )
+        self.search_popup_poll = max(
+            0.02,
+            min(
+                0.5,
+                float(config.get("search_popup_poll_seconds", 0.06)),
+            ),
+        )
+        configured_popup_height = int(
+            config.get(
+                "search_popup_min_height",
+                int(self.search_popup_result_point[1]) + 10,
+            )
+        )
+        self.search_popup_min_height = max(80, configured_popup_height)
+        self.reuse_group_window = bool(
+            config.get("reuse_group_window", True)
+        )
         self.group_click = config.get("group_click_point", [188, 231])
         self.input_point = config.get("input_point", [480, 585])
         self.send_delay = float(config.get("send_delay_seconds", 0.25))
@@ -1501,55 +1533,159 @@ class TextSender:
                 values[key] = int(value)
         return values
 
+    def _window_name_for(self, window_id):
+        result = self._run(["xdotool", "getwindowname", str(window_id)])
+        return result.stdout.strip()
+
+    def _visible_wechat_windows(self):
+        result = self._run(
+            [
+                "xdotool",
+                "search",
+                "--onlyvisible",
+                "--class",
+                self.window_class,
+            ]
+        )
+        return list(dict.fromkeys(result.stdout.split()))
+
+    def _find_open_group_window(self, main_window_id):
+        """Return the unique visible group window, when it is already open."""
+        if not self.group_name:
+            return None
+        try:
+            window_ids = self._visible_wechat_windows()
+        except RuntimeError:
+            return None
+
+        candidates = []
+        for window_id in window_ids:
+            if window_id == str(main_window_id):
+                continue
+            try:
+                if self._window_name_for(window_id) != self.group_name:
+                    continue
+                geometry = self._window_geometry_for(window_id)
+            except (RuntimeError, ValueError):
+                continue
+            if geometry.get("WIDTH", 0) < 500 or geometry.get("HEIGHT", 0) < 400:
+                continue
+            candidates.append((geometry.get("WIDTH", 0) * geometry.get("HEIGHT", 0), window_id))
+
+        if len(candidates) == 1:
+            return candidates[0][1]
+        if len(candidates) > 1:
+            LOG.warning(
+                "multiple visible Weixin group windows matched configured title; "
+                "falling back to search"
+            )
+        return None
+
+    def _activate_window(self, window_id):
+        self._run(["xdotool", "windowmap", str(window_id)])
+        self._run(["xdotool", "windowactivate", str(window_id)])
+        time.sleep(0.05)
+
     def _find_search_popup(self, main_window_id):
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + self.search_popup_wait
+        last_candidates = []
+        last_error = ""
         while time.monotonic() < deadline:
             try:
-                result = self._run(
-                    [
-                        "xdotool",
-                        "search",
-                        "--onlyvisible",
-                        "--class",
-                        self.window_class,
-                    ]
-                )
-            except RuntimeError:
-                time.sleep(0.1)
+                window_ids = self._visible_wechat_windows()
+            except RuntimeError as exc:
+                last_error = type(exc).__name__
+                time.sleep(self.search_popup_poll)
                 continue
             candidates = []
-            for window_id in result.stdout.split():
+            for window_id in window_ids:
                 if window_id == str(main_window_id):
                     continue
                 try:
                     geometry = self._window_geometry_for(window_id)
-                except RuntimeError:
+                except (RuntimeError, ValueError):
                     continue
                 width = geometry.get("WIDTH", 0)
                 height = geometry.get("HEIGHT", 0)
-                if 200 <= width <= 500 and 80 <= height <= 300:
-                    candidates.append((width * height, window_id))
+                if (
+                    200 <= width <= 500
+                    and self.search_popup_min_height <= height <= 300
+                ):
+                    candidates.append((width * height, window_id, width, height))
+            last_candidates = candidates
             if len(candidates) == 1:
                 return candidates[0][1]
             if len(candidates) > 1:
-                raise RuntimeError(
-                    "multiple possible Weixin search popups were found; refusing to guess"
+                raise SearchPopupAmbiguousError(
+                    "multiple possible Weixin search popups were found; refusing "
+                    "to guess"
                 )
-            time.sleep(0.1)
-        raise RuntimeError("Weixin search results popup was not found")
+            time.sleep(self.search_popup_poll)
+        diagnostic = {
+            "candidates": [
+                {
+                    "window_id": item[1],
+                    "width": item[2],
+                    "height": item[3],
+                }
+                for item in last_candidates
+            ],
+            "last_error": last_error,
+        }
+        LOG.warning("Weixin search popup was not found: %s", diagnostic)
+        raise SearchPopupNotFoundError(
+            "Weixin search results popup was not found"
+        )
 
     def _open_group(self, window_id):
         if not self.group_name:
             self._click(window_id, self.group_click)
             time.sleep(0.18)
-            return
+            return window_id
+
+        if self.reuse_group_window:
+            existing = self._find_open_group_window(window_id)
+            if existing:
+                self._activate_window(existing)
+                return existing
+
         self._set_clipboard(self.group_name)
-        self._click(window_id, self.search_point)
-        self._paste(window_id)
-        time.sleep(max(0.3, self.search_delay))
-        popup_window_id = self._find_search_popup(window_id)
+        popup_window_id = None
+        for attempt in range(2):
+            self._click(window_id, self.search_point)
+            self._paste(window_id)
+            # Start polling quickly so a transient small popup can settle while
+            # the finder waits for the result row to become clickable.
+            time.sleep(max(0.05, min(self.search_delay, 0.2)))
+            try:
+                popup_window_id = self._find_search_popup(window_id)
+                break
+            except SearchPopupNotFoundError:
+                if attempt:
+                    raise
+                try:
+                    self._run(
+                        [
+                            "xdotool",
+                            "key",
+                            "--window",
+                            str(window_id),
+                            "--clearmodifiers",
+                            "Escape",
+                        ]
+                    )
+                except RuntimeError:
+                    LOG.debug("failed to clear stale Weixin search popup", exc_info=True)
+                time.sleep(0.12)
+
         self._click(popup_window_id, self.search_popup_result_point)
         time.sleep(0.5)
+        if self.reuse_group_window:
+            selected = self._find_open_group_window(window_id)
+            if selected:
+                self._activate_window(selected)
+                return selected
+        return window_id
 
     def _activate_target_window(self):
         window_id = self._find_window()
@@ -1561,8 +1697,7 @@ class TextSender:
             ["xdotool", "windowsize", window_id, str(width), str(height)],
         ):
             self._run(command)
-        self._open_group(window_id)
-        return window_id
+        return self._open_group(window_id)
 
     def _room_lock(self, room_id):
         room_id = str(room_id or "").strip()
@@ -3082,6 +3217,7 @@ def make_handler(application):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+            self.wfile.flush()
 
         def _text(self, status, payload, content_type="text/plain; charset=utf-8"):
             data = str(payload).encode("utf-8")
@@ -3091,13 +3227,48 @@ def make_handler(application):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+            self.wfile.flush()
 
         def _error(self, status, message):
             self._json(status, {"ok": False, "error": str(message)})
 
+        def _discard_request_body(self):
+            if self.command != "POST" or getattr(
+                self,
+                "_request_body_consumed",
+                False,
+            ):
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                self.close_connection = True
+                return
+            if length <= 0:
+                self._request_body_consumed = True
+                return
+            max_body = int(
+                application.config.get("max_request_body_bytes", 32 * 1024 * 1024)
+            )
+            if length > max_body:
+                self.close_connection = True
+                return
+            remaining = length
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 64 * 1024))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                self.close_connection = True
+            finally:
+                self._request_body_consumed = True
+
         def _require_outbound_auth(self):
             expected = configured_outbound_token(application.config)
             if not expected:
+                self._discard_request_body()
                 self._json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {
@@ -3115,6 +3286,7 @@ def make_handler(application):
                 candidate.encode("utf-8"),
                 expected.encode("utf-8"),
             ):
+                self._discard_request_body()
                 self._json(
                     HTTPStatus.UNAUTHORIZED,
                     {
@@ -3134,7 +3306,11 @@ def make_handler(application):
             )
             if length <= 0 or length > max_body:
                 raise ValueError("request body length is invalid")
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = self.rfile.read(length)
+            self._request_body_consumed = True
+            if len(body) != length:
+                raise ValueError("request body ended before Content-Length")
+            payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("request body must be a JSON object")
             return payload
@@ -3341,6 +3517,7 @@ def make_handler(application):
                     group_id != application.reader.group_id
                     or action not in {"messages", "media"}
                 ):
+                    self._discard_request_body()
                     self._error(HTTPStatus.NOT_FOUND, "route was not found")
                     return
                 if not self._require_outbound_auth():
@@ -3349,6 +3526,7 @@ def make_handler(application):
                     hasattr(application, "is_ready_for_send")
                     and not application.is_ready_for_send()
                 ):
+                    self._discard_request_body()
                     self._error(
                         HTTPStatus.SERVICE_UNAVAILABLE,
                         "Chat API is not ready for outbound delivery",

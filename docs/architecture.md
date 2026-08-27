@@ -18,7 +18,7 @@
 
 - 按数据库游标读取 Chat API，不读取屏幕，不调用 OCR。
 - 生成稳定的 `request_id`，并携带 `room_id`、`sender_id`、`source_local_id`、`msg_svr_id`、`mentions_bot` 和 `reply_to_bot`。
-- 触发顺序为控制命令、任务命令、结构化 `@`、引用机器人消息、忽略。
+- 当 `chat_group_listener_enabled=true` 时，指定群中所有结构化有效的文字或引用消息都会转给 Adapter；控制命令仍优先，真实 `@` 与回复关系仍随消息携带。关闭时保持控制命令、结构化 `@`、引用机器人消息、忽略的旧触发顺序。
 - 微信可能在正文落库后才补写原生 `@` XML；Bridge 对可见 mention 候选保留短暂稳定窗口，等可信元数据补齐后再判定。候选布尔值本身不参与授权或触发。
 - 同步回复由 Bridge 发送；异步任务的最终交付由 Adapter Outbox 发送。
 
@@ -28,14 +28,18 @@
 - 使用 `X-Bridge-Token` 验证 Bridge，忽略正文中伪造的身份字段。
 - 根据房间白名单决定工具权限，按群或私聊隔离 Session 和记忆。
 - 普通问答走 Hermes Session Chat；显式搜索、时效事实和真假核实自动进入联网 Run，其他执行请求持久化后进入单并发 Run Worker。
+- 当 `HERMES_WECHAT_CHAT_ONLY=true` 时，以上执行意图统一降级为禁工具的同步文字会话；已有生产 Run 会被取消，遗留 Outbox 会被抑制。
+- `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 时，未点名消息先经低信号过滤、房间级时间/回合节流和模型静默标记判定；它们只能走禁工具文字会话，绝不创建任务或进入 Outbox。真实 `@`、引用机器人和直接名称可更快进入对话，但仍不绕过可信身份链。
 - Hermes 返回 `429/503` 等瞬时状态时，Adapter 按服务端 `Retry-After` 和有界指数退避重试，不连续撞击上游。
 - 管理任务代次、SSE 工具事件、Verifier、Artifact、Outbox、费用和资源限制。
+- 人格关系档案以 `(room_id, sender_id)` 隔离，保存稳定称呼、互动层级、边界和最多八条偏好或共同梗；正文不能伪造身份或覆盖档案。
+- 每三次有效互动或明确关系信号后，空闲 Worker 才会执行一个无工具 JSON 摘要。新入站消息抢占摘要，未持久化正文的作业会在重启时标记为 `dropped`。
 
 ### Hermes Worker
 
 - 监听 `127.0.0.1:8642`。
 - 负责对话生成、计划执行、终端、文件、浏览器和联网检索。
-- `skills` 工具集在生产配置中禁用，Skill 目录为空；真实能力由原生工具、搜索插件和受控 MCP 提供。
+- Hermes 动态 `skills` 工具集在生产配置中禁用。`adapter/skills/sophia` 与 `adapter/skills/humanizer-zh-next` 是固定提交和哈希的公开 Skill，由 Adapter 读取已审计章节并注入会话，不具备工具调用或文件执行能力。Sophia 只加载 `Persona & Voice`，不加载 voice、主动发送、wife mode、todo、Telegram 或原生 memory 章节。
 - Worker 不持有 Bridge Token 或 Chat API Token，主动发送必须经过 Adapter MCP。
 - systemd 将写权限限制到工作区和 Artifact 目录。
 
@@ -135,7 +139,7 @@ prepared -> sending -> confirmed
 
 | 存储 | 主要内容 | 默认保留 |
 | --- | --- | --- |
-| Adapter SQLite | 入站账本、任务提示/输出、工具事件、Artifact、Outbox、用量、记忆 | 终态任务与审计 30 天 |
+| Adapter SQLite | 入站账本、任务提示/输出、工具事件、Artifact、Outbox、用量、项目记忆、成员关系档案和不含正文的房间监听节流状态 | 终态任务与审计 30 天；关系档案默认 90 天 |
 | Artifact 目录 | 任务生成的已注册文件 | 7 天 |
 | Outbound control SQLite | 房间/任务发送栅栏 | 运行状态数据 |
 | Chat API cache | 数据库快照、发送状态和临时媒体 | 由 Chat API 管理 |
@@ -143,7 +147,7 @@ prepared -> sending -> confirmed
 
 ## 恢复与健康
 
-Adapter 启动时先获取单进程锁，恢复未完成任务并对账 Outbox，恢复结束前 `ready=false`。`/health` 区分 `live`、`ready` 和 `degraded`；定时清理失败、状态文件过期、Worker 退出或关键依赖异常会进入 degraded。`/metrics` 只输出计数、状态和耗时，不包含消息正文。
+Adapter 启动时先获取单进程锁，恢复未完成任务并对账 Outbox，恢复结束前 `ready=false`。同一成员的待执行关系摘要会合并后续信号并保留最多四轮内存片段；摘要已开始时，新信号会创建下一条待执行摘要。关系摘要正文只驻留内存，因此启动时会丢弃 `queued/running` 摘要作业，而不会重放聊天内容。`/health` 区分 `live`、`ready` 和 `degraded`；定时清理失败、状态文件过期、Worker 退出或关键依赖异常会进入 degraded。`/metrics` 只输出计数、状态和耗时，不包含消息正文。
 
 ## 安全边界
 
@@ -152,6 +156,6 @@ Adapter 启动时先获取单进程锁，恢复未完成任务并对账 Outbox�
 - 内部 API 使用独立 Token；Hermes Worker 不获取微信发送凭据。
 - 网络工具阻止回环、私网、链路本地、云元数据和重定向 SSRF。
 - 文件工具限制根目录、软链接、归档条目数和下载字节数。
-- Hermes 的 `skills` 工具集被显式禁用，运行目录不包含可加载 Skill，Adapter 也不暴露安装或 reload 接口。
-- 人格规则只由 Adapter 会话基线注入。措辞层不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
+- Hermes 的动态 `skills` 工具集被显式禁用，Adapter 只加载锁定为 Sophia 1.0.0 和 `humanizer-zh-next` 1.2.0 的只读资源，不暴露动态安装或 reload 接口。
+- 人格 Skill 只参与会话措辞和长度压缩，不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
 - 升级不会删除旧 SQLite 中的 Skill 历史字段或注册表；这些兼容数据没有运行时读取路径。

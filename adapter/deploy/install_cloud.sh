@@ -94,6 +94,69 @@ assert_protected_file() {
   fi
 }
 
+assert_persona_skill_bundle() {
+  local humanizer_root="$SOURCE_ROOT/skills/humanizer-zh-next"
+  local sophia_root="$SOURCE_ROOT/skills/sophia"
+  python3 - "$humanizer_root" "$sophia_root" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+expected_bundles = {
+    "humanizer-zh-next": {
+        "version": "1.2.0",
+        "source": "https://github.com/Hyacehila/humanizer-zh-next",
+        "commit": "cf08ea33910a094f6738cec01ed9c6fc19acc2f9",
+        "sha256": "19c4a1a2b86aabd47ac385a7da1011188d6edc6a61f16b896ffbe412ab0b40b7",
+    },
+    "sophia": {
+        "version": "1.0.0",
+        "source": "https://github.com/sharbelxyz/sophia",
+        "commit": "f2cd448553d61aa3c2ea774dc7e2296f09d4b584",
+        "sha256": "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301",
+    },
+}
+seen = set()
+for raw_root in sys.argv[1:]:
+    root = Path(raw_root).resolve(strict=True)
+    for required in ("SKILL.md", "SOURCE.lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md"):
+        if not (root / required).is_file():
+            raise SystemExit("persona Skill resource is missing: " + required)
+    lock = json.loads((root / "SOURCE.lock.json").read_text(encoding="utf-8"))
+    name = lock.get("name")
+    expected_bundle = expected_bundles.get(name)
+    if expected_bundle is None or name in seen:
+        raise SystemExit("persona Skill lock name mismatch")
+    seen.add(name)
+    if lock.get("license") != "MIT" or any(
+        lock.get(key) != value
+        for key, value in expected_bundle.items()
+        if key != "sha256"
+    ):
+        raise SystemExit("persona Skill lock metadata mismatch")
+    expected = lock.get("audit", {}).get("loaded_sha256")
+    actual = hashlib.sha256((root / "SKILL.md").read_bytes()).hexdigest()
+    if expected != expected_bundle["sha256"] or actual != expected:
+        raise SystemExit("persona Skill SHA-256 mismatch")
+    for relative, digest in lock.get("files", {}).items():
+        path = (root / relative).resolve()
+        if path.parent != root and root not in path.parents:
+            raise SystemExit("persona Skill lock path escapes bundle")
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise SystemExit("persona Skill file hash mismatch: " + relative)
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise SystemExit("persona Skill contains a symbolic link")
+        if path.is_file() and path.suffix.lower() in {
+            ".bat", ".cmd", ".exe", ".js", ".ps1", ".py", ".sh"
+        }:
+            raise SystemExit("persona Skill contains executable content: " + str(path))
+if seen != set(expected_bundles):
+    raise SystemExit("persona Skill bundle set mismatch")
+PY
+}
+
 assert_baseline() {
   local pid
   pid=$(pgrep -x wechat || true)
@@ -135,6 +198,7 @@ assert_baseline() {
     fail "release source is missing at $SOURCE_ROOT"
   [[ -f "$CHAT_API_SOURCE_ROOT/chat_api.py" ]] ||
     fail "Chat API release source is missing at $CHAT_API_SOURCE_ROOT"
+  assert_persona_skill_bundle
   [[ -d "$HERMES_SOURCE/.git" && -x "$HERMES_SOURCE/venv/bin/hermes" ]] ||
     fail "Hermes source runtime is incomplete"
 }
@@ -988,7 +1052,12 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "5",
+    "HERMES_WECHAT_SESSION_GENERATION": "8",
+    "HERMES_WECHAT_CHAT_ONLY": "true",
+    "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
+    "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
     "ALLOW_PRIVATE_WECHAT_CHAT": "false",
     "HERMES_WECHAT_WORKER_POLL_SECONDS": "1",
@@ -1017,6 +1086,8 @@ for key, value in {
     "HERMES_WECHAT_CLEANUP_MAX_AGE_SECONDS": "172800",
     "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "5",
     "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.75",
+    "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "true",
+    "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS": "5",
 }.items():
     adapter.setdefault(key, value)
 
@@ -1065,6 +1136,7 @@ bridge.update({
     "WECHAT_CHAT_API_TOKEN": chat_api_token,
     "HERMES_WECHAT_ADAPTER_URL": "http://127.0.0.1:8000",
     "HERMES_WECHAT_ADAPTER_TIMEOUT_SECONDS": "210",
+    "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "WECHAT_BOT_WXID": os.environ["BOT_WXID"],
 })
 for forbidden in (

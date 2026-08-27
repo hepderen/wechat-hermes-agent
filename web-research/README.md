@@ -28,6 +28,9 @@ endpoint or requiring a third-party API key.
   ranked by topic coverage and source quality. Tracking variants are deduplicated,
   domains are diversified, and explicit domestic/international requests balance
   both regions before results are returned to Hermes.
+- Result candidates are ranked before DNS safety checks. Only a bounded set of
+  relevant URLs is resolved in parallel under a shared deadline, so unrelated or
+  broken domains cannot serialize an otherwise healthy search.
 - Successful searches are cached by query hash in memory and in a private
   SQLite database. Fresh entries survive gateway restarts; expired entries may
   be used for up to 24 hours only when every live upstream fails. Query text is
@@ -35,7 +38,9 @@ endpoint or requiring a third-party API key.
 - Extraction is performed in the Hermes process with URL safety, redirect
   re-validation, website policy, content-type and byte limits. Selected pages
   are read with bounded parallelism while preserving input order, so one slow
-  source does not serialize every other extraction.
+  source does not serialize every other extraction. Pages with fewer than 120
+  non-whitespace extracted characters are reported as failed evidence rather
+  than being counted as a usable source.
 - Neither search queries nor page bodies are logged.
 
 ## Build a candidate

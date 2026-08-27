@@ -9,6 +9,8 @@ URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 SEARCH_ACTION_RE = re.compile(
     r"(?:搜一搜|搜搜|搜一下|搜下|再搜(?:一遍|一次|一下)?|"
     r"查资料|查一查|查查|查一下|查下|找一找|找找|找一下|找下|"
+    r"(?:请)?(?:优先|先|再)?\s*查\s*(?:独立)?"
+    r"(?:实测|评测|测评|官方参数|官方文档|官方资料|原文|来源|证据)|"
     r"(?:搜索|检索|调研|研究)(?:一下|这个|该|关于|最近|最新|今天|国内|国外|\s+)|"
     r"(?:帮我|替我|给我)(?:去\s*)?(?:搜|查|找)|"
     r"(?:帮我|替我|给我)\s*(?:看看|看一下|看下)"
@@ -40,7 +42,7 @@ FRESHNESS_RE = re.compile(
 
 TIME_SENSITIVE_FACT_RE = re.compile(
     r"(?:新闻|消息|热点|热搜|快讯|动态|近况|进展|更新|版本|发布|"
-    r"公告|政策|法规|规定|价格|报价|现价|行情|汇率|股价|天气|"
+    r"公告|政策|法规|规定|价格|报价|现价|行情|汇率|股价|天气|气象|台风|预警|"
     r"比分|赛果|排名|榜单|票房|数据|统计|状态|故障|宕机|"
     r"release(?:\s+notes?)?|news|headline|update|version|announcement|"
     r"policy|regulation|price|quote|market|exchange\s+rate|stock|"
@@ -61,6 +63,42 @@ VERIFICATION_RE = re.compile(
     r"靠谱吗|可信吗|核实|查证|"
     r"辟谣|事实核查|(?:来源|出处|依据)(?:呢|是|在|链接|有吗)|"
     r"官方(?:怎么说|回应|消息)|verify|fact[-\s]?check|is\s+.+\s+true)",
+    re.IGNORECASE,
+)
+
+RECOMMENDATION_RE = re.compile(
+    r"(?:推荐|选购|怎么选|值得买|值不值得|适合|性价比|排行|榜单|哪个好|"
+    r"\brecommend(?:ation|ed|s)?\b|\bbest\b|\bworth\b|\bbuying\s+guide\b)",
+    re.IGNORECASE,
+)
+
+EVIDENCE_QUALITY_RE = re.compile(
+    r"(?:官方参数|官方文档|官方资料|官方公告|官网|原文|一手资料|"
+    r"独立实测|横评|评测|测评|实测|"
+    r"行业报告|市场报告|研究报告|白皮书|调研报告|统计数据|数据分析|趋势分析|"
+    r"国内外|海内外|中外|中国和海外|中国与海外|"
+    r"\bofficial\s+(?:parameters?|documentation|docs?|sources?|announcement)\b|"
+    r"\bindependent\s+(?:test|review|benchmark)\b|"
+    r"\b(?:industry|market|research)\s+report\b|\bwhite\s+paper\b|"
+    r"\bdata\s+analysis\b|\btrend\s+analysis\b|"
+    r"\bchina\s+(?:and|&)\s+(?:global|international|overseas)\b|"
+    r"\bdomestic\s+(?:and|&)\s+(?:global|international)\b)",
+    re.IGNORECASE,
+)
+
+CREATIVE_RECOMMENDATION_RE = re.compile(
+    r"(?:文案|标题|名字|名称|变量名|函数名|措辞|说法|回复|句子|段落|"
+    r"选题|创意|故事|小说|诗|\bcaption\b|\bname\b|\bwording\b|"
+    r"\bcopy\b|\bidea\b|\bstory\b|\bpoem\b)",
+    re.IGNORECASE,
+)
+
+RECOMMENDATION_PRODUCT_RE = re.compile(
+    r"(?:手机|电脑|相机|耳机|平板|显卡|汽车|车型|家电|软件|工具|服务|"
+    r"套餐|产品|设备|书|电影|餐厅|酒店|景点|预算|价格|价位|\d+\s*元|"
+    r"\bphone\b|\bsmartphone\b|\blaptop\b|\bcamera\b|\bheadphones?\b|"
+    r"\bsoftware\b|\btool\b|\bservice\b|\bproduct\b|\bdevice\b|"
+    r"\bbook\b|\bmovie\b|\brestaurant\b|\bhotel\b|\bbudget\b|\bprice\b)",
     re.IGNORECASE,
 )
 
@@ -106,9 +144,26 @@ def is_current_information_request(value: str) -> bool:
     return bool(INHERENTLY_LIVE_FACT_RE.search(text))
 
 
+def is_evidence_research_request(value: str) -> bool:
+    text = normalize_intent_text(value)
+    if not text:
+        return False
+    if EVIDENCE_QUALITY_RE.search(text):
+        return True
+    if not RECOMMENDATION_RE.search(text):
+        return False
+    if CREATIVE_RECOMMENDATION_RE.search(
+        text
+    ) and not RECOMMENDATION_PRODUCT_RE.search(text):
+        return False
+    return True
+
+
 def is_research_request(value: str) -> bool:
-    return is_explicit_research_request(value) or is_current_information_request(
-        value
+    return (
+        is_explicit_research_request(value)
+        or is_current_information_request(value)
+        or is_evidence_research_request(value)
     )
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 
 import httpx
@@ -27,7 +28,7 @@ async def run(args) -> dict:
             json={
                 "input": (
                     "Use web_search to find the official Python documentation, then use "
-                    "web_extract to read at least one official Python source. Return a concise "
+                    "web_extract to read at least two official Python sources. Return a concise "
                     "Chinese answer containing at least two source URLs."
                 ),
                 "instructions": (
@@ -38,6 +39,7 @@ async def run(args) -> dict:
                 "session_id": args.session_id,
                 "conversation_history": [],
                 "idempotency_key": args.idempotency_key,
+                "enabled_toolsets": ["web"],
             },
         )
         response.raise_for_status()
@@ -72,6 +74,11 @@ async def run(args) -> dict:
 
     if status.get("status") != "completed":
         raise RuntimeError("candidate research run did not complete: %s" % status.get("status"))
+    started_tools = [
+        str(event.get("tool") or "")
+        for event in events
+        if event.get("event") == "tool.started"
+    ]
     completed_tools = [
         str(event.get("tool") or "")
         for event in events
@@ -90,6 +97,17 @@ async def run(args) -> dict:
     }
     if forbidden.intersection(completed_tools):
         raise RuntimeError("model run used a forbidden acceptance-probe tool")
+    if forbidden.intersection(started_tools):
+        raise RuntimeError("model run started a forbidden acceptance-probe tool")
+    extracted_sources = set()
+    for event in events:
+        if event.get("event") != "tool.completed" or event.get("tool") != "web_extract":
+            continue
+        for value in str(event.get("source") or "").split(","):
+            if value.strip().startswith(("http://", "https://")):
+                extracted_sources.add(value.strip())
+    if len(extracted_sources) < 2:
+        raise RuntimeError("model run recorded fewer than two extracted sources")
     output = str(status.get("output") or "")
     if output.count("http") < 2:
         raise RuntimeError("candidate result did not contain at least two source URLs")
@@ -99,6 +117,8 @@ async def run(args) -> dict:
         "run_id": run_id,
         "status": status.get("status"),
         "completed_tools": completed_tools,
+        "started_tools": started_tools,
+        "extracted_source_count": len(extracted_sources),
         "event_count": len(events),
         "output_chars": len(output),
         "source_url_count_lower_bound": output.count("http"),
@@ -109,11 +129,15 @@ async def run(args) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:18642")
-    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--api-key")
+    parser.add_argument("--api-key-env", default="API_SERVER_KEY")
     parser.add_argument("--session-id", default="candidate-web-research-probe")
     parser.add_argument("--idempotency-key", default="candidate-web-research-probe-v1")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
+    args.api_key = str(args.api_key or os.getenv(args.api_key_env) or "").strip()
+    if not args.api_key:
+        parser.error("API key is required through --api-key or --api-key-env")
     print(json.dumps(asyncio.run(run(args)), ensure_ascii=False, sort_keys=True))
     return 0
 

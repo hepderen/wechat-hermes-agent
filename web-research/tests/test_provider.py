@@ -444,7 +444,7 @@ def test_bing_html_is_primary_and_parses_result_cards(provider_module, monkeypat
         )
 
     monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
-    result = provider_module.WechatCloudWebProvider().search("docs", 2)
+    result = provider_module.WechatCloudWebProvider().search("example docs", 2)
 
     assert result["success"] is True
     assert len(calls) == 1
@@ -453,6 +453,9 @@ def test_bing_html_is_primary_and_parses_result_cards(provider_module, monkeypat
         "url": "https://official.example/docs",
         "description": "Primary documentation source.",
         "position": 1,
+        "source_type": "web",
+        "region": "international",
+        "evidence_level": "search_metadata_only",
     }
 
 
@@ -667,6 +670,61 @@ def test_searx_results_are_interleaved_with_bing(provider_module, monkeypatch):
         "https://searx-one.example/",
         "https://bing-two.example/",
         "https://searx-two.example/",
+    ]
+
+
+def test_strict_query_supplements_irrelevant_bing_volume_with_searx(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
+    monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "false")
+    monkeypatch.setenv("WECHAT_WEB_SEARX_MERGE_ENABLED", "false")
+    bing_html = b"".join(
+        (
+            '<li class="b_algo"><h2><a href="https://noise-%d.example/">'
+            "Unrelated flight result %d</a></h2></li>" % (index, index)
+        ).encode()
+        for index in range(8)
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        if request.url.host == "www.bing.com":
+            return httpx.Response(200, request=request, content=bing_html)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "results": [
+                    {
+                        "title": "Artificial intelligence news update",
+                        "url": "https://global-ai.example/news",
+                        "content": "Artificial intelligence industry news",
+                        "publishedDate": "Wed, 12 Aug 2026 08:00:00 GMT",
+                    },
+                    {
+                        "title": "AI research news briefing",
+                        "url": "https://ai-research.example/briefing",
+                        "content": "Recent artificial intelligence research news",
+                        "publishedDate": "Wed, 12 Aug 2026 07:00:00 GMT",
+                    },
+                ]
+            },
+        )
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
+    result = provider_module.WechatCloudWebProvider().search(
+        "today artificial intelligence news",
+        2,
+    )
+
+    assert result["success"] is True
+    assert calls == ["www.bing.com", "127.0.0.1"]
+    assert [item["url"] for item in result["data"]["web"]] == [
+        "https://global-ai.example/news",
+        "https://ai-research.example/briefing",
     ]
 
 
@@ -1743,6 +1801,7 @@ def test_search_rejects_oversized_response(provider_module, monkeypatch):
 
 
 def test_extract_html_removes_scripts(provider_module, monkeypatch):
+    monkeypatch.setenv("WECHAT_WEB_EXTRACT_MIN_CHARS", "1")
     html = b"""
     <html><head><title>Useful page</title><script>SECRET_SCRIPT</script></head>
     <body><main><h1>Heading</h1><p>Useful body text.</p></main></body></html>
@@ -1818,6 +1877,7 @@ def test_extract_enforces_streamed_byte_limit(provider_module, monkeypatch):
 
 def test_extract_preserves_order_and_limits_url_count(provider_module, monkeypatch):
     monkeypatch.setenv("WECHAT_WEB_EXTRACT_MAX_URLS", "1")
+    monkeypatch.setenv("WECHAT_WEB_EXTRACT_MIN_CHARS", "1")
 
     def handler(request):
         return httpx.Response(
@@ -1836,6 +1896,24 @@ def test_extract_preserves_order_and_limits_url_count(provider_module, monkeypat
 
     assert result[0]["content"] == "first"
     assert "limit exceeded" in result[1]["error"]
+
+
+def test_extract_rejects_navigation_only_text(provider_module, monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/plain"},
+            content=b"Home Menu Login",
+        )
+
+    monkeypatch.setattr(provider_module.httpx, "AsyncClient", _async_client_factory(handler))
+    result = asyncio.run(
+        provider_module.WechatCloudWebProvider().extract(["https://thin.example/"])
+    )
+
+    assert result[0]["content"] == ""
+    assert "bounded retries" in result[0]["error"]
 
 
 def test_extract_runs_selected_pages_with_bounded_parallelism(
@@ -1863,3 +1941,445 @@ def test_extract_runs_selected_pages_with_bounded_parallelism(
 
     assert [item["url"] for item in results] == urls
     assert maximum_active == 2
+
+
+def test_underspecified_search_is_rejected_before_network(provider_module, monkeypatch):
+    def unexpected_client(*_args, **_kwargs):
+        raise AssertionError("underspecified query reached an upstream")
+
+    monkeypatch.setattr(provider_module.httpx, "Client", unexpected_client)
+    result = provider_module.WechatCloudWebProvider().search(
+        "latest news August 2026",
+        5,
+    )
+
+    assert result["success"] is False
+    assert "concrete subject" in result["error"]
+
+
+def test_relative_current_period_queries_receive_freshness_context(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 12),
+    )
+
+    assert provider_module._upstream_query("今年人工智能行业趋势").endswith("2026")
+    assert provider_module._query_target_year_month("本月 AI 新闻") == (2026, 8)
+    assert "freshness" in provider_module._query_intents("this week AI news")
+
+
+def test_recommendation_filters_budget_pages_unrelated_to_product(provider_module):
+    ranked = provider_module._rank_search_results(
+        "预算 5000 元，推荐拍照好的手机",
+        [
+            {
+                "title": "5000 元价位拍照手机横评",
+                "url": "https://review.example/camera-phone",
+                "description": "手机人像、夜景和长焦实测",
+            },
+            {
+                "title": "重庆市 2026 年预算执行情况",
+                "url": "https://www.cq.gov.cn/budget/2026",
+                "description": "政府财政预算公开",
+            },
+            {
+                "title": "中央预算报告",
+                "url": "https://www.mof.gov.cn/budget/report",
+                "description": "财政预算数据",
+            },
+        ],
+    )
+
+    assert [item["url"] for item in ranked] == [
+        "https://review.example/camera-phone"
+    ]
+
+
+def test_precise_official_result_beats_generic_entry_pages(provider_module):
+    ranked = provider_module._rank_search_results(
+        "Python 3.13 vs Python 3.14 free-threaded official documentation comparison",
+        [
+            {
+                "title": "Python official documentation",
+                "url": "https://docs.python.org/3/",
+                "description": "Official Python documentation entry point",
+                "source": "official-entry",
+                "search_channel": "official",
+            },
+            {
+                "title": "Python 3.13 and 3.14 free-threaded mode comparison",
+                "url": "https://docs.python.org/3/howto/free-threading-python.html",
+                "description": "Version-specific free-threaded Python documentation",
+            },
+            {
+                "title": "The Python Tutorial",
+                "url": "https://docs.python.org/3/tutorial/",
+                "description": "General Python tutorial",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"].endswith("/howto/free-threading-python.html")
+    assert all(item["url"] != "https://docs.python.org/3/" for item in ranked)
+
+
+def test_official_intent_runs_one_bounded_site_scoped_search(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
+    calls = []
+
+    def handler(request):
+        query = request.url.params["q"]
+        calls.append(query)
+        if query.startswith("site:docs.python.org"):
+            html = b"""
+            <li class="b_algo"><h2><a href="https://docs.python.org/3/howto/free-threading-python.html">
+            Python 3.13 3.14 free-threaded mode comparison</a></h2>
+            <div class="b_caption"><p>Official version-specific documentation.</p></div></li>
+            """
+        else:
+            html = b"""
+            <li class="b_algo"><h2><a href="https://docs.python.org/3/">Python documentation</a></h2>
+            <div class="b_caption"><p>General official entry point.</p></div></li>
+            """
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/html"},
+            content=html,
+        )
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
+    result = provider_module.WechatCloudWebProvider().search(
+        "Python 3.13 vs Python 3.14 free-threaded official documentation comparison",
+        2,
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 2
+    assert calls[1].startswith("site:docs.python.org ")
+    assert result["data"]["web"][0]["url"].endswith(
+        "/howto/free-threading-python.html"
+    )
+    row = result["data"]["web"][0]
+    assert row["source_type"] == "official"
+    assert row["evidence_level"] == "search_metadata_only"
+    context = result["data"]["search_context"]
+    assert context["verification_required"] is True
+    assert "web_extract" in context["next_step"]
+
+
+def test_search_result_pages_and_site_operators_are_not_exposed(provider_module):
+    assert provider_module._public_result_url(
+        "https://m.sogou.com/web/searchList.jsp?keyword=python&insite=csdn.net"
+    ) is None
+    assert provider_module._public_result_url(
+        "https://m.baidu.com/s?word=python"
+    ) is None
+    assert provider_module._query_domain_results(
+        "site:docs.python.org free threading"
+    ) == []
+
+
+def test_specific_python_official_entries_include_requested_versions(provider_module):
+    query = "Python 3.13 与 Python 3.14 free-threaded mode 官方文档对比"
+    rows = provider_module._official_entry_results(query)
+
+    assert [row["url"] for row in rows[:2]] == [
+        "https://docs.python.org/3.13/howto/free-threading-python.html",
+        "https://docs.python.org/3.14/howto/free-threading-python.html",
+    ]
+    assert [row["url"] for row in provider_module._rank_search_results(query, rows)][
+        :2
+    ] == [
+        "https://docs.python.org/3.13/howto/free-threading-python.html",
+        "https://docs.python.org/3.14/howto/free-threading-python.html",
+    ]
+    combined = [
+        {
+            "title": "Python 3.14 documentation",
+            "url": "https://docs.python.org/3/",
+            "description": "Official Python documentation entry page",
+        }
+    ] + rows
+    assert [
+        row["url"]
+        for row in provider_module._rank_search_results(query, combined)[:2]
+    ] == [
+        "https://docs.python.org/3.13/howto/free-threading-python.html",
+        "https://docs.python.org/3.14/howto/free-threading-python.html",
+    ]
+
+
+def test_live_official_weather_entries_survive_freshness_filter(provider_module):
+    query = "今天中国台风路径和预警 官方气象信息"
+    rows = provider_module._official_entry_results(query)
+    ranked = provider_module._rank_search_results(query, rows)
+
+    assert [row["url"] for row in ranked] == [
+        "https://typhoon.nmc.cn/web.html",
+        "https://www.nmc.cn/publish/alarm.html",
+    ]
+
+
+def test_phone_recommendation_adds_compact_review_query(provider_module, monkeypatch):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 12),
+    )
+    query = "预算 5000 元，推荐拍照好的手机"
+
+    assert provider_module._bing_html_queries(
+        query,
+        provider_module._upstream_query(query),
+    ) == [
+        "预算 5000 元，推荐拍照好的手机",
+        "smartphone-camera-comparison-review-2026-midrange",
+    ]
+    assert provider_module._query_intents("手机影像横评实测") == {"comparison"}
+
+
+def test_dual_region_fresh_news_adds_an_english_global_query(
+    provider_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: provider_module.date(2026, 8, 12),
+    )
+    query = "今天国内外 AI 重要新闻"
+
+    assert provider_module._bing_html_queries(
+        query,
+        provider_module._upstream_query(query),
+    ) == [
+        "人工智能 ai 新闻 2026-08-12",
+        "global artificial intelligence news August 2026",
+    ]
+    assert "dual_region" in provider_module._query_intents(query)
+    terms = provider_module._query_relevance_terms(query)
+    assert provider_module._required_relevance_matches(query, terms) == 1
+
+
+def test_quality_metadata_preserves_public_source_labels(provider_module):
+    item = {
+        "title": "Regional source",
+        "url": "https://publisher.example/article",
+        "description": "Artificial intelligence report",
+        "source_type": "authoritative",
+        "region": "domestic",
+    }
+
+    assert provider_module._result_source_type(
+        item,
+        "publisher.example",
+    ) == "authoritative"
+    assert provider_module._result_region(item) == "domestic"
+
+
+def test_independent_review_sources_are_labeled_separately(provider_module):
+    item = {"url": "https://www.tomsguide.com/best-picks/best-camera-phones"}
+
+    assert provider_module._result_source_type(item, "www.tomsguide.com") == "review"
+
+
+def test_recommendation_promotes_independent_review_evidence(provider_module):
+    query = "预算 5000 元，推荐拍照好的手机"
+    ranked = provider_module._rank_search_results(
+        query,
+        [
+            {
+                "title": "5000 元拍照手机推荐",
+                "url": "https://www.zhihu.com/question/1",
+                "description": "拍照手机推荐",
+            },
+            {
+                "title": "Best camera phones tested",
+                "url": "https://www.tomsguide.com/best-picks/best-camera-phones",
+                "description": "Independent smartphone camera comparison and review",
+            },
+        ],
+    )
+
+    assert ranked[0]["url"].startswith("https://www.tomsguide.com/")
+
+
+def test_recommendation_promotes_two_distinct_review_hosts(provider_module):
+    ranked = provider_module._rank_search_results(
+        "预算 5000 元，推荐拍照好的手机",
+        [
+            {
+                "title": "社区手机推荐",
+                "url": "https://www.zhihu.com/question/1",
+                "description": "拍照手机推荐",
+            },
+            {
+                "title": "Best camera phones tested",
+                "url": "https://www.tomsguide.com/best-picks/best-camera-phones",
+                "description": "Independent smartphone camera comparison and review",
+            },
+            {
+                "title": "Best phones tested for camera quality",
+                "url": "https://www.pcmag.com/picks/the-best-camera-phones",
+                "description": "Independent smartphone camera review",
+            },
+        ],
+    )
+
+    assert [urlsplit(item["url"]).hostname for item in ranked[:2]] == [
+        "www.tomsguide.com",
+        "www.pcmag.com",
+    ]
+
+
+def test_phone_recommendation_has_curated_review_fallback(provider_module):
+    query = "预算 5000 元，推荐拍照好的手机"
+    entries = provider_module._official_entry_results(query)
+
+    assert [item["url"] for item in entries[:2]] == [
+        "https://www.tomsguide.com/best-picks/best-camera-phones",
+        "https://www.dxomark.com/smartphones/",
+    ]
+    assert all(
+        provider_module._result_source_type(
+            item,
+            urlsplit(item["url"]).hostname or "",
+        )
+        == "review"
+        for item in entries[:2]
+    )
+
+
+def test_version_comparison_can_be_high_quality_on_one_official_host(
+    provider_module,
+):
+    metadata = provider_module._search_quality_metadata(
+        "Python 3.13 与 Python 3.14 官方文档对比",
+        [
+            {
+                "title": "Python 3.13 free-threading HOWTO",
+                "url": "https://docs.python.org/3.13/howto/free-threading-python.html",
+                "source_type": "official",
+            },
+            {
+                "title": "Python 3.14 free-threading HOWTO",
+                "url": "https://docs.python.org/3.14/howto/free-threading-python.html",
+                "source_type": "official",
+            },
+        ],
+    )
+
+    assert metadata["quality"] == "high"
+    assert metadata["authoritative_result_count"] == 2
+
+
+def test_candidate_url_normalization_does_not_resolve_dns(
+    provider_module,
+    monkeypatch,
+):
+    checked = []
+    monkeypatch.setattr(
+        provider_module,
+        "is_safe_url",
+        lambda url: checked.append(url) or True,
+    )
+
+    assert (
+        provider_module._normalized_result_url("https://news.example/item#section")
+        == "https://news.example/item"
+    )
+    assert provider_module._normalized_result_url("https://news.example:bad/item") is None
+    assert provider_module._normalized_result_url("https://user@news.example/item") is None
+    assert checked == []
+
+
+def test_search_ranks_out_irrelevant_result_flood_before_dns_checks(
+    provider_module,
+    monkeypatch,
+):
+    rows = [
+        {
+            "title": "Unrelated flight promotion %d" % index,
+            "url": "https://noise-%d.example/deal" % index,
+            "content": "Airline tickets and holiday travel offers",
+        }
+        for index in range(100)
+    ]
+    rows.extend(
+        [
+            {
+                "title": "Artificial intelligence news and model releases",
+                "url": "https://global-ai.example/news",
+                "content": "Current artificial intelligence industry news",
+                "published_at": "Wed, 12 Aug 2026 08:00:00 GMT",
+            },
+            {
+                "title": "Latest AI research news",
+                "url": "https://ai-lab.example/latest",
+                "content": "Recent artificial intelligence research updates",
+                "published_at": "Wed, 12 Aug 2026 07:00:00 GMT",
+            },
+        ]
+    )
+
+    def handler(request):
+        return httpx.Response(200, request=request, json={"results": rows})
+
+    checked_hosts = []
+
+    def safety_check(url):
+        host = urlsplit(url).hostname
+        checked_hosts.append(host)
+        assert not str(host).startswith("noise-")
+        return True
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _sync_client_factory(handler))
+    monkeypatch.setattr(provider_module, "is_safe_url", safety_check)
+
+    result = provider_module.WechatCloudWebProvider().search(
+        "today artificial intelligence news",
+        2,
+    )
+
+    assert result["success"] is True
+    assert len(result["data"]["web"]) == 2
+    assert set(checked_hosts) == {"global-ai.example", "ai-lab.example"}
+
+
+def test_result_dns_checks_obey_one_shared_deadline(provider_module, monkeypatch):
+    monkeypatch.setenv("WECHAT_WEB_RESULT_SAFETY_MAX_CHECKS", "4")
+    monkeypatch.setenv("WECHAT_WEB_RESULT_SAFETY_WORKERS", "2")
+    monkeypatch.setenv("WECHAT_WEB_RESULT_SAFETY_TIMEOUT_SECONDS", "0.1")
+
+    started = []
+
+    def slow_safety_check(url):
+        started.append(url)
+        time.sleep(0.5)
+        return True
+
+    monkeypatch.setattr(provider_module, "is_safe_url", slow_safety_check)
+    items = [
+        {
+            "title": "Bounded lookup result %d" % index,
+            "url": "https://slow-%d.example/item" % index,
+            "description": "Bounded lookup evidence",
+        }
+        for index in range(20)
+    ]
+
+    before = time.monotonic()
+    results = provider_module._safe_ranked_results("bounded lookup", items, 2)
+    elapsed = time.monotonic() - before
+
+    assert results == []
+    assert elapsed < 0.35
+    assert len(started) <= 2

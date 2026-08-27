@@ -15,7 +15,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
 from html import unescape
@@ -38,7 +38,7 @@ from tools.website_policy import check_website_access
 
 LOG = logging.getLogger(__name__)
 USER_AGENT = "WechatHermesResearch/1.0"
-SEARCH_CACHE_VERSION = "9"
+SEARCH_CACHE_VERSION = "15"
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/json",
@@ -114,7 +114,9 @@ AI_TOPIC_RE = re.compile(
 )
 FRESHNESS_RE = re.compile(
     r"(?:\blatest\b|\bcurrent\b|\brecent\b|\btoday\b|\bnews\b|"
-    r"最新|最近|近期|今天|今日|当前|目前|新闻|热点|实时|"
+    r"\bright\s+now\b|\bthis\s+(?:week|month|year)\b|"
+    r"最新|最近|近期|今天|今日|刚刚|刚才|现在|当前|目前|本周|这周|"
+    r"本月|这个月|今年|截至(?:今天|目前|现在)?|新闻|热点|实时|"
     r"(?<!\d)(?:19|20)\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*"
     r"(?:月|[-/.])\s*\d{1,2}\s*日?|"
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
@@ -125,6 +127,7 @@ FRESHNESS_RE = re.compile(
 )
 TODAY_QUERY_RE = re.compile(r"(?:今天|今日|\btoday(?:'s)?\b)", re.IGNORECASE)
 YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+){1,3}(?![A-Za-z0-9])")
 ENGLISH_TEMPORAL_TERMS_RE = re.compile(
     r"\b(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|"
     r"fri(?:day)?|sat(?:urday)?|sun(?:day)?|jan(?:uary)?|feb(?:ruary)?|"
@@ -138,7 +141,7 @@ QUALITY_RANKING_RE = re.compile(
     re.IGNORECASE,
 )
 COMPARISON_RE = re.compile(
-    r"(?:对比|比较|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
+    r"(?:对比|比较|横评|评测|测评|实测|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
     r"\bcompare\b|\bcomparison\b|\bdifference(?:s)?\b|\bversus\b|\bvs\.?\b)",
     re.IGNORECASE,
 )
@@ -169,6 +172,63 @@ DUAL_REGION_RE = re.compile(
     r"\bdomestic\s+(?:and|&)\s+(?:global|international)\b)",
     re.IGNORECASE,
 )
+GOVERNMENT_TOPIC_RE = re.compile(
+    r"(?:国务院|政府|政务|政策|法规|法律|条例|部门|财政|预算执行|决算|"
+    r"\bgovernment\b|\bpolicy\b|\blaw\b|\bregulation\b|\bpublic\s+finance\b)",
+    re.IGNORECASE,
+)
+WEATHER_TOPIC_RE = re.compile(
+    r"(?:台风|天气|气象|暴雨|降雨|路径|预警|风暴潮|"
+    r"\btyphoon\b|\bweather\b|\bmeteorolog(?:y|ical)\b|\bstorm\b)",
+    re.IGNORECASE,
+)
+LOW_SIGNAL_QUERY_TERMS = frozenset(
+    {
+        "预算",
+        "价格",
+        "价位",
+        "元",
+        "消息",
+        "资料",
+        "内容",
+        "情况",
+        "结果",
+        "information",
+        "result",
+        "results",
+    }
+)
+AI_RELEVANCE_ALIASES = frozenset(
+    {
+        "人工智能",
+        "大模型",
+        "artificial intelligence",
+        "large language model",
+        "ai",
+        "llm",
+        "model",
+    }
+)
+SPECIALIZED_INTENTS = frozenset(
+    {
+        "comparison",
+        "recommendation",
+        "fact_check",
+        "how_to",
+        "analysis",
+        "official",
+        "dual_region",
+    }
+)
+OFFICIAL_SITE_HINTS = (
+    (re.compile(r"\bopenai\b", re.IGNORECASE), "openai.com"),
+    (re.compile(r"\bpython\b", re.IGNORECASE), "docs.python.org"),
+    (re.compile(r"\bkubernetes\b", re.IGNORECASE), "kubernetes.io"),
+    (re.compile(r"\bsystemd\b", re.IGNORECASE), "systemd.io"),
+    (re.compile(r"(?:国务院|中国政府网)"), "gov.cn"),
+    (re.compile(r"腾讯云"), "cloud.tencent.com"),
+    (re.compile(r"阿里云"), "help.aliyun.com"),
+)
 QUERY_LEADING_FILLER_RE = re.compile(
     r"^\s*(?:(?:请|麻烦|劳驾)\s*)?"
     r"(?:(?:帮|替|给)我\s*)?"
@@ -186,7 +246,7 @@ QUERY_TRAILING_FILLER_RE = re.compile(
     re.IGNORECASE,
 )
 QUERY_RELATION_TERMS_RE = re.compile(
-    r"(?:对比|比较|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
+    r"(?:对比|比较|横评|评测|测评|实测|区别|差异|差别|优缺点|哪个好|哪一个好|怎么选|"
     r"推荐|选购|值得买|值不值得|适合|性价比|排行|榜单|"
     r"真假|真伪|属实|辟谣|核实|查证|事实核查|"
     r"\bcompare\b|\bcomparison\b|\bdifference(?:s)?\b|\bversus\b|"
@@ -248,6 +308,17 @@ COMMUNITY_HOST_SUFFIXES = (
     "reddit.com",
     "zhihu.com",
     "v2ex.com",
+)
+INDEPENDENT_REVIEW_HOST_SUFFIXES = (
+    "gsmarena.com",
+    "tomsguide.com",
+    "pcmag.com",
+    "dxomark.com",
+    "notebookcheck.net",
+    "androidauthority.com",
+    "zol.com.cn",
+    "pconline.com.cn",
+    "ithome.com",
 )
 DOMESTIC_HOST_SUFFIXES = (
     "gov.cn",
@@ -319,6 +390,9 @@ AUTHORITATIVE_HOST_SUFFIXES = (
     "people.com.cn",
     "cctv.com",
     "chinanews.com.cn",
+    "cma.gov.cn",
+    "nmc.cn",
+    "weather.com.cn",
 )
 BLOCK_TAGS = frozenset(
     {
@@ -998,7 +1072,24 @@ def _bing_news_url() -> str:
     return value
 
 
-def _public_result_url(value: Any) -> Optional[str]:
+def _is_search_engine_result_page(parsed: Any) -> bool:
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "/").rstrip("/").lower() or "/"
+    if host in BING_RSS_HOSTS and path in {"/search", "/news/search"}:
+        return True
+    if host == "m.sogou.com" and path == "/web/searchlist.jsp":
+        return True
+    if host in {"m.so.com", "www.so.com"} and path == "/s":
+        return True
+    if host in {"m.baidu.com", "www.baidu.com"} and path == "/s":
+        return True
+    if host in {"www.google.com", "www.google.com.hk"} and path == "/search":
+        return True
+    return False
+
+
+def _normalized_result_url(value: Any) -> Optional[str]:
+    """Normalize a search result URL without performing a DNS lookup."""
     raw_value = str(value or "").strip()
     unwrapped = _unwrap_bing_result_url(raw_value) or _unwrap_bing_news_result_url(
         raw_value
@@ -1020,10 +1111,25 @@ def _public_result_url(value: Any) -> Optional[str]:
         return None
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         return None
+    try:
+        parsed.port
+    except ValueError:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if _is_search_engine_result_page(parsed):
+        return None
     normalized = urlunsplit(
         (parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, "")
     )
-    if check_website_access(normalized) or not is_safe_url(normalized):
+    if check_website_access(normalized):
+        return None
+    return normalized
+
+
+def _public_result_url(value: Any) -> Optional[str]:
+    normalized = _normalized_result_url(value)
+    if not normalized or not is_safe_url(normalized):
         return None
     return normalized
 
@@ -1088,6 +1194,9 @@ def _query_domain_results(query: str) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     seen = set()
     for match in DOMAIN_TOKEN_RE.finditer(query):
+        prefix = query[max(0, match.start() - 5) : match.start()].casefold()
+        if prefix.endswith("site:"):
+            continue
         host = match.group(1).lower().rstrip(".")
         path = (match.group(2) or "/").rstrip(".,;:!?)]}") or "/"
         url = _public_result_url("https://" + host + path)
@@ -1109,9 +1218,62 @@ def _query_domain_results(query: str) -> List[Dict[str, Any]]:
 
 
 def _official_entry_results(query: str) -> List[Dict[str, Any]]:
-    if not QUALITY_RANKING_RE.search(query):
-        return []
-    entries = (
+    entries: List[Tuple[str, str]] = []
+    if re.search(
+        r"(?:\bpython\b.*\bfree[-\s]?thread(?:ed|ing)?\b|"
+        r"\bfree[-\s]?thread(?:ed|ing)?\b.*\bpython\b|Python.*自由线程)",
+        query,
+        re.IGNORECASE,
+    ):
+        versions = list(dict.fromkeys(VERSION_TOKEN_RE.findall(query)))[:3]
+        versions = [version for version in versions if version.startswith("3.")]
+        if not versions:
+            versions = ["3"]
+        entries.extend(
+            (
+                "Python %s free-threading HOWTO" % version,
+                "https://docs.python.org/%s/howto/free-threading-python.html"
+                % version,
+            )
+            for version in versions
+        )
+
+    if WEATHER_TOPIC_RE.search(query):
+        if re.search(r"(?:台风|typhoon)", query, re.IGNORECASE):
+            entries.append(
+                (
+                    "中央气象台台风路径与实时信息",
+                    "https://typhoon.nmc.cn/web.html",
+                )
+            )
+        if re.search(r"(?:预警|warning|alarm)", query, re.IGNORECASE):
+            entries.append(
+                (
+                    "中央气象台气象灾害预警",
+                    "https://www.nmc.cn/publish/alarm.html",
+                )
+            )
+
+    if (
+        re.search(r"(?:手机|smartphone|phone)", query, re.IGNORECASE)
+        and re.search(r"(?:拍照|摄影|影像|camera|photo)", query, re.IGNORECASE)
+        and "recommendation" in _query_intents(query)
+    ):
+        entries.extend(
+            (
+                (
+                    "Tom's Guide best camera phones tested and reviewed",
+                    "https://www.tomsguide.com/best-picks/best-camera-phones",
+                ),
+                (
+                    "DXOMARK smartphone camera rankings and test results",
+                    "https://www.dxomark.com/smartphones/",
+                ),
+            )
+        )
+
+    topic_entry_count = len(entries)
+    generic_entries = (
         (
             r"\bopenai\b",
             "OpenAI official documentation",
@@ -1148,23 +1310,45 @@ def _official_entry_results(query: str) -> List[Dict[str, Any]]:
             "https://help.aliyun.com/",
         ),
     )
+    if QUALITY_RANKING_RE.search(query):
+        entries.extend(
+            (title, raw_url)
+            for pattern, title, raw_url in generic_entries
+            if re.search(pattern, query, re.IGNORECASE)
+        )
+
     results = []
-    for pattern, title, raw_url in entries:
-        if not re.search(pattern, query, re.IGNORECASE):
-            continue
+    seen = set()
+    for index, (title, raw_url) in enumerate(entries):
         url = _public_result_url(raw_url)
-        if not url:
+        if not url or url in seen:
             continue
+        seen.add(url)
+        review_entry = _independent_review_host(
+            (urlsplit(url).hostname or "").lower()
+        )
         results.append(
             {
                 "title": title,
                 "url": url,
                 "content": (
-                    "Known public official entry point; verify the relevant page "
-                    "with web_extract before answering."
+                    (
+                        "Known independent smartphone camera review entry; verify the page "
+                        if review_entry
+                        else "Known public official entry point; verify the relevant page "
+                    )
+                    + "with web_extract before answering."
                 ),
-                "source": "official-entry",
-                "search_channel": "official",
+                "source": (
+                    "review-entry"
+                    if review_entry
+                    else (
+                        "official-topic"
+                        if index < topic_entry_count
+                        else "official-entry"
+                    )
+                ),
+                "search_channel": "regional" if review_entry else "official",
             }
         )
     return results
@@ -1186,9 +1370,116 @@ def _query_intents(query: str) -> frozenset[str]:
         intents.add("how_to")
     if ANALYSIS_RE.search(query):
         intents.add("analysis")
+    if DUAL_REGION_RE.search(query):
+        intents.add("dual_region")
     if not intents:
         intents.add("general")
     return frozenset(intents)
+
+
+def _official_site_query(query: str) -> Optional[str]:
+    """Return one bounded site-scoped query for primary-source discovery."""
+    if DOMAIN_TOKEN_RE.search(query):
+        return None
+    intents = _query_intents(query)
+    host = ""
+    for pattern, candidate in OFFICIAL_SITE_HINTS:
+        if pattern.search(query):
+            host = candidate
+            break
+    if not host and WEATHER_TOPIC_RE.search(query):
+        host = "nmc.cn"
+    if not host:
+        return None
+    if not (
+        intents.intersection(SPECIALIZED_INTENTS)
+        or WEATHER_TOPIC_RE.search(query)
+        or FACT_CHECK_RE.search(query)
+    ):
+        return None
+    if host == "docs.python.org" and re.search(
+        r"\bfree[-\s]?thread(?:ed|ing)?\b",
+        query,
+        re.IGNORECASE,
+    ):
+        versions = " ".join(dict.fromkeys(VERSION_TOKEN_RE.findall(query)))
+        subject = _clean_text("free-threading-python %s" % versions, 200)
+    elif host == "nmc.cn" and WEATHER_TOPIC_RE.search(query):
+        subject = "中央气象台 台风 路径 预警"
+    else:
+        subject = _strip_query_filler(query)
+    return _clean_text("site:%s %s" % (host, subject), 500)
+
+
+def _evidence_search_query(query: str) -> Optional[str]:
+    intents = _query_intents(query)
+    if (
+        re.search(r"(?:手机|smartphone|phone)", query, re.IGNORECASE)
+        and re.search(r"(?:拍照|摄影|影像|camera|photo)", query, re.IGNORECASE)
+        and intents.intersection({"comparison", "recommendation"})
+    ):
+        return "smartphone-camera-comparison-review-%d-midrange" % (
+            _current_search_date().year,
+        )
+    if (
+        DUAL_REGION_RE.search(query)
+        and AI_TOPIC_RE.search(query)
+        and FRESHNESS_RE.search(query)
+    ):
+        current_date = _current_search_date()
+        month_name = (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        )[current_date.month - 1]
+        return "global artificial intelligence news %s %d" % (
+            month_name,
+            current_date.year,
+        )
+    return None
+
+
+def _bing_html_queries(query: str, upstream_query: str) -> List[str]:
+    queries = [upstream_query]
+    for candidate in (_official_site_query(query), _evidence_search_query(query)):
+        if not candidate:
+            continue
+        if any(candidate.casefold() == existing.casefold() for existing in queries):
+            continue
+        queries.append(candidate)
+        if len(queries) >= 3:
+            break
+    return queries
+
+
+def _query_quality_issue(query: str) -> Optional[str]:
+    """Reject searches that contain timing or intent words but no subject."""
+    if DOMAIN_TOKEN_RE.search(query):
+        return None
+    terms = _query_relevance_terms(query, include_cjk_ngrams=False)
+    informative = [
+        term
+        for term in terms
+        if term.casefold() not in LOW_SIGNAL_QUERY_TERMS
+        and not VERSION_TOKEN_RE.fullmatch(term)
+        and not YEAR_TOKEN_RE.fullmatch(term)
+    ]
+    if informative:
+        return None
+    return (
+        "Search query is underspecified: include a concrete subject, entity, "
+        "product, event, or claim instead of only a date or words such as "
+        "latest/news."
+    )
 
 
 def _strip_query_filler(value: str) -> str:
@@ -1469,6 +1760,9 @@ def _query_relevance_terms(
     for term in re.findall(r"[a-z][a-z0-9.+#-]{1,40}", value):
         if term not in terms:
             terms.append(term)
+    for term in VERSION_TOKEN_RE.findall(value):
+        if term not in terms:
+            terms.append(term)
     cjk_runs = re.findall(r"[\u3400-\u9fff]{2,24}", value)
     for term in cjk_runs:
         if term not in terms:
@@ -1494,6 +1788,16 @@ def _query_relevance_terms(
                 "ai",
             ]
         )
+    if re.search(r"(?:模型|model)", original, re.IGNORECASE):
+        aliases.append("model")
+    if re.search(r"(?:发布|公告|release|announce)", original, re.IGNORECASE):
+        aliases.extend(["release", "announcement"])
+    if re.search(r"(?:拍照|摄影|camera|photo)", original, re.IGNORECASE):
+        aliases.extend(["camera", "photography"])
+    if re.search(r"(?:手机|smartphone|phone)", original, re.IGNORECASE):
+        aliases.extend(["smartphone", "phone"])
+    if re.search(r"(?:台风|typhoon)", original, re.IGNORECASE):
+        aliases.append("typhoon")
     for term in aliases:
         if term not in terms:
             terms.append(term)
@@ -1516,6 +1820,20 @@ def _query_relevance_terms(
     return terms[:24]
 
 
+def _required_relevance_matches(query: str, terms: List[str]) -> int:
+    intents = _query_intents(query)
+    if not intents.intersection(SPECIALIZED_INTENTS):
+        return 1
+    informative = [
+        term for term in terms if term.casefold() not in LOW_SIGNAL_QUERY_TERMS
+    ]
+    concepts = {term.casefold() for term in informative}
+    if AI_TOPIC_RE.search(query) and concepts.intersection(AI_RELEVANCE_ALIASES):
+        concepts.difference_update(AI_RELEVANCE_ALIASES)
+        concepts.add("__ai_topic__")
+    return 2 if len(concepts) >= 3 else 1
+
+
 def _host_matches(host: str, expected: str) -> bool:
     return host == expected or host.endswith("." + expected)
 
@@ -1535,6 +1853,13 @@ def _community_host(host: str) -> bool:
     return any(_host_matches(host, expected) for expected in COMMUNITY_HOST_SUFFIXES)
 
 
+def _independent_review_host(host: str) -> bool:
+    return any(
+        _host_matches(host, expected)
+        for expected in INDEPENDENT_REVIEW_HOST_SUFFIXES
+    )
+
+
 def _reference_host(host: str) -> bool:
     return any(
         _host_matches(host, expected) for expected in REFERENCE_FRESH_HOST_SUFFIXES
@@ -1542,6 +1867,17 @@ def _reference_host(host: str) -> bool:
 
 
 def _result_source_type(item: Dict[str, Any], host: str) -> str:
+    declared = _clean_text(item.get("source_type"), 40).casefold()
+    if declared in {
+        "specified",
+        "official",
+        "authoritative",
+        "review",
+        "secondary",
+        "community",
+        "web",
+    }:
+        return declared
     channel = _clean_text(
         item.get("_search_channel") or item.get("search_channel"),
         40,
@@ -1549,12 +1885,14 @@ def _result_source_type(item: Dict[str, Any], host: str) -> str:
     source = _clean_text(item.get("source"), 80).casefold()
     if channel == "direct" or source == "query-url":
         return "specified"
-    if channel == "official" or source == "official-entry":
+    if channel == "official" or source in {"official-entry", "official-topic"}:
         return "official"
     if _low_value_host(host):
         return "secondary"
     if _community_host(host):
         return "community"
+    if _independent_review_host(host):
+        return "review"
     if _authoritative_host(host) or source in {
         "the-verge",
         "techcrunch",
@@ -1571,6 +1909,9 @@ def _result_source_type(item: Dict[str, Any], host: str) -> str:
 
 
 def _result_region(item: Dict[str, Any]) -> str:
+    declared = _clean_text(item.get("region"), 40).casefold()
+    if declared in {"domestic", "international"}:
+        return declared
     channel = _clean_text(
         item.get("_search_channel") or item.get("search_channel"),
         40,
@@ -1652,7 +1993,11 @@ def _contains_term(value: str, term: str) -> bool:
 
 def _query_target_year_month(query: str) -> Optional[Tuple[int, int]]:
     current_date = _current_search_date()
-    if TODAY_QUERY_RE.search(query):
+    if TODAY_QUERY_RE.search(query) or re.search(
+        r"(?:本周|这周|本月|这个月|\bthis\s+(?:week|month)\b)",
+        query,
+        re.IGNORECASE,
+    ):
         return current_date.year, current_date.month
     numeric = re.search(
         r"(?<!\d)((?:19|20)\d{2})\s*(?:年|[-/.])\s*(\d{1,2})"
@@ -1715,6 +2060,35 @@ def _has_strict_freshness_evidence(
     )[month - 1]
     return str(year) in temporal_text and bool(
         re.search(r"\b" + english_month + r"[a-z]*\b", temporal_text, re.IGNORECASE)
+    )
+
+
+def _is_live_official_weather_result(
+    query: str,
+    item: Dict[str, Any],
+    *,
+    host: str,
+    title: str,
+    source_type: str,
+) -> bool:
+    if not WEATHER_TOPIC_RE.search(query):
+        return False
+    if source_type not in {"specified", "official", "authoritative"}:
+        return False
+    if not _authoritative_host(host):
+        return False
+    text = " ".join(
+        (
+            title,
+            _clean_text(item.get("description") or item.get("content"), 1000),
+        )
+    )
+    return bool(
+        re.search(
+            r"(?:实时|路径|预警|台风网|live|track|warning|alarm)",
+            text,
+            re.IGNORECASE,
+        )
     )
 
 
@@ -1868,12 +2242,20 @@ def _result_relevance_score(
         title,
         description,
         published_at,
+    ) and not _is_live_official_weather_result(
+        query,
+        item,
+        host=host,
+        title=title,
+        source_type=source_type,
     ):
         return 0
     if government_quality_match:
         score += 8
 
     matched_terms = title_matches | host_matches | description_matches
+    if len(matched_terms) < _required_relevance_matches(query, terms):
+        return 0
     if (
         QUALITY_RANKING_RE.search(query)
         and source_type not in {"specified", "official", "authoritative"}
@@ -1892,10 +2274,17 @@ def _result_relevance_score(
         score += 24 if coverage >= 0.7 else 8
     elif source_type == "authoritative":
         score += 10
+    elif source_type == "review":
+        score += 8
     elif source_type == "secondary":
         score -= 6
     elif source_type == "community":
         score -= 4
+    item_source = _clean_text(item.get("source"), 80).casefold()
+    if item_source == "official-topic":
+        score += 18
+    elif item_source == "review-entry":
+        score += 12
 
     if QUALITY_RANKING_RE.search(query):
         if _host_matches(host, "gov.cn") or host.endswith(".gov"):
@@ -1916,7 +2305,7 @@ def _result_relevance_score(
     }:
         score += 6
     if {"comparison", "recommendation"}.intersection(intents):
-        if source_type in {"official", "authoritative"}:
+        if source_type in {"official", "authoritative", "review"}:
             score += 4
         if re.search(
             r"(?:广告|推广|返利|优惠券|点击购买|\bsponsored\b|\baffiliate\b)",
@@ -1985,6 +2374,7 @@ def _rank_search_results(
         or QUALITY_RANKING_RE.search(query)
         or DOMAIN_TOKEN_RE.search(query)
         or "analysis" in intents
+        or bool(intents.intersection(SPECIALIZED_INTENTS))
     )
     if not relevant:
         if strict_query:
@@ -2012,7 +2402,267 @@ def _rank_search_results(
         diverse.append(item)
     if not FRESHNESS_RE.search(query):
         diverse.extend(overflow)
-    return _balance_query_regions(query, diverse)
+    balanced = _balance_query_regions(query, diverse)
+    if "recommendation" in intents:
+        promoted_reviews: List[Dict[str, Any]] = []
+        review_hosts = set()
+        for item in balanced:
+            try:
+                host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
+            except ValueError:
+                host = ""
+            if _result_source_type(item, host) != "review" or host in review_hosts:
+                continue
+            promoted_reviews.append(item)
+            review_hosts.add(host)
+            if len(promoted_reviews) >= 2:
+                break
+        if promoted_reviews:
+            promoted_ids = {id(item) for item in promoted_reviews}
+            balanced = promoted_reviews + [
+                item for item in balanced if id(item) not in promoted_ids
+            ]
+    return balanced
+
+
+def _rankable_search_preview(
+    raw_items: List[Dict[str, Any]],
+    limit: int = 80,
+) -> List[Dict[str, Any]]:
+    """Build a bounded, DNS-free preview for upstream quality decisions."""
+    preview: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in raw_items[:limit]:
+        if not isinstance(raw, dict):
+            continue
+        url = _normalized_result_url(raw.get("url"))
+        if not url:
+            continue
+        identity = _canonical_result_key(url)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        item = dict(raw)
+        item["url"] = url
+        preview.append(item)
+    return preview
+
+
+def _needs_regional_search(
+    query: str,
+    raw_results: List[Dict[str, Any]],
+    official_results: List[Dict[str, Any]],
+    safe_limit: int,
+) -> bool:
+    """Use SearXNG when an upstream returned volume without useful coverage."""
+    if len(raw_results) < safe_limit:
+        return True
+    intents = _query_intents(query)
+    if not (
+        FRESHNESS_RE.search(query)
+        or "recommendation" in intents
+        or "dual_region" in intents
+        or "analysis" in intents
+    ):
+        return False
+
+    preview = _rankable_search_preview(raw_results + official_results)
+    ranked = _rank_search_results(query, preview)
+    required = min(2, safe_limit)
+    if len(ranked) < required:
+        return True
+    if "dual_region" in intents:
+        regions = {_result_region(item) for item in ranked}
+        if not {"domestic", "international"}.issubset(regions):
+            return True
+    if "recommendation" in intents:
+        has_review = any(
+            _result_source_type(
+                item,
+                (urlsplit(str(item.get("url") or "")).hostname or "").lower(),
+            )
+            == "review"
+            for item in ranked
+        )
+        if not has_review:
+            return True
+    if "analysis" in intents and not any(
+        _result_source_type(
+            item,
+            (urlsplit(str(item.get("url") or "")).hostname or "").lower(),
+        )
+        in {"official", "authoritative", "specified"}
+        for item in ranked
+    ):
+        return True
+    return False
+
+
+def _safe_ranked_results(
+    query: str,
+    items: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Resolve only a bounded, relevant result set within one time budget."""
+    ranked = _rank_search_results(query, items)
+    if not ranked or limit <= 0:
+        return []
+
+    max_checks = _env_int(
+        "WECHAT_WEB_RESULT_SAFETY_MAX_CHECKS",
+        max(12, limit * 3),
+        limit,
+        40,
+    )
+    pending_items = ranked[:max_checks]
+    workers = _env_int(
+        "WECHAT_WEB_RESULT_SAFETY_WORKERS",
+        min(8, len(pending_items)),
+        1,
+        12,
+    )
+    timeout = _env_float(
+        "WECHAT_WEB_RESULT_SAFETY_TIMEOUT_SECONDS",
+        3.0,
+        0.1,
+        10.0,
+    )
+    executor = ThreadPoolExecutor(max_workers=workers)
+    futures = [
+        executor.submit(_public_result_url, item.get("url"))
+        for item in pending_items
+    ]
+    try:
+        deadline = time.monotonic() + timeout
+        unfinished = set(futures)
+        resolved: Dict[Any, Optional[str]] = {}
+        while unfinished and len([url for url in resolved.values() if url]) < limit:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            completed, unfinished = wait(
+                unfinished,
+                timeout=remaining,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in completed:
+                try:
+                    resolved[future] = future.result()
+                except Exception:  # noqa: BLE001 - one resolver must not fail the search
+                    resolved[future] = None
+
+        results: List[Dict[str, Any]] = []
+        for item, future in zip(pending_items, futures):
+            public_url = resolved.get(future)
+            if not public_url:
+                continue
+            normalized = dict(item)
+            normalized["url"] = public_url
+            results.append(normalized)
+            if len(results) >= limit:
+                break
+        if unfinished and time.monotonic() >= deadline:
+            LOG.warning(
+                "web_search result safety deadline reached checked=%d pending=%d",
+                len(resolved),
+                len(unfinished),
+            )
+        return results
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _search_quality_metadata(
+    query: str,
+    items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    source_types: List[str] = []
+    regions: List[str] = []
+    dated = 0
+    hosts = set()
+    for item in items:
+        try:
+            host = (urlsplit(str(item.get("url") or "")).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host:
+            hosts.add(host)
+        source_type = _result_source_type(item, host)
+        if source_type not in source_types:
+            source_types.append(source_type)
+        region = _result_region(item)
+        if region not in regions:
+            regions.append(region)
+        if _result_publication_date(
+            _clean_text(item.get("title"), 500),
+            _clean_text(item.get("description") or item.get("content"), 2000),
+            _clean_text(item.get("published_at"), 200),
+        ) is not None:
+            dated += 1
+
+    authoritative = sum(
+        1
+        for item in items
+        if _result_source_type(
+            item,
+            (urlsplit(str(item.get("url") or "")).hostname or "").lower(),
+        )
+        in {"specified", "official", "authoritative"}
+    )
+    independent_reviews = sum(
+        1
+        for item in items
+        if _result_source_type(
+            item,
+            (urlsplit(str(item.get("url") or "")).hostname or "").lower(),
+        )
+        == "review"
+    )
+    established = authoritative + independent_reviews
+    intents = _query_intents(query)
+    independent_review_needed = "recommendation" in intents
+    if independent_review_needed and established == 0:
+        quality = "low"
+    elif (
+        len(items) >= 2
+        and established >= 2
+        and intents.intersection({"official", "comparison"})
+    ):
+        quality = "high"
+    elif len(items) >= 3 and len(hosts) >= 3 and established >= 1:
+        quality = "high"
+    elif len(items) >= 2 and len(hosts) >= 2:
+        quality = "medium"
+    else:
+        quality = "low"
+
+    warnings: List[str] = []
+    if FRESHNESS_RE.search(query) and dated < min(2, len(items)):
+        warnings.append("Some results have no machine-readable publication date.")
+    if DUAL_REGION_RE.search(query) and len(set(regions)) < 2:
+        warnings.append("The result set does not yet cover both requested regions.")
+    if established == 0:
+        warnings.append("No primary or established authoritative source was identified.")
+    if independent_review_needed and independent_reviews == 0:
+        warnings.append("No established independent review source was identified.")
+    return {
+        "intents": sorted(intents),
+        "quality": quality,
+        "result_count": len(items),
+        "host_count": len(hosts),
+        "authoritative_result_count": authoritative,
+        "independent_review_result_count": independent_reviews,
+        "dated_result_count": dated,
+        "regions": regions,
+        "warnings": warnings,
+        "verification_required": True,
+        "next_step": (
+            "Use web_extract on 2-3 selected URLs. Search metadata and snippets "
+            "are discovery evidence, not sufficient support for final claims."
+        ),
+    }
 
 
 def _decode_body(body: bytes, content_type: str) -> str:
@@ -2357,12 +3007,12 @@ class WechatCloudWebProvider(WebSearchProvider):
 
                 usable_results = []
                 for item in parsed_results:
-                    public_url = _public_result_url(item.get("url"))
-                    if not public_url or public_url in seen:
+                    normalized_url = _normalized_result_url(item.get("url"))
+                    if not normalized_url or normalized_url in seen:
                         continue
-                    seen.add(public_url)
+                    seen.add(normalized_url)
                     normalized = dict(item)
-                    normalized["url"] = public_url
+                    normalized["url"] = normalized_url
                     normalized["search_channel"] = "domestic"
                     usable_results.append(normalized)
                 if not usable_results:
@@ -2380,6 +3030,9 @@ class WechatCloudWebProvider(WebSearchProvider):
         normalized_query = _clean_text(query, 500)
         if not normalized_query:
             return {"success": False, "error": "Search query is required"}
+        quality_issue = _query_quality_issue(normalized_query)
+        if quality_issue:
+            return {"success": False, "error": quality_issue}
         safe_limit = max(1, min(int(limit or 5), 10))
         candidate_limit = min(40, max(10, safe_limit * 5))
         key = hashlib.sha256(
@@ -2446,6 +3099,10 @@ class WechatCloudWebProvider(WebSearchProvider):
 
                 if _env_bool("WECHAT_WEB_BING_HTML_ENABLED", True):
                     try:
+                        html_queries = _bing_html_queries(
+                            normalized_query,
+                            upstream_query,
+                        )
                         with httpx.Client(
                             timeout=timeout,
                             follow_redirects=True,
@@ -2461,19 +3118,24 @@ class WechatCloudWebProvider(WebSearchProvider):
                                 ),
                             },
                         ) as client:
-                            response = client.get(
-                                bing_url,
-                                params={
-                                    "q": upstream_query,
-                                    "count": candidate_limit,
-                                    **market_params,
-                                },
-                            )
-                        _validate_bing_response(response, max_response)
-                        web_results = _bing_html_results(response)
-                        for item in web_results:
-                            item["search_channel"] = "international"
-                        raw_results.extend(web_results)
+                            for index, html_query in enumerate(html_queries):
+                                response = client.get(
+                                    bing_url,
+                                    params={
+                                        "q": html_query,
+                                        "count": candidate_limit,
+                                        **_bing_market_params(html_query),
+                                    },
+                                )
+                                _validate_bing_response(response, max_response)
+                                web_results = _bing_html_results(response)
+                                for item in web_results:
+                                    item["search_channel"] = (
+                                        "official-search"
+                                        if html_query.casefold().startswith("site:")
+                                        else "international"
+                                    )
+                                raw_results.extend(web_results)
                     except Exception as exc:  # noqa: BLE001 - bounded fallback below
                         upstream_errors.append("bing-html:%s" % type(exc).__name__)
 
@@ -2549,7 +3211,12 @@ class WechatCloudWebProvider(WebSearchProvider):
 
                 searx_results: List[Dict[str, Any]] = []
                 merge_searx = _env_bool("WECHAT_WEB_SEARX_MERGE_ENABLED", False)
-                if merge_searx or len(raw_results) < safe_limit:
+                if merge_searx or _needs_regional_search(
+                    normalized_query,
+                    raw_results,
+                    official_results,
+                    safe_limit,
+                ):
                     try:
                         with httpx.Client(
                             timeout=timeout,
@@ -2638,7 +3305,7 @@ class WechatCloudWebProvider(WebSearchProvider):
                     raw_results.extend(regional_results)
 
                 def normalize_candidate(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-                    url = _public_result_url(raw.get("url"))
+                    url = _normalized_result_url(raw.get("url"))
                     if not url:
                         return None
                     candidate = {
@@ -2686,26 +3353,54 @@ class WechatCloudWebProvider(WebSearchProvider):
                         continue
                     seen.add(identity)
                     candidates.append(candidate)
-                ranked = _rank_search_results(normalized_query, candidates)
+                ranked = _safe_ranked_results(
+                    normalized_query,
+                    candidates,
+                    safe_limit,
+                )
                 results = []
-                for item in ranked[:safe_limit]:
-                    results.append(
-                        {
-                            **{
-                                key: value
-                                for key, value in item.items()
-                                if not key.startswith("_")
-                            },
-                            "position": len(results) + 1,
-                        }
+                for item in ranked:
+                    host = (
+                        urlsplit(str(item.get("url") or "")).hostname or ""
+                    ).lower()
+                    publication_date = _result_publication_date(
+                        _clean_text(item.get("title"), 500),
+                        _clean_text(
+                            item.get("description") or item.get("content"),
+                            2000,
+                        ),
+                        _clean_text(item.get("published_at"), 200),
                     )
+                    public_item = {
+                        **{
+                            key: value
+                            for key, value in item.items()
+                            if not key.startswith("_")
+                        },
+                        "position": len(results) + 1,
+                        "source_type": _result_source_type(item, host),
+                        "region": _result_region(item),
+                        "evidence_level": "search_metadata_only",
+                    }
+                    if publication_date is not None:
+                        public_item["publication_date"] = publication_date.isoformat()
+                    results.append(public_item)
                 if not results:
                     raise ValueError(
                         "search returned no usable public results (%s)"
                         % ",".join(upstream_errors)
                     )
 
-                value = {"success": True, "data": {"web": results}}
+                value = {
+                    "success": True,
+                    "data": {
+                        "web": results,
+                        "search_context": _search_quality_metadata(
+                            normalized_query,
+                            results,
+                        ),
+                    },
+                }
                 self._record_upstream_result(True)
                 self._store_search(key, value)
                 LOG.info(
@@ -2854,6 +3549,14 @@ class WechatCloudWebProvider(WebSearchProvider):
                 content = content.strip()
                 if not content:
                     raise ValueError("page contained no extractable text")
+                min_chars = _env_int(
+                    "WECHAT_WEB_EXTRACT_MIN_CHARS",
+                    120,
+                    1,
+                    5000,
+                )
+                if len("".join(content.split())) < min_chars:
+                    raise ValueError("page contained too little extractable text")
                 LOG.info(
                     "web_extract completed source_host=%s bytes=%d chars=%d",
                     urlsplit(final_url).hostname or "",

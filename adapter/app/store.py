@@ -19,6 +19,12 @@ from .security import (
     redact_sensitive_text,
     usage_tokens,
 )
+from .relationship import (
+    MAX_RELATIONSHIP_NOTES,
+    RELATIONSHIP_TTL_SECONDS,
+    familiarity_for_interactions,
+    normalize_relationship_summary,
+)
 
 
 TASK_STATUSES = {"queued", "running", "succeeded", "failed", "canceled"}
@@ -265,6 +271,88 @@ class AdapterStore:
                     );
                     CREATE INDEX IF NOT EXISTS idx_scope_memory_updated
                     ON scope_memory(scope_type, scope_id, updated_at);
+
+                    CREATE TABLE IF NOT EXISTS relationship_profiles (
+                        room_id TEXT NOT NULL,
+                        sender_id TEXT NOT NULL,
+                        preferred_name TEXT NOT NULL DEFAULT '',
+                        interaction_count INTEGER NOT NULL DEFAULT 0,
+                        familiarity INTEGER NOT NULL DEFAULT 0
+                            CHECK(familiarity BETWEEN 0 AND 4),
+                        reciprocity INTEGER NOT NULL DEFAULT 0
+                            CHECK(reciprocity BETWEEN 0 AND 3),
+                        banter_style TEXT NOT NULL DEFAULT 'neutral'
+                            CHECK(banter_style IN ('neutral', 'soft', 'playful', 'direct')),
+                        flirt_opt_out INTEGER NOT NULL DEFAULT 0
+                            CHECK(flirt_opt_out IN (0, 1)),
+                        last_source_local_id INTEGER,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        expires_at REAL NOT NULL,
+                        PRIMARY KEY(room_id, sender_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_relationship_profiles_expiry
+                    ON relationship_profiles(expires_at);
+
+                    CREATE TABLE IF NOT EXISTS relationship_notes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id TEXT NOT NULL,
+                        sender_id TEXT NOT NULL,
+                        kind TEXT NOT NULL
+                            CHECK(kind IN ('preference', 'inside_joke', 'boundary')),
+                        value TEXT NOT NULL,
+                        source_local_id INTEGER,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        expires_at REAL NOT NULL,
+                        UNIQUE(room_id, sender_id, kind, value),
+                        FOREIGN KEY(room_id, sender_id)
+                            REFERENCES relationship_profiles(room_id, sender_id)
+                            ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_relationship_notes_profile
+                    ON relationship_notes(room_id, sender_id, updated_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_relationship_notes_expiry
+                    ON relationship_notes(expires_at);
+
+                    CREATE TABLE IF NOT EXISTS room_session_epochs (
+                        room_id TEXT PRIMARY KEY,
+                        epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),
+                        reason TEXT NOT NULL DEFAULT '',
+                        updated_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS group_listener_state (
+                        room_id TEXT PRIMARY KEY,
+                        last_observed_local_id INTEGER,
+                        last_reply_local_id INTEGER,
+                        last_reply_at REAL,
+                        turns_since_reply INTEGER NOT NULL DEFAULT 0,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_group_listener_state_updated
+                    ON group_listener_state(updated_at);
+
+                    CREATE TABLE IF NOT EXISTS relationship_summary_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id TEXT NOT NULL,
+                        sender_id TEXT NOT NULL,
+                        source_local_id INTEGER,
+                        interaction_count INTEGER NOT NULL,
+                        trigger TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'dropped')),
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        error_type TEXT NOT NULL DEFAULT '',
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_relationship_jobs_pending
+                    ON relationship_summary_jobs(status, created_at, id);
+                    DROP INDEX IF EXISTS idx_relationship_jobs_active;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_relationship_jobs_active
+                    ON relationship_summary_jobs(room_id, sender_id)
+                    WHERE status='queued';
 
                     CREATE TABLE IF NOT EXISTS skill_registry (
                         name TEXT PRIMARY KEY,
@@ -1833,7 +1921,7 @@ class AdapterStore:
                     redact_sensitive_text(result_summary, limit=500)
                     if result_summary
                     else "",
-                    str(source or "")[:500],
+                    str(source or "")[:2000],
                     str(artifact_id or "")[:64],
                     time.time(),
                 ),
@@ -2632,6 +2720,693 @@ class AdapterStore:
             connection.commit()
         return self.list_scope_memory(task["room_id"], task["sender_id"])
 
+    @staticmethod
+    def _relationship_profile(
+        row: sqlite3.Row | None,
+        notes: list[sqlite3.Row] | None = None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        profile = dict(row)
+        profile["flirt_opt_out"] = bool(profile.get("flirt_opt_out"))
+        profile["notes"] = [dict(note) for note in notes or []]
+        return profile
+
+    @staticmethod
+    def _relationship_identity(room_id: str, sender_id: str) -> tuple[str, str]:
+        room = str(room_id or "").strip()
+        sender = str(sender_id or "").strip()
+        if not room or not sender:
+            raise ValueError("relationship profile requires room and sender identities")
+        return room, sender
+
+    @staticmethod
+    def _purge_expired_relationships(
+        connection: sqlite3.Connection,
+        now: float,
+    ) -> None:
+        connection.execute(
+            "DELETE FROM relationship_notes WHERE expires_at <= ?",
+            (now,),
+        )
+        connection.execute(
+            "DELETE FROM relationship_profiles WHERE expires_at <= ?",
+            (now,),
+        )
+
+    @staticmethod
+    def _relationship_profile_from_connection(
+        connection: sqlite3.Connection,
+        room_id: str,
+        sender_id: str,
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            """
+            SELECT * FROM relationship_profiles
+            WHERE room_id=? AND sender_id=?
+            """,
+            (room_id, sender_id),
+        ).fetchone()
+        if row is None:
+            return None
+        notes = connection.execute(
+            """
+            SELECT kind, value, source_local_id, created_at, updated_at, expires_at
+            FROM relationship_notes
+            WHERE room_id=? AND sender_id=?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (room_id, sender_id, MAX_RELATIONSHIP_NOTES),
+        ).fetchall()
+        return AdapterStore._relationship_profile(row, notes)
+
+    def get_relationship_profile(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            self._purge_expired_relationships(connection, current)
+            profile = self._relationship_profile_from_connection(
+                connection,
+                room,
+                sender,
+            )
+            connection.commit()
+        return profile
+
+    def record_relationship_interaction(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        source_local_id: int | None,
+        force_summary: bool = False,
+        now: float | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Record a completed chat turn and report whether it merits a summary."""
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            row = connection.execute(
+                """
+                SELECT interaction_count FROM relationship_profiles
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            interaction_count = int(row["interaction_count"] or 0) + 1 if row else 1
+            familiarity = familiarity_for_interactions(interaction_count)
+            expires_at = current + RELATIONSHIP_TTL_SECONDS
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO relationship_profiles(
+                        room_id, sender_id, interaction_count, familiarity,
+                        last_source_local_id, created_at, updated_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        room,
+                        sender,
+                        interaction_count,
+                        familiarity,
+                        local_id,
+                        current,
+                        current,
+                        expires_at,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE relationship_profiles
+                    SET interaction_count=?, familiarity=?, last_source_local_id=?,
+                        updated_at=?, expires_at=?
+                    WHERE room_id=? AND sender_id=?
+                    """,
+                    (
+                        interaction_count,
+                        familiarity,
+                        local_id,
+                        current,
+                        expires_at,
+                        room,
+                        sender,
+                    ),
+                )
+            profile = self._relationship_profile_from_connection(
+                connection,
+                room,
+                sender,
+            )
+            connection.commit()
+        if profile is None:
+            raise RuntimeError("relationship profile was not persisted")
+        return profile, bool(force_summary or interaction_count % 3 == 0)
+
+    def set_relationship_flirt_opt_out(
+        self,
+        room_id: str,
+        sender_id: str,
+        enabled: bool,
+        *,
+        source_local_id: int | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            connection.execute(
+                """
+                INSERT INTO relationship_profiles(
+                    room_id, sender_id, flirt_opt_out, last_source_local_id,
+                    created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_id, sender_id) DO UPDATE SET
+                    flirt_opt_out=excluded.flirt_opt_out,
+                    last_source_local_id=excluded.last_source_local_id,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    sender,
+                    int(bool(enabled)),
+                    local_id,
+                    current,
+                    current,
+                    current + RELATIONSHIP_TTL_SECONDS,
+                ),
+            )
+            profile = self._relationship_profile_from_connection(
+                connection,
+                room,
+                sender,
+            )
+            connection.commit()
+        if profile is None:
+            raise RuntimeError("relationship profile was not persisted")
+        return profile
+
+    @staticmethod
+    def _group_listener_room_id(room_id: str) -> str:
+        room = str(room_id or "").strip()
+        if not room:
+            raise ValueError("group listener requires a room identity")
+        return room
+
+    def get_group_listener_state(self, room_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        room = self._group_listener_room_id(room_id)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM group_listener_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def observe_group_listener_message(
+        self,
+        room_id: str,
+        source_local_id: int,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Persist one passive inbound turn without retaining its text."""
+        self.initialize()
+        room = self._group_listener_room_id(room_id)
+        local_id = int(source_local_id)
+        if local_id <= 0:
+            raise ValueError("group listener requires a positive source local ID")
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM group_listener_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            observed = False
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO group_listener_state(
+                        room_id, last_observed_local_id, turns_since_reply,
+                        updated_at
+                    ) VALUES (?, ?, 1, ?)
+                    """,
+                    (room, local_id, current),
+                )
+                observed = True
+            elif local_id > int(row["last_observed_local_id"] or 0):
+                connection.execute(
+                    """
+                    UPDATE group_listener_state
+                    SET last_observed_local_id=?,
+                        turns_since_reply=turns_since_reply + 1,
+                        updated_at=?
+                    WHERE room_id=?
+                    """,
+                    (local_id, current, room),
+                )
+                observed = True
+            stored = connection.execute(
+                "SELECT * FROM group_listener_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        if stored is None:
+            raise RuntimeError("group listener state was not persisted")
+        result = dict(stored)
+        result["observed"] = observed
+        return result
+
+    def mark_group_listener_reply(
+        self,
+        room_id: str,
+        source_local_id: int,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        room = self._group_listener_room_id(room_id)
+        local_id = int(source_local_id)
+        if local_id <= 0:
+            raise ValueError("group listener requires a positive source local ID")
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO group_listener_state(
+                    room_id, last_observed_local_id, last_reply_local_id,
+                    last_reply_at, turns_since_reply, updated_at
+                ) VALUES (?, ?, ?, ?, 0, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    last_observed_local_id=MAX(
+                        group_listener_state.last_observed_local_id,
+                        excluded.last_observed_local_id
+                    ),
+                    last_reply_local_id=CASE
+                        WHEN group_listener_state.last_reply_local_id IS NULL
+                          OR excluded.last_reply_local_id >= group_listener_state.last_reply_local_id
+                        THEN excluded.last_reply_local_id
+                        ELSE group_listener_state.last_reply_local_id
+                    END,
+                    last_reply_at=CASE
+                        WHEN group_listener_state.last_reply_local_id IS NULL
+                          OR excluded.last_reply_local_id >= group_listener_state.last_reply_local_id
+                        THEN excluded.last_reply_at
+                        ELSE group_listener_state.last_reply_at
+                    END,
+                    turns_since_reply=CASE
+                        WHEN group_listener_state.last_reply_local_id IS NULL
+                          OR excluded.last_reply_local_id >= group_listener_state.last_reply_local_id
+                        THEN 0
+                        ELSE group_listener_state.turns_since_reply
+                    END,
+                    updated_at=excluded.updated_at
+                """,
+                (room, local_id, local_id, current, current),
+            )
+            stored = connection.execute(
+                "SELECT * FROM group_listener_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        if stored is None:
+            raise RuntimeError("group listener reply state was not persisted")
+        return dict(stored)
+
+    def group_listener_state_count(self) -> int:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM group_listener_state"
+            ).fetchone()
+        return int(row["count"] or 0) if row is not None else 0
+
+    def room_session_epoch(self, room_id: str) -> int:
+        self.initialize()
+        room = str(room_id or "").strip()
+        if not room:
+            return 0
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT epoch FROM room_session_epochs WHERE room_id=?",
+                (room,),
+            ).fetchone()
+        return max(0, int(row["epoch"] or 0)) if row is not None else 0
+
+    def forget_relationship(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        now: float | None = None,
+    ) -> int:
+        """Forget one member and rotate the shared room Session epoch."""
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM relationship_profiles WHERE room_id=? AND sender_id=?",
+                (room, sender),
+            )
+            connection.execute(
+                "DELETE FROM relationship_summary_jobs WHERE room_id=? AND sender_id=?",
+                (room, sender),
+            )
+            connection.execute(
+                """
+                INSERT INTO room_session_epochs(room_id, epoch, reason, updated_at)
+                VALUES (?, 1, 'relationship_forget', ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    epoch=room_session_epochs.epoch + 1,
+                    reason=excluded.reason,
+                    updated_at=excluded.updated_at
+                """,
+                (room, current),
+            )
+            epoch_row = connection.execute(
+                "SELECT epoch FROM room_session_epochs WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        return int(epoch_row["epoch"])
+
+    def enqueue_relationship_summary(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        source_local_id: int | None,
+        interaction_count: int,
+        trigger: str,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Queue one summary per member, merging later turns before it starts."""
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        summary_interactions = max(0, int(interaction_count))
+        summary_trigger = str(trigger or "interaction")[:64]
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            queued = connection.execute(
+                """
+                SELECT id FROM relationship_summary_jobs
+                WHERE room_id=? AND sender_id=? AND status='queued'
+                """,
+                (room, sender),
+            ).fetchone()
+            if queued is not None:
+                connection.execute(
+                    """
+                    UPDATE relationship_summary_jobs
+                    SET source_local_id=CASE
+                            WHEN ? IS NULL THEN source_local_id
+                            WHEN source_local_id IS NULL OR ? >= source_local_id THEN ?
+                            ELSE source_local_id
+                        END,
+                        interaction_count=MAX(interaction_count, ?),
+                        trigger=?, updated_at=?
+                    WHERE id=? AND status='queued'
+                    """,
+                    (
+                        local_id,
+                        local_id,
+                        local_id,
+                        summary_interactions,
+                        summary_trigger,
+                        current,
+                        int(queued["id"]),
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM relationship_summary_jobs WHERE id=?",
+                    (int(queued["id"]),),
+                ).fetchone()
+                connection.commit()
+                result = dict(row) if row is not None else None
+                if result is not None:
+                    result["_coalesced"] = True
+                return result
+            cursor = connection.execute(
+                """
+                INSERT INTO relationship_summary_jobs(
+                    room_id, sender_id, source_local_id, interaction_count,
+                    trigger, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (
+                    room,
+                    sender,
+                    local_id,
+                    summary_interactions,
+                    summary_trigger,
+                    current,
+                    current,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM relationship_summary_jobs WHERE id=?",
+                (cursor.lastrowid,),
+            ).fetchone()
+            connection.commit()
+        result = dict(row) if row is not None else None
+        if result is not None:
+            result["_coalesced"] = False
+        return result
+
+    def claim_relationship_summary(self) -> dict[str, Any] | None:
+        self.initialize()
+        current = time.time()
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM relationship_summary_jobs
+                WHERE status='queued'
+                ORDER BY created_at, id
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            cursor = connection.execute(
+                """
+                UPDATE relationship_summary_jobs
+                SET status='running', attempts=attempts + 1, updated_at=?
+                WHERE id=? AND status='queued'
+                """,
+                (current, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return None
+            claimed = connection.execute(
+                "SELECT * FROM relationship_summary_jobs WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            connection.commit()
+        return dict(claimed) if claimed is not None else None
+
+    def finish_relationship_summary(
+        self,
+        job_id: int,
+        *,
+        status: str,
+        error_type: str = "",
+        now: float | None = None,
+    ) -> bool:
+        if status not in {"succeeded", "failed", "dropped"}:
+            raise ValueError("relationship summary status is invalid")
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_summary_jobs
+                SET status=?, error_type=?, updated_at=?
+                WHERE id=? AND status IN ('queued', 'running')
+                """,
+                (status, str(error_type or "")[:80], current, int(job_id)),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def recover_relationship_summary_jobs(self) -> int:
+        """Drop unreplayable jobs because their chat snippets stay only in RAM."""
+        self.initialize()
+        current = time.time()
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_summary_jobs
+                SET status='dropped', error_type='payload_lost_on_restart', updated_at=?
+                WHERE status IN ('queued', 'running')
+                """,
+                (current,),
+            )
+            connection.commit()
+        return int(cursor.rowcount)
+
+    def relationship_summary_counts(self) -> dict[str, int]:
+        self.initialize()
+        counts = {status: 0 for status in ("queued", "running", "succeeded", "failed", "dropped")}
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM relationship_summary_jobs
+                GROUP BY status
+                """
+            ).fetchall()
+        for row in rows:
+            counts[str(row["status"])] = int(row["count"])
+        return counts
+
+    def apply_relationship_summary(
+        self,
+        room_id: str,
+        sender_id: str,
+        summary: dict[str, Any],
+        *,
+        source_local_id: int | None,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        normalized = normalize_relationship_summary(summary)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            current_profile = connection.execute(
+                """
+                SELECT * FROM relationship_profiles
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            if current_profile is None:
+                connection.commit()
+                return None
+            preferred_name = normalized["preferred_name"] or str(
+                current_profile["preferred_name"] or ""
+            )
+            banter_style = normalized["banter_style"] or str(
+                current_profile["banter_style"] or "neutral"
+            )
+            reciprocity = max(
+                0,
+                min(
+                    3,
+                    int(current_profile["reciprocity"] or 0)
+                    + int(normalized["reciprocity_delta"]),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE relationship_profiles
+                SET preferred_name=?, banter_style=?, reciprocity=?,
+                    last_source_local_id=COALESCE(?, last_source_local_id),
+                    updated_at=?, expires_at=?
+                WHERE room_id=? AND sender_id=?
+                """,
+                (
+                    preferred_name,
+                    banter_style,
+                    reciprocity,
+                    local_id,
+                    current,
+                    current + RELATIONSHIP_TTL_SECONDS,
+                    room,
+                    sender,
+                ),
+            )
+            for note in normalized["notes"]:
+                connection.execute(
+                    """
+                    INSERT INTO relationship_notes(
+                        room_id, sender_id, kind, value, source_local_id,
+                        created_at, updated_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(room_id, sender_id, kind, value) DO UPDATE SET
+                        source_local_id=excluded.source_local_id,
+                        updated_at=excluded.updated_at,
+                        expires_at=excluded.expires_at
+                    """,
+                    (
+                        room,
+                        sender,
+                        note["kind"],
+                        note["value"],
+                        local_id,
+                        current,
+                        current,
+                        current + RELATIONSHIP_TTL_SECONDS,
+                    ),
+                )
+            overflow = connection.execute(
+                """
+                SELECT id FROM relationship_notes
+                WHERE room_id=? AND sender_id=?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (room, sender, MAX_RELATIONSHIP_NOTES),
+            ).fetchall()
+            if overflow:
+                placeholders = ",".join("?" for _ in overflow)
+                connection.execute(
+                    "DELETE FROM relationship_notes WHERE id IN (%s)" % placeholders,
+                    tuple(int(row["id"]) for row in overflow),
+                )
+            profile = self._relationship_profile_from_connection(
+                connection,
+                room,
+                sender,
+            )
+            connection.commit()
+        return profile
+
     def register_skill(
         self,
         *,
@@ -2857,6 +3632,19 @@ class AdapterStore:
                 (task_id, str(event_type)[:64], safe_detail, time.time()),
             )
             connection.commit()
+
+    def list_task_events(self, task_id: str) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM task_events
+                WHERE task_id=?
+                ORDER BY id
+                """,
+                (task_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_downloaded_artifact(
         self,

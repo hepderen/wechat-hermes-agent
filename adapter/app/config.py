@@ -40,6 +40,7 @@ class Settings:
     allow_private_chat: bool
     worker_poll_seconds: float
     sync_chat_timeout_seconds: float = 8.0
+    chat_only_mode: bool = False
     max_tool_calls: int = 80
     max_artifact_count: int = 10
     max_artifact_total_bytes: int = 500 * 1024 * 1024
@@ -54,6 +55,12 @@ class Settings:
     cleanup_max_age_seconds: int = 172800
     delivery_reconcile_attempts: int = 5
     delivery_reconcile_delay_seconds: float = 0.75
+    relationship_memory_enabled: bool = True
+    relationship_summary_timeout_seconds: float = 5.0
+    group_listener_enabled: bool = False
+    group_listener_min_reply_gap_seconds: float = 12.0
+    group_listener_min_turns_between_replies: int = 2
+    group_listener_names: tuple[str, ...] = ("小格", "Hermes")
 
     def validate_startup(self) -> None:
         credentials = {
@@ -121,6 +128,9 @@ class Settings:
             "delivery_reconcile_delay_seconds": (
                 self.delivery_reconcile_delay_seconds
             ),
+            "relationship_summary_timeout_seconds": (
+                self.relationship_summary_timeout_seconds
+            ),
         }
         for name, value in positive_limits.items():
             if not isfinite(float(value)) or float(value) <= 0:
@@ -137,6 +147,23 @@ class Settings:
         ):
             if not isfinite(float(value)) or float(value) < 0:
                 raise ValueError("%s must not be negative" % name)
+
+        if (
+            not isfinite(float(self.group_listener_min_reply_gap_seconds))
+            or float(self.group_listener_min_reply_gap_seconds) < 0
+        ):
+            raise ValueError(
+                "group_listener_min_reply_gap_seconds must not be negative"
+            )
+        if int(self.group_listener_min_turns_between_replies) < 0:
+            raise ValueError(
+                "group_listener_min_turns_between_replies must not be negative"
+            )
+        if any(
+            not str(name or "").strip() or len(str(name)) > 48
+            for name in self.group_listener_names
+        ):
+            raise ValueError("group_listener_names contains an invalid name")
 
         database = Path(self.database_path).expanduser()
         artifacts = Path(self.artifact_root).expanduser()
@@ -240,6 +267,7 @@ class Settings:
                 1.0,
                 float(os.getenv("HERMES_WECHAT_SYNC_TIMEOUT_SECONDS", "8")),
             ),
+            chat_only_mode=env_bool("HERMES_WECHAT_CHAT_ONLY", False),
             max_tool_calls=max(
                 1,
                 int(os.getenv("HERMES_WECHAT_MAX_TOOL_CALLS", "80")),
@@ -326,4 +354,57 @@ class Settings:
                     ),
                 ),
             ),
+            relationship_memory_enabled=env_bool(
+                "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED",
+                True,
+            ),
+            relationship_summary_timeout_seconds=max(
+                1.0,
+                min(
+                    10.0,
+                    float(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS",
+                            "5",
+                        )
+                    ),
+                ),
+            ),
+            group_listener_enabled=env_bool(
+                "HERMES_WECHAT_GROUP_LISTENER_ENABLED",
+                True,
+            ),
+            group_listener_min_reply_gap_seconds=max(
+                0.0,
+                min(
+                    600.0,
+                    float(
+                        os.getenv(
+                            "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS",
+                            "12",
+                        )
+                    ),
+                ),
+            ),
+            group_listener_min_turns_between_replies=max(
+                0,
+                min(
+                    100,
+                    int(
+                        os.getenv(
+                            "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES",
+                            "2",
+                        )
+                    ),
+                ),
+            ),
+            group_listener_names=tuple(
+                value.strip()
+                for value in os.getenv(
+                    "HERMES_WECHAT_GROUP_LISTENER_NAMES",
+                    "小格,Hermes",
+                ).split(",")
+                if value.strip()
+            )
+            or ("小格", "Hermes"),
         )

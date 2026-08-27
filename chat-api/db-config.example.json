@@ -3,6 +3,7 @@
   "chat_group_id": "00000000000@chatroom",
   "chat_api_poll_seconds": 0.25,
   "chat_structured_metadata_wait_seconds": 2.0,
+  "chat_group_listener_enabled": true,
   "chat_api_max_retries": 5,
   "chat_api_text_chunk_chars": 1500
 }

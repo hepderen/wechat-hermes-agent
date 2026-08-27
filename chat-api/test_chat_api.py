@@ -416,6 +416,100 @@ class SenderIdempotencyTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     sender._find_search_popup("1")
 
+    def test_search_popup_waits_for_result_row_to_be_clickable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sender = chat_api.TextSender(
+                {
+                    "cache_dir": temp_dir,
+                    "search_popup_wait_seconds": 1.0,
+                    "search_popup_poll_seconds": 0.01,
+                }
+            )
+            geometries = iter(
+                [
+                    {"WIDTH": 320, "HEIGHT": 96},
+                    {"WIDTH": 320, "HEIGHT": 162},
+                ]
+            )
+            with mock.patch.object(
+                sender,
+                "_run",
+                return_value=types.SimpleNamespace(stdout="1\n2\n"),
+            ), mock.patch.object(
+                sender,
+                "_window_geometry_for",
+                side_effect=lambda _window_id: next(geometries),
+            ), mock.patch.object(chat_api.time, "sleep"):
+                popup = sender._find_search_popup("1")
+
+        self.assertEqual(popup, "2")
+
+    def test_open_group_retries_after_missing_search_popup(self):
+        sender = chat_api.TextSender(
+            {
+                "cache_dir": tempfile.mkdtemp(),
+                "group_name": "关注玉洁喵",
+                "reuse_group_window": False,
+                "search_delay_seconds": 0.8,
+            }
+        )
+        with mock.patch.object(sender, "_set_clipboard"), mock.patch.object(
+            sender, "_click"
+        ) as click, mock.patch.object(sender, "_paste") as paste, mock.patch.object(
+            sender,
+            "_find_search_popup",
+            side_effect=[
+                chat_api.SearchPopupNotFoundError("missing"),
+                "2",
+            ],
+        ), mock.patch.object(sender, "_run") as run, mock.patch.object(
+            chat_api.time, "sleep"
+        ):
+            result = sender._open_group("1")
+
+        self.assertEqual(result, "1")
+        self.assertEqual(
+            click.call_args_list,
+            [
+                mock.call("1", [135, 40]),
+                mock.call("1", [135, 40]),
+                mock.call("2", [100, 130]),
+            ],
+        )
+        self.assertEqual(paste.call_count, 2)
+        run.assert_any_call(
+            [
+                "xdotool",
+                "key",
+                "--window",
+                "1",
+                "--clearmodifiers",
+                "Escape",
+            ]
+        )
+
+    def test_open_group_reuses_existing_group_window(self):
+        sender = chat_api.TextSender(
+            {
+                "cache_dir": tempfile.mkdtemp(),
+                "group_name": "关注玉洁喵",
+            }
+        )
+        with mock.patch.object(
+            sender, "_find_open_group_window", return_value="9"
+        ) as find_group, mock.patch.object(
+            sender, "_activate_window"
+        ) as activate, mock.patch.object(sender, "_click") as click, mock.patch.object(
+            sender, "_find_search_popup"
+        ) as find_popup:
+            result = sender._open_group("1")
+
+        self.assertEqual(result, "9")
+        find_group.assert_called_once_with("1")
+        activate.assert_called_once_with("9")
+        click.assert_not_called()
+        find_popup.assert_not_called()
+
     def test_sender_searches_for_group_before_pasting_reply(self):
         sender = chat_api.TextSender(
             {
@@ -2621,6 +2715,34 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(application.sender.text_calls, [])
         self.assertEqual(application.sender.media_calls, [])
 
+    def test_unauthorized_body_discard_is_bounded_and_marks_consumption(self):
+        application, _server = self.start_server(max_body=8)
+        handler_type = chat_api.make_handler(application)
+
+        accepted = object.__new__(handler_type)
+        accepted.command = "POST"
+        accepted.headers = {"Content-Length": "5"}
+        accepted.rfile = io.BytesIO(b"hello")
+        accepted.close_connection = False
+        accepted._discard_request_body()
+
+        self.assertTrue(accepted._request_body_consumed)
+        self.assertEqual(accepted.rfile.read(), b"")
+        self.assertFalse(accepted.close_connection)
+
+        oversized = object.__new__(handler_type)
+        oversized.command = "POST"
+        oversized.headers = {"Content-Length": "9"}
+        oversized.rfile = io.BytesIO(b"123456789")
+        oversized.close_connection = False
+        oversized._discard_request_body()
+
+        self.assertTrue(oversized.close_connection)
+        self.assertFalse(
+            getattr(oversized, "_request_body_consumed", False)
+        )
+        self.assertEqual(oversized.rfile.read(), b"123456789")
+
     def test_missing_server_token_fails_closed_but_health_stays_public(self):
         application, server = self.start_server()
         application.config.pop("outbound_auth_token")
@@ -3364,6 +3486,7 @@ class BridgeWorkflowTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         module.GROUP_ID = "group"
+        module.GROUP_LISTENER_ENABLED = False
         if stub_ai:
             module.ask_ai = lambda message, prompt: "answer:" + prompt
         return module

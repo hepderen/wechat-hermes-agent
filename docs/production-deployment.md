@@ -44,7 +44,7 @@
 | `bot_wxid` | 机器人真实 wxid |
 | `window_*` / `*_point` | 当前微信版本和分辨率下的发送 UI 参数 |
 
-`db-config.json` 放在 Bridge 工作目录，配置 Chat API URL、群 ID、轮询和文字分块。`chat_structured_metadata_wait_seconds` 默认是 `2.0`，用于等待同一数据库记录补齐原生 `@` 或引用 XML；取值限制在 `0-10` 秒，设为 `0` 可关闭等待。可见 mention 只用于决定是否等待，不能触发 Agent。结构化 Bridge 没有 OCR 路径。
+`db-config.json` 放在 Bridge 工作目录，配置 Chat API URL、群 ID、轮询和文字分块。`chat_structured_metadata_wait_seconds` 默认是 `2.0`，用于等待同一数据库记录补齐原生 `@` 或引用 XML；取值限制在 `0-10` 秒，设为 `0` 可关闭等待。`chat_group_listener_enabled=true` 或 Bridge 环境中的 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 会转发该指定群所有结构化有效的文字/引用消息；环境变量优先。关闭时保留只在控制命令、真实 `@` 或回复机器人时转发的旧行为。结构化 Bridge 没有 OCR 路径。
 
 ### 四类令牌
 
@@ -127,11 +127,11 @@ sudo --preserve-env \
 3. 备份并迁移 Adapter SQLite。
 4. 安装版本化 Adapter 和 Hermes runtime。
 5. 应用 Hermes 日志、API scope 和工具证据加固补丁。
-6. 禁用 Hermes `skills` 工具集，清空活动 Skill 目录并移除 Adapter 的安装入口；旧 Skill 发布目录只保留为不可访问的回滚资料。
+6. 禁用 Hermes 动态 `skills` 工具集，部署锁定提交和哈希的只读 Sophia 与 `humanizer-zh-next` 资源；Sophia 只注入 `Persona & Voice`，不提供语音、主动发送、wife mode、todo、Telegram 或原生 memory 接口。
 7. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
 8. 写入四个隔离环境文件。
 
-该版本将 `HERMES_WECHAT_SESSION_GENERATION` 设为 `5`，使已有群聊创建带 v3 简短口语规则的新 Hermes Session；旧 Session 只保留为历史记录。
+当前聊天发布将 `HERMES_WECHAT_CHAT_ONLY=true`，并把 Hermes 默认模型切换为 `gpt-5.4-mini`。执行型消息会在 Adapter 路由层降级为普通文字会话，已有生产任务会被取消并抑制交付。Bridge 与 Adapter 均启用 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true`：未点名消息会先经过低信号过滤和房间节流，再让模型决定是否插话；它们始终禁工具且不创建任务。默认节流为 12 秒与 2 个群消息，直接文本叫“小格”可绕过节流。`HERMES_WECHAT_SESSION_GENERATION` 设为 `8`，使已有群聊创建带新版常态监听和自然 1 至 4 句回复规则的新 Hermes Session；旧 Session 只保留为历史记录。`HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true` 默认开启成员关系档案，`HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5` 限制空闲摘要的单次时长。
 
 Hermes 环境同时固定 `HERMES_HOME_MODE=2770`。Hermes 每次启动都会维持运行目录的组访问权限，使独立清理用户能够执行日志和 Session 保留策略；文件本身继续使用私有权限。
 
@@ -213,14 +213,23 @@ systemctl --no-pager --full status \
 
 ## 回滚
 
-切换前将旧 Adapter/Hermes 环境保存到 root 私有备份目录。回滚脚本要求该目录包含 `adapter.env` 和 `hermes.env`：
+人格回滚保留 Hermes Adapter、Adapter SQLite 和成员关系档案，只切换回已安装的上一版 Adapter 发布。它会把 `HERMES_WECHAT_SESSION_GENERATION` 设为 `9` 并关闭 `HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED`，使旧人格不再注入档案内容；不会删除档案、重启微信、清理游标或发送状态：
+
+```bash
+sudo EXPECTED_WECHAT_PID=PID \
+  bash adapter/deploy/rollback_persona.sh PREVIOUS_RELEASE_ID
+```
+
+`PREVIOUS_RELEASE_ID` 必须是 `/opt/wechat-hermes-adapter-releases/` 下已有的、非当前的版本目录。脚本只重启 Adapter，不重启 Hermes Worker 或微信；它会等待本地 `/health` 返回 `ready=true`，若新版本未就绪则恢复先前的 Adapter 链接与环境文件并重新启动先前版本。
+
+需要退回旧 AI 服务时，切换前将旧 Adapter/Hermes 环境保存到 root 私有备份目录。旧服务回滚脚本要求该目录包含 `adapter.env` 和 `hermes.env`：
 
 ```bash
 sudo EXPECTED_WECHAT_PID=PID \
   bash adapter/deploy/rollback_to_legacy.sh /root/private-backup/RELEASE_ID
 ```
 
-回滚停止新 Adapter/Hermes，恢复旧环境并启动旧 AI 服务。保留新 SQLite、Artifact、栅栏和发送状态用于对账；不要清理数据库游标或 `uncertain` 媒体。
+旧服务回滚停止新 Adapter/Hermes，恢复旧环境并启动旧 AI 服务。两种回滚都保留新 SQLite、Artifact、栅栏和发送状态用于对账；不要清理数据库游标或 `uncertain` 媒体。
 
 搜索模块使用它自己的版本化回滚：
 

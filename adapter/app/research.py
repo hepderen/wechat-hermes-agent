@@ -4,7 +4,7 @@ import re
 
 
 COMPARISON_RE = re.compile(
-    r"(?:对比|比较|区别|差异|优缺点|哪个好|怎么选|"
+    r"(?:对比|比较|横评|评测|测评|实测|区别|差异|优缺点|哪个好|怎么选|"
     r"\bcompare\b|\bcomparison\b|\bdifference(?:s)?\b|\bversus\b|\bvs\.?\b)",
     re.IGNORECASE,
 )
@@ -19,8 +19,10 @@ FACT_CHECK_RE = re.compile(
     re.IGNORECASE,
 )
 FRESHNESS_RE = re.compile(
-    r"(?:最新|最近|近期|今天|今日|本周|本月|当前|现在|新闻|热点|动态|进展|"
-    r"\blatest\b|\brecent\b|\btoday\b|\bcurrent\b|\bnews\b|\bupdate\b)",
+    r"(?:最新|最近|近期|今天|今日|刚刚|刚才|本周|这周|本月|这个月|今年|"
+    r"当前|现在|截至(?:今天|目前|现在)?|新闻|热点|动态|进展|"
+    r"\blatest\b|\brecent\b|\btoday\b|\bcurrent(?:ly)?\b|\bright\s+now\b|"
+    r"\bthis\s+(?:week|month|year)\b|\bnews\b|\bupdate\b)",
     re.IGNORECASE,
 )
 OFFICIAL_RE = re.compile(
@@ -79,11 +81,15 @@ def build_research_instructions(
         "先在内部列出最多 3 个必须回答的证据问题，不向用户展示计划。",
         "第一条搜索只查核心主体；读完结果标题、日期、域名和摘要后，再针对明确缺口补搜。",
         "查询词用主体、关键限定词和必要日期组成，不复制整段聊天，不只搜年份、‘最新’或‘新闻’。",
-        "搜索结果摘要只是选源线索；最终关键事实优先依据已成功提取的原文、官方页面或可相互印证的一手来源。",
+        "读取 web_search 返回的 search_context、source_type、region、publication_date 和 warnings；quality=low 或覆盖缺失时必须换查询补搜。",
+        "搜索结果摘要只是选源线索；最终关键事实只能依据 web_extract 已成功返回正文的页面。",
+        "最终答案里的每个 URL 都必须来自成功的 web_extract；提取失败、只有搜索摘要或只打开首页的 URL 不得引用。",
+        "即使要说明某页面提取失败，也只写站点名称，不输出该失败页面的 URL；不要让未提取链接以注释、限制或括号补充的形式混入答案。",
         "每个关键结论都要能对应来源。来源冲突时写明冲突，不拿聚合站、百科、论坛或 SEO 页面冒充确认。",
         "最多调用 web_search 4 次、web_extract 3 次；拿到足够证据就停止，不做同义重复搜索。",
+        "不要并行提交相同查询；每次补搜必须针对上一轮明确缺失的实体、日期、地区或原始来源。",
         "选定 2-3 个候选页面后，优先在一次 web_extract 调用中并行读取，避免逐页等待。",
-        "web_extract 对某页失败后，直接换搜索结果中的同类高质量来源，不重复纠缠同一 URL。",
+        "严格研究至少成功提取 2 个来源；web_extract 对某页失败后，直接换同类高质量来源，不重复纠缠同一 URL。",
     ]
 
     if "fact_check" in modes:
@@ -100,7 +106,7 @@ def build_research_instructions(
         )
     if "freshness" in modes:
         guidance.append(
-            "这是时效题：核对发布日期和事件发生日期，优先当前日期附近的官方消息与可信媒体，旧背景材料只能补充背景。"
+            "这是时效题：按研究时区分别核对发布日期和事件发生日期，优先目标日期附近的官方消息与可信媒体；只有落在目标日期的内容才称为‘今天’，其他内容标清实际日期，旧背景材料只能补充背景。"
         )
     if "official" in modes:
         guidance.append(
@@ -130,12 +136,12 @@ def build_research_instructions(
         )
     else:
         guidance.append(
-            "本任务没有网页交互要求，不调用 browser_*；页面读取失败时改选其他搜索结果。"
+            "本任务没有网页交互要求，不调用 browser_*；运行时只提供 Web 工具，页面读取失败时改选其他搜索结果。"
         )
 
     guidance.extend(
         [
-            "最终先给结论，再给真正影响结论的事实和 2-4 个来源链接；标清日期与仍不确定的部分，不汇报搜索过程。",
+            "最终先给结论，再给真正影响结论的事实和 2-4 个已提取来源链接；标清日期与仍不确定的部分，不汇报搜索过程，不凭几条标题硬造行业主线。",
             "本任务全部工具调用硬上限为 %d 次。" % int(tool_call_limit),
         ]
     )

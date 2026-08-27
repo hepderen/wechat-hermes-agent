@@ -28,6 +28,7 @@ def load_bridge():
     module.AI_API_TOKEN = "test-token"
     module.AI_API_TIMEOUT = 10
     module.CONTROL_SCAN_SECONDS = 10
+    module.GROUP_LISTENER_ENABLED = False
     module.PREPROCESSED_CONTROL_IDS.clear()
     return module
 
@@ -493,6 +494,66 @@ class BridgeV2IngressTests(unittest.TestCase):
         body_injection["prompt"] = body_injection["text"]
         self.assertFalse(self.bridge.trusted_mentions_bot(body_injection))
         self.assertFalse(self.bridge.should_handle(body_injection))
+
+    def test_group_listener_forwards_unmentioned_structured_text(self):
+        message = self.message(
+            11,
+            "这个话题到底怎么搞？",
+            native_mention=False,
+        )
+        message["mentions_bot"] = False
+        self.bridge.GROUP_LISTENER_ENABLED = True
+
+        self.assertTrue(self.bridge.should_handle(message))
+
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+        sent = []
+        with mock.patch.object(
+            self.bridge,
+            "get_messages",
+            return_value=[message],
+        ), mock.patch.object(
+            self.bridge,
+            "ask_ai",
+            return_value={"text": "", "status": "ignored"},
+        ) as ask, mock.patch.object(
+            self.bridge,
+            "send_text",
+            side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+        ), mock.patch.object(self.bridge, "atomic_save_state"):
+            self.bridge.run_once(state)
+
+        ask.assert_called_once_with(message, "这个话题到底怎么搞？")
+        self.assertEqual(sent, [])
+        self.assertEqual(state["last_local_id"], 11)
+
+    def test_group_listener_waits_for_invalid_structured_metadata(self):
+        message = self.message(11, "普通聊天", native_mention=False)
+        message.update({"mentions_bot": False, "structured_valid": False})
+        self.bridge.GROUP_LISTENER_ENABLED = True
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+
+        self.assertTrue(
+            self.bridge.should_wait_for_structured_metadata(state, message, now=100)
+        )
+        self.assertEqual(state["metadata_wait"]["local_id"], 11)
+
+    def test_group_listener_keeps_native_mention_settlement_window(self):
+        message = self.message(11, "@Hermes 你看看", native_mention=False)
+        message.update(
+            {
+                "mentions_bot": False,
+                "visible_mention_candidate": True,
+                "structured_valid": True,
+            }
+        )
+        self.bridge.GROUP_LISTENER_ENABLED = True
+        state = {"last_local_id": 10, "retry": None, "pending": None}
+
+        self.assertTrue(
+            self.bridge.should_wait_for_structured_metadata(state, message, now=100)
+        )
+        self.assertEqual(state["metadata_wait"]["local_id"], 11)
 
     def test_delayed_native_mention_metadata_is_processed_once(self):
         incomplete = self.message(11, "do work", native_mention=False)

@@ -121,21 +121,91 @@ REPLACEMENTS = (
                 )
 """,
     ),
+    Replacement(
+        """        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_input = body.get("input")
+""",
+        """        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        enabled_toolsets = body.get("enabled_toolsets")
+        if enabled_toolsets is not None:
+            if (
+                not isinstance(enabled_toolsets, list)
+                or len(enabled_toolsets) > 32
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in enabled_toolsets
+                )
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "enabled_toolsets must be an array of non-empty strings",
+                        code="invalid_enabled_toolsets",
+                    ),
+                    status=400,
+                )
+            enabled_toolsets = list(dict.fromkeys(
+                item.strip() for item in enabled_toolsets
+            ))
+            from gateway.run import _load_gateway_config
+            from hermes_cli.tools_config import _get_platform_tools
+            configured_toolsets = set(_get_platform_tools(
+                _load_gateway_config(), "api_server"
+            ))
+            unavailable_toolsets = sorted(
+                set(enabled_toolsets) - configured_toolsets
+            )
+            if unavailable_toolsets:
+                return web.json_response(
+                    _openai_error(
+                        "enabled_toolsets contains unavailable toolsets: "
+                        + ",".join(unavailable_toolsets),
+                        code="unavailable_toolsets",
+                    ),
+                    status=400,
+                )
+
+        raw_input = body.get("input")
+""",
+    ),
+    Replacement(
+        """                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_text_cb,
+                    tool_progress_callback=event_cb,
+                    gateway_session_key=gateway_session_key,
+                    route=route,
+                )
+""",
+        """                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_text_cb,
+                    tool_progress_callback=event_cb,
+                    gateway_session_key=gateway_session_key,
+                    route=route,
+                    enabled_toolsets_override=enabled_toolsets,
+                )
+""",
+    ),
 )
 
 
-def apply_replacement(path: Path, replacement: Replacement) -> None:
-    text = path.read_text(encoding="utf-8")
+def _apply_replacement(text: str, replacement: Replacement, path: Path) -> str:
     old_count = text.count(replacement.old)
     new_count = text.count(replacement.new)
     if old_count == replacement.expected_count:
-        path.write_text(
-            text.replace(replacement.old, replacement.new),
-            encoding="utf-8",
-        )
-        return
+        return text.replace(replacement.old, replacement.new)
     if old_count == 0 and new_count == replacement.expected_count:
-        return
+        return text
     raise RuntimeError(
         f"unexpected Hermes API source at {path}: "
         f"old={old_count}, new={new_count}, "
@@ -143,18 +213,31 @@ def apply_replacement(path: Path, replacement: Replacement) -> None:
     )
 
 
+def apply_replacement(path: Path, replacement: Replacement) -> None:
+    """Apply one replacement for callers that need the primitive directly."""
+    source = path.read_text(encoding="utf-8")
+    path.write_text(
+        _apply_replacement(source, replacement, path),
+        encoding="utf-8",
+    )
+
+
 def harden(root: Path, *, compile_file: bool = True) -> Path:
     path = root / RELATIVE_PATH
+    source = path.read_text(encoding="utf-8")
+    updated = source
     for replacement in REPLACEMENTS:
-        apply_replacement(path, replacement)
+        updated = _apply_replacement(updated, replacement, path)
     if compile_file:
-        compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        compile(updated, str(path), "exec")
+    if updated != source:
+        path.write_text(updated, encoding="utf-8")
     return path
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Add request-scoped zero-tool Session Chat to Hermes."
+        description="Add request-scoped tool isolation to Hermes API calls."
     )
     parser.add_argument(
         "--root",

@@ -5,6 +5,11 @@ from pathlib import Path
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "deploy" / "install_cloud.sh"
 ).read_text(encoding="utf-8")
+PERSONA_ROLLBACK = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "rollback_persona.sh"
+).read_text(encoding="utf-8")
 SSHD_HARDENING = (
     Path(__file__).resolve().parents[1]
     / "deploy"
@@ -125,7 +130,11 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "5"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "8"' in SCRIPT
+    assert '"HERMES_WECHAT_CHAT_ONLY": "true"' in SCRIPT
+    assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
+    assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
+    assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2"' in SCRIPT
     assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
@@ -235,10 +244,16 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=5" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=8" in example
+        assert "HERMES_WECHAT_CHAT_ONLY=true" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=2" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS=5" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS=0.75" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
         assert "WECHAT_CHAT_API_TOKEN=" in example
@@ -266,6 +281,31 @@ def test_environment_writer_removes_legacy_skill_runtime_variables():
     ):
         assert f'"{name}",' in SCRIPT
     assert "environment.pop(obsolete, None)" in SCRIPT
+
+
+def test_persona_bundles_are_pinned_and_checked_before_release_install():
+    assert 'local humanizer_root="$SOURCE_ROOT/skills/humanizer-zh-next"' in SCRIPT
+    assert 'local sophia_root="$SOURCE_ROOT/skills/sophia"' in SCRIPT
+    assert "https://github.com/sharbelxyz/sophia" in SCRIPT
+    assert "f2cd448553d61aa3c2ea774dc7e2296f09d4b584" in SCRIPT
+    assert "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301" in SCRIPT
+    assert "assert_persona_skill_bundle" in SCRIPT
+
+
+def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
+    assert 'PREVIOUS_RELEASE_ID=${1:-}' in PERSONA_ROLLBACK
+    assert 'EXPECTED_WECHAT_PID=${EXPECTED_WECHAT_PID:-}' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "9"' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false"' in PERSONA_ROLLBACK
+    assert "systemctl restart wechat-hermes-adapter.service" in PERSONA_ROLLBACK
+    assert "wait_for_adapter_ready" in PERSONA_ROLLBACK
+    assert "http://127.0.0.1:8000/health" in PERSONA_ROLLBACK
+    assert "restoring prior Adapter after failed rollback" in PERSONA_ROLLBACK
+    assert 'mv -f -- "$env_backup" "$ADAPTER_ENV"' in PERSONA_ROLLBACK
+    assert "pgrep -x wechat" in PERSONA_ROLLBACK
+    assert "relationship profiles retained but not injected" in PERSONA_ROLLBACK
+    assert "DELETE FROM relationship" not in PERSONA_ROLLBACK
+    assert "wechat-hermes-adapter-releases" in PERSONA_ROLLBACK
 
 
 def test_release_permissions_preserve_runtime_executables():

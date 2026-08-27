@@ -193,6 +193,17 @@ class HermesHandler(JsonHandler):
             return
         self.send_json(404, {"detail": "not found"})
 
+    def do_DELETE(self) -> None:
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/sessions/"):
+            session_id = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+            with STATE.lock:
+                STATE.sessions.discard(session_id)
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.send_json(404, {"detail": "not found"})
+
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         payload = self.read_json()
@@ -450,9 +461,22 @@ class ChatHandler(JsonHandler):
         self.send_json(404, {"detail": "not found"})
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """Avoid noisy tracebacks when a test client closes an SSE connection."""
+
+    def handle_error(self, request, client_address) -> None:
+        _exc_type, exc, _traceback = sys.exc_info()
+        if isinstance(
+            exc,
+            (BrokenPipeError, ConnectionAbortedError, ConnectionResetError),
+        ):
+            return
+        super().handle_error(request, client_address)
+
+
 class ServerThread:
     def __init__(self, handler: type[BaseHTTPRequestHandler]):
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.server = QuietThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             name=handler.__name__,
@@ -510,6 +534,13 @@ def adapter_environment(
         "ALLOW_PRIVATE_WECHAT_CHAT": "false",
         "HERMES_WECHAT_WORKER_POLL_SECONDS": "0.05",
         "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "2",
+        "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
+        "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "0",
+        "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
+        "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
+        # Relationship summaries have their own contract tests. Keeping them
+        # off here makes this end-to-end harness count foreground chats only.
+        "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false",
         "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "3",
         "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.02",
     }
@@ -735,6 +766,43 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                         "expected 3 Hermes chats, got %d" % chat_count
                     )
 
+                passive_reply = post_chat(
+                    client,
+                    adapter_url,
+                    message="小格，帮我搜索一下今天有什么新闻",
+                    local_id=104,
+                    request_id="fake-passive-name",
+                    mentions_bot=False,
+                )
+                if passive_reply.get("status") != "succeeded":
+                    raise AssertionError(
+                        "plain-name passive group chat was not answered"
+                    )
+                if passive_reply.get("task_id"):
+                    raise AssertionError(
+                        "passive group message unexpectedly created a task"
+                    )
+                ignored_passive = post_chat(
+                    client,
+                    adapter_url,
+                    message="哈哈哈",
+                    local_id=105,
+                    request_id="fake-passive-low-signal",
+                    mentions_bot=False,
+                )
+                if ignored_passive.get("status") != "ignored":
+                    raise AssertionError(
+                        "low-signal passive group chat was not suppressed"
+                    )
+                with STATE.lock:
+                    passive_chat_count = sum(
+                        item["event"] == "hermes.chat" for item in STATE.events
+                    )
+                if passive_chat_count != 4:
+                    raise AssertionError(
+                        "passive group routing produced an unexpected chat count"
+                    )
+
                 success_reply = post_chat(
                     client,
                     adapter_url,
@@ -930,6 +998,8 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                     "status": "ok",
                     "checks": {
                         "three_structured_mentions": 3,
+                        "passive_plain_name_chat": passive_reply["status"],
+                        "passive_low_signal": ignored_passive["status"],
                         "execution_with_evidence": success["status"],
                         "dropped_response_outbox": dropped_outbox,
                         "dropped_response_sends": dropped_sends,

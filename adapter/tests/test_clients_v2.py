@@ -35,6 +35,32 @@ def test_permanent_http_errors_do_not_trigger_backoff():
     assert clients.retry_delay_seconds(error, 1) == 0
 
 
+def test_delete_session_uses_the_scoped_hermes_endpoint(monkeypatch):
+    calls = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def delete(self, url, *, headers):
+            calls.append((url, headers))
+            return Response(204, {})
+
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **_kwargs: Client())
+    hermes = HermesClient("http://127.0.0.1:8642", "secret")
+    asyncio.run(hermes.delete_session("summary/a"))
+
+    assert calls == [
+        (
+            "http://127.0.0.1:8642/api/sessions/summary%2Fa",
+            {"Authorization": "Bearer secret", "Accept": "application/json"},
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "message",
     (
@@ -241,6 +267,7 @@ def test_start_run_retries_response_loss_with_same_idempotency_key(monkeypatch):
             "trusted instructions",
             [],
             idempotency_key="task:T-12345678:generation:2",
+            enabled_toolsets=["web"],
         )
     )
 
@@ -248,6 +275,7 @@ def test_start_run_retries_response_loss_with_same_idempotency_key(monkeypatch):
     assert len(calls) == 2
     assert calls[0][1]["Idempotency-Key"] == calls[1][1]["Idempotency-Key"]
     assert calls[0][2] == calls[1][2]
+    assert calls[0][2]["enabled_toolsets"] == ["web"]
 
 
 @pytest.mark.parametrize("payload", [None, [], {}])

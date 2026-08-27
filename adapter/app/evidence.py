@@ -5,6 +5,7 @@ import urllib.parse
 from typing import Any
 
 from .intents import is_conceptual_question, is_research_request
+from .research import classify_research_modes
 from .security import redact_sensitive_text
 
 
@@ -16,7 +17,15 @@ RESEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 BROWSER_RE = re.compile(
-    r"(浏览器|网页|网站|页面|点击|登录|browser|playwright|webpage|website)",
+    r"(?:(?:用|使用|通过)\s*(?:浏览器|playwright))|"
+    r"(?:(?:浏览器|playwright).{0,30}(?:打开|访问|进入|点击|登录|填写|输入|提交|滚动|操作))|"
+    r"(?:(?:打开|访问|进入|点击|登录|填写|输入|提交|滚动).{0,20}(?:官网|网页|网站|页面))|"
+    r"(?:(?:官网|网页|网站|页面).{0,20}(?:打开|访问|进入|点击|登录|填写|输入|提交|滚动))|"
+    r"(?:\b(?:use|with)\s+(?:a\s+)?(?:browser|playwright)\b)|"
+    r"(?:\b(?:browser|playwright)\b.{0,30}\b(?:open|visit|navigate|click|"
+    r"log\s*in|sign\s*in|fill|type|submit|scroll)\b)|"
+    r"(?:\b(?:open|visit|navigate|browse|click|log\s*in|sign\s*in|fill|submit|scroll)\b"
+    r".{0,30}\b(?:webpage|website|page|site)\b)",
     re.IGNORECASE,
 )
 COMMAND_RE = re.compile(
@@ -76,6 +85,41 @@ BROWSER_TOOLS = frozenset(
     }
 )
 RESEARCH_MAX_TOOL_CALLS = 12
+STRICT_RESEARCH_MODES = frozenset(
+    {
+        "fact_check",
+        "comparison",
+        "recommendation",
+        "freshness",
+        "analysis",
+        "dual_region",
+        "social",
+    }
+)
+OUTPUT_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+DOMESTIC_SOURCE_SUFFIXES = (
+    "gov.cn",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinanews.com.cn",
+    "qq.com",
+    "163.com",
+    "sina.com.cn",
+    "sohu.com",
+    "thepaper.cn",
+    "yicai.com",
+    "caixin.com",
+    "jiemian.com",
+    "36kr.com",
+    "leiphone.com",
+    "huxiu.com",
+    "cls.cn",
+    "stcn.com",
+    "eastmoney.com",
+    "qbitai.com",
+    "infoq.cn",
+)
 
 
 def _attachment_types(attachments: list[dict[str, Any]]) -> set[str]:
@@ -147,8 +191,22 @@ def build_execution_plan(
         "requested_artifacts" if expected_artifacts else "text_only"
     )
     success_conditions = ["non_empty_result"]
+    research_modes: tuple[str, ...] = ()
+    minimum_extracted_sources = 0
     if "research" in capabilities:
-        success_conditions.append("source_recorded")
+        research_modes = classify_research_modes(text)
+        minimum_extracted_sources = (
+            2
+            if set(research_modes).intersection(STRICT_RESEARCH_MODES)
+            else 1
+        )
+        success_conditions.extend(
+            [
+                "source_recorded",
+                "source_extracted",
+                "output_sources_extracted",
+            ]
+        )
     if "browser" in capabilities:
         success_conditions.append("browser_action_recorded")
     if "command" in capabilities:
@@ -167,6 +225,8 @@ def build_execution_plan(
         "input_attachment_types": sorted(attachment_types),
         "success_conditions": success_conditions,
         "requires_tool_evidence": requires_tool_evidence,
+        "research_modes": list(research_modes),
+        "min_extracted_sources": minimum_extracted_sources,
         "max_tool_calls": (
             RESEARCH_MAX_TOOL_CALLS if "research" in capabilities else None
         ),
@@ -189,6 +249,14 @@ def effective_tool_call_limit(
     return min(hard_limit, plan_limit)
 
 
+def enabled_toolsets_for_plan(plan: dict[str, Any]) -> list[str] | None:
+    """Narrow research-only runs without reducing compound task capability."""
+    capabilities = set(plan.get("capabilities") or [])
+    if capabilities == {"research"}:
+        return ["web"]
+    return None
+
+
 def _nested(event: dict[str, Any], *keys: str) -> Any:
     current: Any = event
     for key in keys:
@@ -205,13 +273,17 @@ def _safe_source(value: Any) -> str:
     safe_parts: list[str] = []
     for part in raw.split(",")[:10]:
         candidate = part.strip()
-        parsed = urllib.parse.urlsplit(candidate)
-        if parsed.scheme in {"http", "https"} and parsed.hostname:
-            port = ":" + str(parsed.port) if parsed.port else ""
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+            parsed_port = parsed.port
+        except (TypeError, ValueError):
+            continue
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname:
+            port = ":" + str(parsed_port) if parsed_port else ""
             safe_parts.append(
                 urllib.parse.urlunsplit(
                     (
-                        parsed.scheme,
+                        parsed.scheme.lower(),
                         parsed.hostname + port,
                         parsed.path,
                         "",
@@ -221,7 +293,7 @@ def _safe_source(value: Any) -> str:
             )
         else:
             safe_parts.append(redact_sensitive_text(candidate, limit=200))
-    return ",".join(safe_parts)[:500]
+    return ",".join(safe_parts)[:2000]
 
 
 def normalize_run_event(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -314,6 +386,82 @@ def _tool_matches(event: dict[str, Any], allowed: frozenset[str]) -> bool:
     return str(event.get("tool_name") or "").strip().lower() in allowed
 
 
+def _canonical_public_url(value: str) -> str:
+    candidate = str(value or "").strip().rstrip(
+        ".,;:!?)]}，。；：！？）》】"
+    )
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    host = parsed.hostname.casefold()
+    if ":" in host and not host.startswith("["):
+        host = "[" + host + "]"
+    if port and not (
+        (parsed.scheme.lower() == "http" and port == 80)
+        or (parsed.scheme.lower() == "https" and port == 443)
+    ):
+        host += ":%d" % port
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    if path != "/":
+        path = path.rstrip("/")
+    return urllib.parse.urlunsplit((parsed.scheme.lower(), host, path, "", ""))
+
+
+def _event_source_urls(
+    events: list[dict[str, Any]],
+    *,
+    tool_name: str,
+) -> set[str]:
+    values: set[str] = set()
+    for event in events:
+        if event.get("event_type") != "tool.completed":
+            continue
+        if str(event.get("tool_name") or "").strip().lower() != tool_name:
+            continue
+        for raw in str(event.get("source") or "").split(","):
+            canonical = _canonical_public_url(raw)
+            if canonical:
+                values.add(canonical)
+    return values
+
+
+def extracted_research_source_urls(
+    events: list[dict[str, Any]],
+) -> list[str]:
+    return sorted(_event_source_urls(events, tool_name="web_extract"))
+
+
+def minimum_research_source_count(plan: dict[str, Any]) -> int:
+    try:
+        return max(1, int(plan.get("min_extracted_sources") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _output_source_urls(output: str) -> set[str]:
+    values = set()
+    for match in OUTPUT_URL_RE.finditer(str(output or "")):
+        canonical = _canonical_public_url(match.group(0))
+        if canonical:
+            values.add(canonical)
+    return values
+
+
+def _is_domestic_source(value: str) -> bool:
+    try:
+        host = (urllib.parse.urlsplit(value).hostname or "").casefold()
+    except ValueError:
+        return False
+    return host.endswith(".cn") or any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in DOMESTIC_SOURCE_SUFFIXES
+    )
+
+
 def looks_blocked_on_input(output: str) -> bool:
     text = str(output or "").strip()
     return bool(text and len(text) <= 800 and BLOCKED_RE.search(text))
@@ -356,6 +504,24 @@ def verify_completion(
         if event.get("event_type") == "tool.failed"
     ]
     success_conditions = set(plan.get("success_conditions") or [])
+    capabilities = set(plan.get("capabilities") or [])
+
+    if capabilities == {"research"}:
+        out_of_scope = sorted(
+            {
+                str(event.get("tool_name") or "").strip().lower()
+                for event in tool_events
+                if str(event.get("event_type") or "").startswith("tool.")
+                and str(event.get("tool_name") or "").strip().lower()
+                not in RESEARCH_TOOLS | {"todo"}
+            }
+        )
+        if out_of_scope:
+            return {
+                "status": "failed",
+                "reason": "research-only run used out-of-scope tools: "
+                + ",".join(out_of_scope),
+            }
 
     if not bool(plan.get("requires_tool_evidence")):
         if str(output or "").strip():
@@ -396,6 +562,55 @@ def verify_completion(
             return {
                 "status": "failed",
                 "reason": "research completed without recorded sources",
+            }
+    extracted_sources = _event_source_urls(
+        completed,
+        tool_name="web_extract",
+    )
+    if "source_extracted" in success_conditions:
+        minimum_sources = minimum_research_source_count(plan)
+        if len(extracted_sources) < minimum_sources:
+            return {
+                "status": "failed",
+                "reason": (
+                    "research completed with %d successfully extracted source(s); "
+                    "%d required" % (len(extracted_sources), minimum_sources)
+                ),
+            }
+        if "dual_region" in set(plan.get("research_modes") or []):
+            has_domestic = any(_is_domestic_source(url) for url in extracted_sources)
+            has_international = any(
+                not _is_domestic_source(url) for url in extracted_sources
+            )
+            if not has_domestic or not has_international:
+                return {
+                    "status": "failed",
+                    "reason": (
+                        "dual-region research did not successfully extract both "
+                        "domestic and international sources"
+                    ),
+                }
+    if "output_sources_extracted" in success_conditions:
+        output_sources = _output_source_urls(output)
+        unsupported = sorted(output_sources - extracted_sources)
+        if unsupported:
+            return {
+                "status": "failed",
+                "code": "unextracted_output_source",
+                "reason": (
+                    "research result cited source URLs that were not successfully "
+                    "extracted"
+                ),
+            }
+        minimum_sources = minimum_research_source_count(plan)
+        if len(output_sources) < minimum_sources:
+            return {
+                "status": "failed",
+                "code": "insufficient_output_sources",
+                "reason": (
+                    "research result cited %d successfully extracted source(s); "
+                    "%d required" % (len(output_sources), minimum_sources)
+                ),
             }
     if "browser_action_recorded" in success_conditions:
         success = any(

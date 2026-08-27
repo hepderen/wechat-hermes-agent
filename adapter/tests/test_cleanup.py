@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.store import AdapterStore
+from app.relationship import RELATIONSHIP_TTL_SECONDS
 from cleanup import (
     cleanup_artifacts,
     cleanup_database,
@@ -145,6 +146,85 @@ def test_cleanup_only_removes_expired_task_artifacts_and_terminal_records(tmp_pa
             assert connection.execute(
                 "SELECT COUNT(*) FROM %s" % table
             ).fetchone()[0] == 0
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_cleanup_expires_relationship_profiles_and_retains_active_summary_jobs(
+    tmp_path,
+):
+    store = AdapterStore(tmp_path / "adapter.db")
+    store.initialize()
+    now = 1_800_000_000.0
+    room_id = "00000000000@chatroom"
+    expired_sender = "wxid_expired"
+    fresh_sender = "wxid_fresh"
+    expired_created_at = now - RELATIONSHIP_TTL_SECONDS - 10
+    store.record_relationship_interaction(
+        room_id,
+        fresh_sender,
+        source_local_id=2,
+        now=now - 5,
+    )
+    store.record_relationship_interaction(
+        room_id,
+        expired_sender,
+        source_local_id=1,
+        now=expired_created_at,
+    )
+    store.apply_relationship_summary(
+        room_id,
+        expired_sender,
+        {
+            "preferred_name": "旧称呼",
+            "banter_style": "neutral",
+            "reciprocity_delta": 0,
+            "notes": [{"kind": "preference", "value": "过期偏好"}],
+        },
+        source_local_id=1,
+        now=expired_created_at,
+    )
+    store.observe_group_listener_message(
+        "expired-listener@chatroom",
+        1,
+        now=expired_created_at,
+    )
+    store.observe_group_listener_message(room_id, 2, now=now - 5)
+
+    record_cutoff = now - 30 * 86400
+    stale = record_cutoff - 1
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            """
+            INSERT INTO relationship_summary_jobs(
+                room_id, sender_id, source_local_id, interaction_count,
+                trigger, status, attempts, error_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'succeeded', 1, '', ?, ?)
+            """,
+            (room_id, expired_sender, 1, 1, "test-terminal", stale, stale),
+        )
+        connection.execute(
+            """
+            INSERT INTO relationship_summary_jobs(
+                room_id, sender_id, source_local_id, interaction_count,
+                trigger, status, attempts, error_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'queued', 0, '', ?, ?)
+            """,
+            (room_id, fresh_sender, 2, 1, "test-active", stale, stale),
+        )
+        connection.commit()
+
+    counts = cleanup_database(store.path, record_cutoff, now=now)
+
+    assert counts["relationship_profiles"] == 1
+    assert counts["relationship_notes"] == 1
+    assert counts["relationship_summary_jobs"] == 1
+    assert counts["group_listener_state"] == 1
+    assert store.get_relationship_profile(room_id, expired_sender, now=now) is None
+    assert store.get_relationship_profile(room_id, fresh_sender, now=now) is not None
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT status FROM relationship_summary_jobs"
+        ).fetchall() == [("queued",)]
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

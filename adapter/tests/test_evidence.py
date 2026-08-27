@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.evidence import (
     build_execution_plan,
+    enabled_toolsets_for_plan,
     effective_tool_call_limit,
     normalize_run_event,
     verify_completion,
@@ -19,6 +20,14 @@ def completed_event(**changes):
     }
     event.update(changes)
     return event
+
+
+def verified_research_events(*urls):
+    source = ",".join(urls)
+    return [
+        completed_event(tool_name="web_search", source=source),
+        completed_event(tool_name="web_extract", source=source),
+    ]
 
 
 def test_execution_plan_separates_text_from_real_work():
@@ -50,14 +59,9 @@ def test_research_about_documentation_does_not_require_a_file_artifact():
         assert "verified_artifact" not in plan["success_conditions"]
         verdict = verify_completion(
             plan,
-            [
-                completed_event(
-                    tool_name="web_search",
-                    source="https://docs.python.org/3/",
-                )
-            ],
+            verified_research_events("https://docs.python.org/3/"),
             [],
-            output="research result",
+            output="research result https://docs.python.org/3/",
         )
         assert verdict["status"] == "succeeded"
 
@@ -70,6 +74,8 @@ def test_colloquial_social_search_requires_research_evidence():
     assert plan["requires_tool_evidence"] is True
     assert "source_recorded" in plan["success_conditions"]
     assert plan["max_tool_calls"] == 12
+    assert plan["min_extracted_sources"] == 2
+    assert enabled_toolsets_for_plan(plan) == ["web"]
 
 
 def test_research_variants_and_url_actions_require_source_evidence():
@@ -105,6 +111,40 @@ def test_time_sensitive_questions_require_research_evidence_without_search_verbs
         assert plan["required_tools"] == ["research"]
         assert plan["requires_tool_evidence"] is True
         assert "source_recorded" in plan["success_conditions"]
+
+
+def test_recommendation_and_live_weather_requests_are_web_only_research():
+    for message in (
+        "预算 5000 元，推荐一台拍照好的手机",
+        "预算 5000 元，推荐拍照手机，请优先查独立实测和官方参数",
+        "请核对今天中国是否有台风路径或相关预警",
+        (
+            "请核对今天中国是否有台风路径或相关预警，优先中央气象台等"
+            "官方实时页面。必须调用 web_search 和 web_extract，引用至少两个"
+            "成功读取的公开来源 URL，并标清页面信息的实际日期。"
+        ),
+    ):
+        plan = build_execution_plan(message)
+        assert plan["task_type"] == "research"
+        assert plan["capabilities"] == ["research"]
+        assert plan["required_tools"] == ["research"]
+        assert plan["requires_tool_evidence"] is True
+        assert plan["min_extracted_sources"] == 2
+        assert enabled_toolsets_for_plan(plan) == ["web"]
+
+
+def test_explicit_browser_interactions_still_require_browser_evidence():
+    for message in (
+        "用浏览器打开网页并点击登录按钮",
+        "打开这个网页看看",
+        "访问官网并查看当前状态",
+        "在这个网站填写表单并提交",
+        "Open this website and inspect the current page",
+        "Browse the website and click the sign-in button",
+    ):
+        plan = build_execution_plan(message)
+        assert "browser" in plan["capabilities"]
+        assert "browser_action_recorded" in plan["success_conditions"]
 
 
 def test_conceptual_execution_terms_do_not_create_tool_requirements():
@@ -215,14 +255,9 @@ def test_research_requires_source_and_browser_requires_action():
     )["status"] == "failed"
     assert verify_completion(
         research,
-        [
-            completed_event(
-                tool_name="web_search",
-                source="https://example.com",
-            )
-        ],
+        verified_research_events("https://example.com"),
         [],
-        output="report",
+        output="report https://example.com",
     )["status"] == "succeeded"
 
     browser = build_execution_plan("用浏览器打开网页并点击")
@@ -273,14 +308,9 @@ def test_only_real_hermes_tool_names_satisfy_execution_evidence():
         )["status"] == "failed"
     assert verify_completion(
         research,
-        [
-            completed_event(
-                tool_name="web_extract",
-                source="https://example.com",
-            )
-        ],
+        verified_research_events("https://example.com"),
         [],
-        output="report",
+        output="report https://example.com",
     )["status"] == "succeeded"
 
     for tool_name in ("browser", "playwright", "webpage", "navigate", "click"):
@@ -415,25 +445,15 @@ def test_compound_task_requires_each_declared_success_condition():
     )
     no_artifact = verify_completion(
         plan,
-        [
-            completed_event(
-                tool_name="web_search",
-                source="https://example.com",
-            )
-        ],
+        verified_research_events("https://example.com"),
         [],
-        output="done",
+        output="done https://example.com",
     )
     complete = verify_completion(
         plan,
-        [
-            completed_event(
-                tool_name="web_search",
-                source="https://example.com",
-            )
-        ],
+        verified_research_events("https://example.com"),
         [artifact],
-        output="done",
+        output="done https://example.com",
     )
 
     assert no_source["status"] == "failed"
@@ -452,3 +472,122 @@ def test_generic_external_action_cannot_succeed_without_tool_event():
         [],
         output="已发送",
     )["status"] == "succeeded"
+
+
+def test_strict_research_requires_two_successfully_extracted_sources():
+    plan = build_execution_plan("核实今天的 OpenAI 新闻是否属实")
+    one = verify_completion(
+        plan,
+        verified_research_events("https://openai.com/news/one"),
+        [],
+        output="结论 https://openai.com/news/one",
+    )
+    two = verify_completion(
+        plan,
+        verified_research_events(
+            "https://openai.com/news/one",
+            "https://www.reuters.com/technology/two",
+        ),
+        [],
+        output=(
+            "结论 https://openai.com/news/one "
+            "https://www.reuters.com/technology/two"
+        ),
+    )
+
+    assert one["status"] == "failed"
+    assert "2 required" in one["reason"]
+    assert two["status"] == "succeeded"
+
+
+def test_strict_research_requires_two_extracted_sources_in_the_final_answer():
+    plan = build_execution_plan("核实今天的 OpenAI 新闻是否属实")
+    sources = (
+        "https://openai.com/news/one",
+        "https://www.reuters.com/technology/two",
+    )
+
+    verdict = verify_completion(
+        plan,
+        verified_research_events(*sources),
+        [],
+        output="结论 https://openai.com/news/one",
+    )
+
+    assert verdict["status"] == "failed"
+    assert verdict["code"] == "insufficient_output_sources"
+    assert "2 required" in verdict["reason"]
+
+
+def test_run_event_normalization_ignores_a_malformed_source_port():
+    event = normalize_run_event(
+        {
+            "event": "tool.completed",
+            "tool": "web_extract",
+            "source": "https://example.com:not-a-port/article",
+        }
+    )
+
+    assert event is not None
+    assert event["source"] == ""
+
+
+def test_research_rejects_unextracted_output_citation_and_browser_fallback():
+    plan = build_execution_plan("研究 Python 官方文档并给出来源")
+    events = verified_research_events("https://docs.python.org/3/")
+    unsupported = verify_completion(
+        plan,
+        events,
+        [],
+        output="结论 https://docs.python.org/3/ https://example.com/guess",
+    )
+    browser = verify_completion(
+        plan,
+        events
+        + [
+            {
+                "event_type": "tool.failed",
+                "tool_name": "browser_navigate",
+                "source": "",
+            }
+        ],
+        [],
+        output="结论 https://docs.python.org/3/",
+    )
+
+    assert unsupported["status"] == "failed"
+    assert "not successfully extracted" in unsupported["reason"]
+    assert browser["status"] == "failed"
+    assert "out-of-scope" in browser["reason"]
+
+
+def test_dual_region_research_requires_extracted_sources_from_both_regions():
+    plan = build_execution_plan("搜索今天国内外 AI 新闻")
+    domestic_only = verify_completion(
+        plan,
+        verified_research_events(
+            "https://www.chinanews.com.cn/ai/one",
+            "https://www.infoq.cn/article/two",
+        ),
+        [],
+        output=(
+            "结论 https://www.chinanews.com.cn/ai/one "
+            "https://www.infoq.cn/article/two"
+        ),
+    )
+    balanced = verify_completion(
+        plan,
+        verified_research_events(
+            "https://www.chinanews.com.cn/ai/one",
+            "https://www.reuters.com/technology/two",
+        ),
+        [],
+        output=(
+            "结论 https://www.chinanews.com.cn/ai/one "
+            "https://www.reuters.com/technology/two"
+        ),
+    )
+
+    assert domestic_only["status"] == "failed"
+    assert "both domestic and international" in domestic_only["reason"]
+    assert balanced["status"] == "succeeded"

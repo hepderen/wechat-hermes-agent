@@ -38,6 +38,7 @@ class FakeHermes:
         self.chat_calls = []
         self.ensure_calls = []
         self.stop_calls = []
+        self.delete_calls = []
 
     async def ensure_session(self, session_id, title, system_prompt):
         self.ensure_calls.append((session_id, title, system_prompt))
@@ -58,6 +59,9 @@ class FakeHermes:
 
     async def stop_run(self, run_id):
         self.stop_calls.append(run_id)
+
+    async def delete_session(self, session_id):
+        self.delete_calls.append(session_id)
 
 class FakeChatApi:
     def __init__(self):
@@ -559,8 +563,185 @@ def test_sync_chat_compacts_machine_wrapping_before_returning(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["reply"] == (
-        "先修消息入口。它决定后面的能力是否可靠。"
+        "先修消息入口。它决定后面的能力是否可靠。然后再讨论别的。"
     )
+
+
+def test_passive_group_listener_can_join_a_plain_name_chat_without_tasks(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=0,
+        group_listener_min_turns_between_replies=2,
+        chat_only_mode=False,
+    )
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "小格，帮我搜索一下今天有什么新闻",
+                "request_id": "passive-plain-name",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 201,
+                "msg_svr_id": "passive-name-201",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "真实同步回复"
+    assert response.json()["status"] == "succeeded"
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    _, _, system_message, disable_tools = runtime.hermes.chat_calls[0]
+    assert disable_tools is True
+    assert "旁听式群聊" in system_message
+    assert "[[NO_REPLY]]" in system_message
+    state = runtime.store.get_group_listener_state(ROOM_ID)
+    assert state is not None
+    assert state["last_reply_local_id"] == 201
+    assert state["turns_since_reply"] == 0
+
+
+def test_passive_group_listener_filters_low_signal_and_honors_turn_gap(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=0,
+        group_listener_min_turns_between_replies=2,
+    )
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        low_signal = post_chat(
+            client,
+            {
+                "message": "哈哈哈",
+                "request_id": "passive-low-signal",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_a",
+                "source_local_id": 301,
+                "msg_svr_id": "passive-low-301",
+            },
+        )
+        first = post_chat(
+            client,
+            {
+                "message": "这事我觉得有点悬",
+                "request_id": "passive-gap-one",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_a",
+                "source_local_id": 302,
+                "msg_svr_id": "passive-gap-302",
+            },
+        )
+        second = post_chat(
+            client,
+            {
+                "message": "关键是先把入口搞定",
+                "request_id": "passive-gap-two",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_b",
+                "source_local_id": 303,
+                "msg_svr_id": "passive-gap-303",
+            },
+        )
+
+    assert low_signal.json()["status"] == "ignored"
+    assert first.json()["reply"] == "真实同步回复"
+    assert second.json()["status"] == "ignored"
+    assert len(runtime.hermes.chat_calls) == 1
+    state = runtime.store.get_group_listener_state(ROOM_ID)
+    assert state is not None
+    assert state["last_reply_local_id"] == 302
+
+
+def test_passive_listener_silence_marker_returns_ignored_without_resetting_pacing(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=0,
+        group_listener_min_turns_between_replies=1,
+    )
+
+    async def silent_chat(*_args, **_kwargs):
+        return "[[NO_REPLY]]", {"input_tokens": 1, "output_tokens": 1}
+
+    runtime.hermes.chat = silent_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "这个方案到底行不行？",
+                "request_id": "passive-silence",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 401,
+                "msg_svr_id": "passive-silence-401",
+            },
+        )
+
+    assert response.json()["reply"] == ""
+    assert response.json()["status"] == "ignored"
+    state = runtime.store.get_group_listener_state(ROOM_ID)
+    assert state is not None
+    assert state["last_reply_local_id"] is None
+    assert state["turns_since_reply"] == 1
+
+
+def test_real_mention_bypasses_group_listener_pacing(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=600,
+        group_listener_min_turns_between_replies=99,
+    )
+    runtime.store.mark_group_listener_reply(ROOM_ID, 500)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "你看看这个",
+                "request_id": "listener-real-mention",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 501,
+                "msg_svr_id": "listener-mention-501",
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.json()["reply"] == "真实同步回复"
+    assert len(runtime.hermes.chat_calls) == 1
+    assert "旁听式群聊" not in runtime.hermes.chat_calls[0][2]
+
+
+def test_passive_listener_timeout_stays_silent_and_never_queues_work(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=0,
+        group_listener_min_turns_between_replies=1,
+    )
+
+    async def unavailable_chat(*_args, **_kwargs):
+        raise TimeoutError("fake passive timeout")
+
+    runtime.hermes.chat = unavailable_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "这方案到底怎么处理？",
+                "request_id": "passive-timeout",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 601,
+                "msg_svr_id": "passive-timeout-601",
+            },
+        )
+
+    assert response.json()["reply"] == ""
+    assert response.json()["status"] == "ignored"
+    assert runtime.store.list_tasks(ROOM_ID) == []
 
 
 def test_all_room_members_share_one_session(tmp_path):

@@ -54,6 +54,7 @@ logs/
 # Build and release output
 dist/
 build/
+.codex-staging/
 *.egg-info/
 *.tar
 *.tar.gz

@@ -87,8 +87,14 @@ def cleanup_hermes_runtime_files(home: Path, cutoff: float) -> dict[str, int]:
     return counts
 
 
-def cleanup_database(path: Path, cutoff: float) -> dict[str, int]:
+def cleanup_database(
+    path: Path,
+    cutoff: float,
+    *,
+    now: float | None = None,
+) -> dict[str, int]:
     path = path.resolve(strict=True)
+    current = time.time() if now is None else float(now)
     counts: dict[str, int] = {}
     with sqlite3.connect(str(path), timeout=30) as connection:
         connection.execute("PRAGMA busy_timeout=30000")
@@ -155,9 +161,55 @@ def cleanup_database(path: Path, cutoff: float) -> dict[str, int]:
             DELETE FROM scope_memory
             WHERE expires_at IS NOT NULL AND expires_at <= ?
             """,
-            (time.time(),),
+            (current,),
         )
         counts["scope_memory"] = int(cursor.rowcount)
+        listener_table = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='group_listener_state'
+            """
+        ).fetchone()
+        if listener_table is None:
+            counts["group_listener_state"] = 0
+        else:
+            cursor = connection.execute(
+                "DELETE FROM group_listener_state WHERE updated_at < ?",
+                (cutoff,),
+            )
+            counts["group_listener_state"] = int(cursor.rowcount)
+        cursor = connection.execute(
+            """
+            DELETE FROM relationship_notes
+            WHERE expires_at <= ?
+               OR EXISTS (
+                   SELECT 1
+                   FROM relationship_profiles
+                   WHERE relationship_profiles.room_id=relationship_notes.room_id
+                     AND relationship_profiles.sender_id=relationship_notes.sender_id
+                     AND relationship_profiles.expires_at <= ?
+               )
+            """,
+            (current, current),
+        )
+        counts["relationship_notes"] = int(cursor.rowcount)
+        cursor = connection.execute(
+            """
+            DELETE FROM relationship_profiles
+            WHERE expires_at <= ?
+            """,
+            (current,),
+        )
+        counts["relationship_profiles"] = int(cursor.rowcount)
+        cursor = connection.execute(
+            """
+            DELETE FROM relationship_summary_jobs
+            WHERE status IN ('succeeded', 'failed', 'dropped')
+              AND updated_at < ?
+            """,
+            (cutoff,),
+        )
+        counts["relationship_summary_jobs"] = int(cursor.rowcount)
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             connection.rollback()

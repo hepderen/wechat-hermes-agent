@@ -48,6 +48,16 @@ PROBE_MESSAGES = {
         "必须调用 web_search 和 web_extract，引用至少两个公开来源 URL，并用中文"
         "简要回答。"
     ),
+    "recommend": (
+        "预算 5000 元，推荐一台拍照好的手机。请优先查独立实测和官方参数，过滤"
+        "软文与返利页。必须调用 web_search 和 web_extract，引用至少两个成功读取的"
+        "公开来源 URL，并用中文简要回答。"
+    ),
+    "weather": (
+        "请核对今天中国是否有台风路径或相关预警，优先中央气象台等官方实时页面。"
+        "必须调用 web_search 和 web_extract，引用至少两个成功读取的公开来源 URL，"
+        "并标清页面信息的实际日期。"
+    ),
 }
 
 PROFILE_REQUIREMENTS = {
@@ -57,6 +67,12 @@ PROFILE_REQUIREMENTS = {
     "compare": {"hosts": ("python.org",), "terms": ("3.13", "3.14")},
     "verify": {"hosts": ("python.org",), "terms": ("3.13",)},
     "dual": {"hosts": (), "terms": (), "dual_region": True},
+    "recommend": {
+        "hosts": (),
+        "any_hosts": ("tomsguide.com", "dxomark.com"),
+        "terms": (),
+    },
+    "weather": {"hosts": ("nmc.cn",), "terms": ()},
 }
 DOMESTIC_HOST_SUFFIXES = (
     "gov.cn",
@@ -329,10 +345,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     if item.get("task_id") == task_id
                 ]
                 media_count = len(fake.STATE.media_calls)
+            output = str(task.get("output") or "")
 
             if task.get("status") != "succeeded":
+                diagnostic = {
+                    "task_id": task_id,
+                    "run_id": str(task.get("hermes_run_id") or ""),
+                    "status": task.get("status"),
+                    "completed_tools": tools,
+                    "extracted_source_hosts": sorted(
+                        {
+                            (urlsplit(value).hostname or "").lower()
+                            for value in extracted_sources
+                        }
+                    ),
+                    "output_hosts": sorted(
+                        {
+                            (urlsplit(value).hostname or "").lower()
+                            for value in output.split()
+                            if value.startswith(("http://", "https://"))
+                        }
+                    ),
+                }
                 raise RuntimeError(
-                    "research task failed verifier: %s" % str(task.get("error") or "")
+                    "research task failed verifier: %s; diagnostic=%s"
+                    % (
+                        str(task.get("error") or ""),
+                        json.dumps(diagnostic, ensure_ascii=False, sort_keys=True),
+                    )
                 )
             if "web_search" not in tools or "web_extract" not in tools:
                 raise RuntimeError("research task lacked search and extraction evidence")
@@ -348,25 +388,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             source_hosts = {
                 (urlsplit(value).hostname or "").lower() for value in sources
             }
+            extracted_hosts = {
+                (urlsplit(value).hostname or "").lower()
+                for value in extracted_sources
+            }
             for expected in requirements["hosts"]:
                 if not any(
                     host == expected or host.endswith("." + expected)
-                    for host in source_hosts
+                    for host in extracted_hosts
                 ):
                     raise RuntimeError(
-                        "research task missed required source host %s" % expected
+                        "research task did not extract required source host %s"
+                        % expected
                     )
-            output = str(task.get("output") or "")
+            any_hosts = requirements.get("any_hosts", ())
+            if any_hosts and not any(
+                host == expected or host.endswith("." + expected)
+                for host in extracted_hosts
+                for expected in any_hosts
+            ):
+                raise RuntimeError(
+                    "research task did not extract an accepted source host: %s"
+                    % ",".join(any_hosts)
+                )
             for term in requirements["terms"]:
                 if term.casefold() not in output.casefold():
                     raise RuntimeError(
                         "research result missed required answer term %s" % term
                     )
             if requirements.get("dual_region"):
-                extracted_hosts = {
-                    (urlsplit(value).hostname or "").lower()
-                    for value in extracted_sources
-                }
                 domestic = any(
                     domestic_host(host) for host in extracted_hosts
                 )

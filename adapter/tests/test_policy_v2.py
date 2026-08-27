@@ -65,6 +65,22 @@ def test_additional_explicit_research_phrases_use_the_execution_queue(message):
 
 @pytest.mark.parametrize(
     "message",
+    [
+        "预算 5000 元，推荐拍照手机，请优先查独立实测和官方参数",
+        "预算 5000 元，推荐一台拍照好的手机",
+        "Python 3.13 与 Python 3.14 官方文档对比",
+        "手机影像横评实测",
+        "今年国内外 AI 行业趋势分析",
+        "Recommend a camera phone under a $700 budget",
+        "请核对今天中国是否有台风路径或相关预警",
+    ],
+)
+def test_evidence_and_live_weather_requests_use_research_queue(message):
+    assert should_run_async(message, "text", []) is True
+
+
+@pytest.mark.parametrize(
+    "message",
     (
         "今天有什么 AI 新闻",
         "最近的大模型热点有哪些",
@@ -95,6 +111,18 @@ def test_time_sensitive_facts_use_the_execution_queue_without_search_verbs(
     ),
 )
 def test_non_web_uses_of_time_words_stay_in_normal_chat(message):
+    assert should_run_async(message, "text", []) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "推荐一个标题",
+        "推荐几个文案措辞",
+        "Recommend a variable name",
+    ),
+)
+def test_creative_recommendations_do_not_trigger_web_research(message):
     assert should_run_async(message, "text", []) is False
 
 

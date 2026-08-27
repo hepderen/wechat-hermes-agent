@@ -11,6 +11,7 @@ class Replacement:
     old: str
     new: str
     expected_count: int = 1
+    allow_absent: bool = False
 
 
 EVIDENCE_HELPERS = r'''_HERMES_COMMAND_EVIDENCE_TOOLS = frozenset({
@@ -85,7 +86,25 @@ def _hermes_safe_source_url(value: Any) -> str:
     return urllib.parse.urlunsplit((scheme, host, path, "", ""))
 
 
-def _hermes_research_sources(value: Any) -> list[str]:
+def _hermes_research_sources(tool_name: str, value: Any) -> list[str]:
+    if tool_name == "web_extract":
+        if not isinstance(value, dict) or not isinstance(value.get("results"), list):
+            return []
+        extracted: list[str] = []
+        seen_extracted: set[str] = set()
+        for item in value["results"]:
+            if (
+                not isinstance(item, dict)
+                or item.get("error")
+                or len("".join(str(item.get("content") or "").split())) < 120
+            ):
+                continue
+            safe = _hermes_safe_source_url(item.get("url"))
+            if safe and safe not in seen_extracted:
+                seen_extracted.add(safe)
+                extracted.append(safe)
+        return extracted[:10]
+
     pending = [value]
     sources: list[str] = []
     seen: set[str] = set()
@@ -120,7 +139,7 @@ def _hermes_research_sources(value: Any) -> list[str]:
     return sources[:10]
 
 
-def _hermes_join_sources(values: list[str], limit: int = 500) -> str:
+def _hermes_join_sources(values: list[str], limit: int = 2000) -> str:
     selected: list[str] = []
     length = 0
     for value in values:
@@ -144,7 +163,7 @@ def _hermes_safe_tool_evidence(tool_name: Any, result: Any) -> Dict[str, Any]:
         return {"exit_code": exit_code}
 
     if normalized_tool in _HERMES_RESEARCH_EVIDENCE_TOOLS:
-        sources = _hermes_research_sources(structured)
+        sources = _hermes_research_sources(normalized_tool, structured)
         source = _hermes_join_sources(sources)
         return {"source": source} if source else {}
 
@@ -160,6 +179,120 @@ def _hermes_safe_tool_evidence(tool_name: Any, result: Any) -> Dict[str, Any]:
     return evidence
 
 
+'''
+
+LEGACY_RESEARCH_SOURCES = r'''def _hermes_research_sources(value: Any) -> list[str]:
+    pending = [value]
+    sources: list[str] = []
+    seen: set[str] = set()
+    visited = 0
+    while pending and visited < 2000 and len(sources) < 10:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, dict):
+            for key, child in current.items():
+                normalized_key = str(key).strip().lower()
+                if normalized_key in {
+                    "url",
+                    "href",
+                    "source_url",
+                }:
+                    safe = _hermes_safe_source_url(child)
+                    if safe and safe not in seen:
+                        seen.add(safe)
+                        sources.append(safe)
+                elif normalized_key in {"urls", "sources"} and isinstance(
+                    child, list
+                ):
+                    for item in child:
+                        safe = _hermes_safe_source_url(item)
+                        if safe and safe not in seen:
+                            seen.add(safe)
+                            sources.append(safe)
+                if isinstance(child, (dict, list)):
+                    pending.append(child)
+        elif isinstance(current, list):
+            pending.extend(current)
+    return sources[:10]
+'''
+
+SCOPED_RESEARCH_SOURCES = r'''def _hermes_research_sources(tool_name: str, value: Any) -> list[str]:
+    if tool_name == "web_extract":
+        if not isinstance(value, dict) or not isinstance(value.get("results"), list):
+            return []
+        extracted: list[str] = []
+        seen_extracted: set[str] = set()
+        for item in value["results"]:
+            if (
+                not isinstance(item, dict)
+                or item.get("error")
+                or len("".join(str(item.get("content") or "").split())) < 120
+            ):
+                continue
+            safe = _hermes_safe_source_url(item.get("url"))
+            if safe and safe not in seen_extracted:
+                seen_extracted.add(safe)
+                extracted.append(safe)
+        return extracted[:10]
+
+    pending = [value]
+    sources: list[str] = []
+    seen: set[str] = set()
+    visited = 0
+    while pending and visited < 2000 and len(sources) < 10:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, dict):
+            for key, child in current.items():
+                normalized_key = str(key).strip().lower()
+                if normalized_key in {
+                    "url",
+                    "href",
+                    "source_url",
+                }:
+                    safe = _hermes_safe_source_url(child)
+                    if safe and safe not in seen:
+                        seen.add(safe)
+                        sources.append(safe)
+                elif normalized_key in {"urls", "sources"} and isinstance(
+                    child, list
+                ):
+                    for item in child:
+                        safe = _hermes_safe_source_url(item)
+                        if safe and safe not in seen:
+                            seen.add(safe)
+                            sources.append(safe)
+                if isinstance(child, (dict, list)):
+                    pending.append(child)
+        elif isinstance(current, list):
+            pending.extend(current)
+    return sources[:10]
+'''
+
+WEB_EXTRACT_FAILURE_OLD = '''    data = safe_json_loads(result)
+
+    # Terminal: non-zero exit code is the canonical failure signal.
+'''
+
+WEB_EXTRACT_FAILURE_NEW = '''    data = safe_json_loads(result)
+
+    # A batched extraction is successful when it contains at least one page
+    # that can become evidence. Do not mistake per-item ``error: null`` fields
+    # or a partial batch failure for a failure of the entire tool call.
+    if tool_name == "web_extract" and isinstance(data, dict):
+        results = data.get("results")
+        if isinstance(results, list):
+            successful = any(
+                isinstance(item, dict)
+                and not item.get("error")
+                and len("".join(str(item.get("content") or "").split())) >= 120
+                for item in results
+            )
+            if successful:
+                return False, ""
+            return True, " [no extractable content]"
+
+    # Terminal: non-zero exit code is the canonical failure signal.
 '''
 
 CALLBACK_OLD = '''        def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
@@ -278,6 +411,24 @@ REPLACEMENTS = (
     ),
     Replacement(
         "gateway/platforms/api_server.py",
+        LEGACY_RESEARCH_SOURCES,
+        SCOPED_RESEARCH_SOURCES,
+        allow_absent=True,
+    ),
+    Replacement(
+        "gateway/platforms/api_server.py",
+        "def _hermes_join_sources(values: list[str], limit: int = 500) -> str:\n",
+        "def _hermes_join_sources(values: list[str], limit: int = 2000) -> str:\n",
+        allow_absent=True,
+    ),
+    Replacement(
+        "gateway/platforms/api_server.py",
+        "        sources = _hermes_research_sources(structured)\n",
+        "        sources = _hermes_research_sources(normalized_tool, structured)\n",
+        allow_absent=True,
+    ),
+    Replacement(
+        "gateway/platforms/api_server.py",
         (
             "logger = logging.getLogger(__name__)\n"
             "\n"
@@ -307,6 +458,11 @@ REPLACEMENTS = (
         INDENTED_CODE_RESULT_OLD,
         INDENTED_CODE_RESULT_NEW,
     ),
+    Replacement(
+        "agent/display.py",
+        WEB_EXTRACT_FAILURE_OLD,
+        WEB_EXTRACT_FAILURE_NEW,
+    ),
 )
 
 
@@ -322,6 +478,8 @@ def apply_replacement(root: Path, replacement: Replacement) -> Path:
         )
         return path
     if old_count == 0 and new_count == replacement.expected_count:
+        return path
+    if old_count == 0 and new_count == 0 and replacement.allow_absent:
         return path
     raise RuntimeError(
         f"unexpected Hermes run evidence source at {path}: "
