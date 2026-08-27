@@ -101,9 +101,12 @@ py -3.11 -m venv .venv
 | `锐评` / `吐槽` / `阴阳一下` / `贴吧老哥模式` | 先分析事实与逻辑，再输出克制的锐评 |
 | `正常点` / `认真点` / `退出老哥模式` | 立即恢复默认口吻 |
 | `别撩我` / `可以撩我` | 在结构化 `@` 或回复触发后，分别关闭或允许当前成员的轻暧昧语气 |
+| `别主动找我` / `主动找我` | 分别关闭或打开当前成员的主动短消息；不会影响同群其他成员 |
 | 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
 
-人格规则由 [`persona.py`](adapter/app/persona.py) 从随版本发布的 [`Sophia`](adapter/skills/sophia/SKILL.md) 和 [`humanizer-zh-next`](adapter/skills/humanizer-zh-next/SKILL.md) 加载。Sophia 固定到 `f2cd448553d61aa3c2ea774dc7e2296f09d4b584`，只抽取 `Persona & Voice`；两个资源的来源、提交和 SHA-256 均锁定在各自 `SOURCE.lock.json`。Adapter 为每个 `(room_id, sender_id)` 保存独立关系档案，最多八条稳定偏好或共同梗，默认 90 天过期；摘要只在空闲时运行，同一成员在摘要开始前的新信号会合并为最多四轮内存片段，重启时仍会丢弃未持久化正文的摘要作业。人格和档案只影响措辞，不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定。
+人格规则由 [`persona.py`](adapter/app/persona.py) 从随版本发布的 [`Sophia`](adapter/skills/sophia/SKILL.md) 和 [`humanizer-zh-next`](adapter/skills/humanizer-zh-next/SKILL.md) 加载。Sophia 固定到 `f2cd448553d61aa3c2ea774dc7e2296f09d4b584`，只抽取 `Persona & Voice`；两个资源的来源、提交和 SHA-256 均锁定在各自 `SOURCE.lock.json`。Adapter 为每个 `(room_id, sender_id)` 保存独立关系档案，最多八条稳定偏好或共同梗，默认 90 天过期；摘要只在空闲时运行，同一成员在摘要开始前的新信号会合并为最多四轮内存片段，重启时仍会丢弃未持久化正文的摘要作业。关系足够熟悉时，小格可对对象、前任或别的 AI 话题轻轻打趣一句，随后回到话题，不施压或要求专属。
+
+默认开启的主动文字只会在成员完成至少 3 次有效互动、该成员和整个群随后都闲置 90 分钟后考虑发送。它按成员每天最多 1 次、每个群每天最多 2 次限流，只能发送一条 1 至 2 句的纯文字，并始终通过普通 Outbox、停止栅栏和幂等键。任意新群消息、停止命令、取消、关闭主动聊天或服务恢复中的过期代次都会抑制旧主动消息；模型也可以输出 `[[NO_REPLY]]` 保持安静。`HERMES_WECHAT_RELATIONSHIP_PROACTIVE_*` 环境变量用于调整开关、闲置时间、门槛、频率和模型超时。
 
 ## 生产部署
 
@@ -117,7 +120,7 @@ py -3.11 -m venv .venv
 4. `ALLOWED_WECHAT_ROOM_IDS`：只列出明确开放完整 Agent 能力的群。
 5. 独立端口模拟测试、受保护文件基线和不重启微信的回滚步骤。
 
-当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
+当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。主动文字由 Adapter 单独调度，可用 `HERMES_WECHAT_RELATIONSHIP_PROACTIVE_*` 控制，既不需要 `@`，也不会绕过 Outbox 和停止栅栏。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
 
 完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `9` 并停止关系档案注入，但保留档案和发送状态。
 

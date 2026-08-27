@@ -20,7 +20,7 @@ Chat API reads the configured WeChat message database and database-key file. It 
 
 ### Adapter database
 
-Adapter SQLite stores inbound identities, request responses, task prompts and output, plans, events, tool evidence, Outbox content, usage and memory. This content supports deduplication and crash recovery, so the database is sensitive even though application logs redact message bodies.
+Adapter SQLite stores inbound identities, request responses, task prompts and output, plans, events, tool evidence, Outbox content, usage and memory. Relationship profiles additionally retain stable preferences, interaction counts, opt-out choices and room/message ordering timestamps; proactive-message state never retains the source chat text. This content supports deduplication and crash recovery, so the database is sensitive even though application logs redact message bodies.
 
 Default cleanup removes terminal task/audit records after 30 days. Stable memory has its own expiry, typically 90 days for project facts and 180 days for preferences. Operators should adjust retention to their requirements.
 

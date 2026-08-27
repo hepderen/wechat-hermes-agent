@@ -285,6 +285,8 @@ class AdapterStore:
                             CHECK(banter_style IN ('neutral', 'soft', 'playful', 'direct')),
                         flirt_opt_out INTEGER NOT NULL DEFAULT 0
                             CHECK(flirt_opt_out IN (0, 1)),
+                        proactive_opt_out INTEGER NOT NULL DEFAULT 0
+                            CHECK(proactive_opt_out IN (0, 1)),
                         last_source_local_id INTEGER,
                         created_at REAL NOT NULL,
                         updated_at REAL NOT NULL,
@@ -293,6 +295,42 @@ class AdapterStore:
                     );
                     CREATE INDEX IF NOT EXISTS idx_relationship_profiles_expiry
                     ON relationship_profiles(expires_at);
+
+                    CREATE TABLE IF NOT EXISTS relationship_proactive_state (
+                        room_id TEXT NOT NULL,
+                        sender_id TEXT NOT NULL,
+                        last_interaction_at REAL NOT NULL DEFAULT 0,
+                        last_source_local_id INTEGER,
+                        last_sent_at REAL,
+                        last_attempt_at REAL,
+                        sent_day TEXT NOT NULL DEFAULT '',
+                        sent_count INTEGER NOT NULL DEFAULT 0,
+                        pending_jealousy INTEGER NOT NULL DEFAULT 0
+                            CHECK(pending_jealousy IN (0, 1)),
+                        generation INTEGER NOT NULL DEFAULT 0,
+                        terminal_generation INTEGER NOT NULL DEFAULT 0,
+                        last_terminal_state TEXT NOT NULL DEFAULT '',
+                        active_request_id TEXT NOT NULL DEFAULT '',
+                        active_task_id TEXT NOT NULL DEFAULT '',
+                        active_claimed_at REAL,
+                        updated_at REAL NOT NULL,
+                        PRIMARY KEY(room_id, sender_id),
+                        FOREIGN KEY(room_id, sender_id)
+                            REFERENCES relationship_profiles(room_id, sender_id)
+                            ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_relationship_proactive_due
+                    ON relationship_proactive_state(last_interaction_at, active_request_id);
+
+                    CREATE TABLE IF NOT EXISTS relationship_room_activity (
+                        room_id TEXT PRIMARY KEY,
+                        last_activity_at REAL NOT NULL DEFAULT 0,
+                        last_source_local_id INTEGER,
+                        generation INTEGER NOT NULL DEFAULT 0,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_relationship_room_activity_due
+                    ON relationship_room_activity(last_activity_at);
 
                     CREATE TABLE IF NOT EXISTS relationship_notes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -463,6 +501,19 @@ class AdapterStore:
                             "ALTER TABLE scope_memory ADD COLUMN %s %s"
                             % (name, definition)
                         )
+                relationship_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(relationship_profiles)"
+                    ).fetchall()
+                }
+                if "proactive_opt_out" not in relationship_columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE relationship_profiles
+                        ADD COLUMN proactive_opt_out INTEGER NOT NULL DEFAULT 0
+                        """
+                    )
                 tool_event_columns = {
                     row["name"]
                     for row in connection.execute(
@@ -772,6 +823,7 @@ class AdapterStore:
         plan: dict[str, Any] | None = None,
         delivery_policy: str = "text_only",
         skill_snapshot: list[dict[str, Any]] | None = None,
+        outbox_required: bool = True,
     ) -> tuple[dict[str, Any], bool]:
         self.initialize()
         if kind not in {"run", "chat"}:
@@ -798,7 +850,7 @@ class AdapterStore:
                     source_msg_svr_id, plan_json, delivery_policy,
                     skill_snapshot_json, outbox_required,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -815,6 +867,7 @@ class AdapterStore:
                     json_dumps(plan or {}),
                     str(delivery_policy or "text_only"),
                     json_dumps(skill_snapshot or []),
+                    int(bool(outbox_required)),
                     now,
                     now,
                 ),
@@ -829,6 +882,34 @@ class AdapterStore:
             row = connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             connection.commit()
         return self._task(row), True
+
+    def get_task_by_request_id(self, request_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE request_id=?",
+                (str(request_id or "").strip(),),
+            ).fetchone()
+        return self._task(row)
+
+    def set_task_outbox_required(
+        self,
+        task_id: str,
+        required: bool,
+        *,
+        generation: int | None = None,
+    ) -> bool:
+        self.initialize()
+        now = time.time()
+        with self._lock, closing(self._connect()) as connection:
+            query = "UPDATE tasks SET outbox_required=?, updated_at=? WHERE id=?"
+            params: list[Any] = [int(bool(required)), now, task_id]
+            if generation is not None:
+                query += " AND generation=?"
+                params.append(int(generation))
+            cursor = connection.execute(query, params)
+            connection.commit()
+        return cursor.rowcount == 1
 
     def recover(self) -> int:
         self.initialize()
@@ -2729,6 +2810,7 @@ class AdapterStore:
             return None
         profile = dict(row)
         profile["flirt_opt_out"] = bool(profile.get("flirt_opt_out"))
+        profile["proactive_opt_out"] = bool(profile.get("proactive_opt_out"))
         profile["notes"] = [dict(note) for note in notes or []]
         return profile
 
@@ -2930,6 +3012,687 @@ class AdapterStore:
         if profile is None:
             raise RuntimeError("relationship profile was not persisted")
         return profile
+
+    def set_relationship_proactive_opt_out(
+        self,
+        room_id: str,
+        sender_id: str,
+        enabled: bool,
+        *,
+        source_local_id: int | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            connection.execute(
+                """
+                INSERT INTO relationship_profiles(
+                    room_id, sender_id, proactive_opt_out, last_source_local_id,
+                    created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_id, sender_id) DO UPDATE SET
+                    proactive_opt_out=excluded.proactive_opt_out,
+                    last_source_local_id=excluded.last_source_local_id,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    sender,
+                    int(bool(enabled)),
+                    local_id,
+                    current,
+                    current,
+                    current + RELATIONSHIP_TTL_SECONDS,
+                ),
+            )
+            if enabled:
+                connection.execute(
+                    """
+                    UPDATE relationship_proactive_state
+                    SET generation=generation + 1,
+                        active_request_id='', active_task_id='',
+                        active_claimed_at=NULL, updated_at=?
+                    WHERE room_id=? AND sender_id=?
+                    """,
+                    (current, room, sender),
+                )
+            profile = self._relationship_profile_from_connection(
+                connection,
+                room,
+                sender,
+            )
+            connection.commit()
+        if profile is None:
+            raise RuntimeError("relationship profile was not persisted")
+        return profile
+
+    @staticmethod
+    def _relationship_proactive_request_id(
+        room_id: str,
+        sender_id: str,
+        generation: int,
+    ) -> str:
+        digest = hashlib.sha256(
+            ("%s\x00%s" % (room_id, sender_id)).encode("utf-8")
+        ).hexdigest()[:24]
+        return "relationship-nudge:%s:%d" % (digest, int(generation))
+
+    def observe_relationship_room_activity(
+        self,
+        room_id: str,
+        *,
+        source_local_id: int | None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Record an ingress event so proactive text only starts in a quiet room."""
+        self.initialize()
+        room = str(room_id or "").strip()
+        if not room:
+            raise ValueError("relationship room activity requires a room identity")
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO relationship_room_activity(
+                    room_id, last_activity_at, last_source_local_id,
+                    generation, updated_at
+                ) VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    last_activity_at=excluded.last_activity_at,
+                    last_source_local_id=CASE
+                        WHEN excluded.last_source_local_id IS NULL
+                            THEN relationship_room_activity.last_source_local_id
+                        WHEN relationship_room_activity.last_source_local_id IS NULL
+                            THEN excluded.last_source_local_id
+                        ELSE MAX(
+                            relationship_room_activity.last_source_local_id,
+                            excluded.last_source_local_id
+                        )
+                    END,
+                    generation=relationship_room_activity.generation + 1,
+                    updated_at=excluded.updated_at
+                """,
+                (room, current, local_id, current),
+            )
+            row = connection.execute(
+                "SELECT * FROM relationship_room_activity WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        if row is None:
+            raise RuntimeError("relationship room activity was not persisted")
+        return dict(row)
+
+    def observe_relationship_proactive_activity(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        source_local_id: int | None,
+        jealousy_signal: bool = False,
+        now: float | None = None,
+    ) -> bool:
+        """Invalidate a pending nudge when this member speaks again.
+
+        The source text stays at the ingress boundary. This state only retains
+        an ordering marker and the optional conversational mood bit.
+        """
+        if source_local_id is None or int(source_local_id) <= 0:
+            return False
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        local_id = int(source_local_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            row = connection.execute(
+                """
+                SELECT last_source_local_id FROM relationship_proactive_state
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            if row is None or local_id <= int(row["last_source_local_id"] or 0):
+                connection.commit()
+                return False
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET last_interaction_at=?, last_source_local_id=?,
+                    pending_jealousy=CASE WHEN ? THEN 1 ELSE pending_jealousy END,
+                    generation=generation + 1,
+                    active_request_id='', active_task_id='',
+                    active_claimed_at=NULL, updated_at=?
+                WHERE room_id=? AND sender_id=?
+                """,
+                (
+                    current,
+                    local_id,
+                    int(bool(jealousy_signal)),
+                    current,
+                    room,
+                    sender,
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def record_relationship_proactive_interaction(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        source_local_id: int | None,
+        jealousy_signal: bool = False,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Start or refresh the idle timer after a successful member turn."""
+        if source_local_id is None or int(source_local_id) <= 0:
+            return None
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        local_id = int(source_local_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            profile = connection.execute(
+                """
+                SELECT 1 FROM relationship_profiles
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            if profile is None:
+                connection.commit()
+                return None
+            state = connection.execute(
+                """
+                SELECT * FROM relationship_proactive_state
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            if state is None:
+                connection.execute(
+                    """
+                    INSERT INTO relationship_proactive_state(
+                        room_id, sender_id, last_interaction_at,
+                        last_source_local_id, pending_jealousy,
+                        generation, terminal_generation, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 1, 0, ?)
+                    """,
+                    (
+                        room,
+                        sender,
+                        current,
+                        local_id,
+                        int(bool(jealousy_signal)),
+                        current,
+                    ),
+                )
+            elif local_id > int(state["last_source_local_id"] or 0):
+                connection.execute(
+                    """
+                    UPDATE relationship_proactive_state
+                    SET last_interaction_at=?, last_source_local_id=?,
+                        pending_jealousy=CASE WHEN ? THEN 1 ELSE pending_jealousy END,
+                        generation=generation + 1,
+                        active_request_id='', active_task_id='',
+                        active_claimed_at=NULL, updated_at=?
+                    WHERE room_id=? AND sender_id=?
+                    """,
+                    (
+                        current,
+                        local_id,
+                        int(bool(jealousy_signal)),
+                        current,
+                        room,
+                        sender,
+                    ),
+                )
+            stored = connection.execute(
+                """
+                SELECT * FROM relationship_proactive_state
+                WHERE room_id=? AND sender_id=?
+                """,
+                (room, sender),
+            ).fetchone()
+            connection.commit()
+        return dict(stored) if stored is not None else None
+
+    def claim_due_relationship_nudge(
+        self,
+        *,
+        now: float,
+        day: str,
+        idle_seconds: float,
+        min_interactions: int,
+        max_per_member_day: int,
+        max_per_room_day: int,
+    ) -> dict[str, Any] | None:
+        """Atomically reserve one quiet-room nudge without storing chat text."""
+        self.initialize()
+        current = float(now)
+        minimum_time = current - max(0.0, float(idle_seconds))
+        required_interactions = max(1, int(min_interactions))
+        member_limit = max(1, int(max_per_member_day))
+        room_limit = max(1, int(max_per_room_day))
+        day_key = str(day or "")[:16]
+        if not day_key:
+            raise ValueError("relationship proactive day is required")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_relationships(connection, current)
+            candidates = connection.execute(
+                """
+                SELECT p.*, s.last_source_local_id AS proactive_source_local_id,
+                       s.pending_jealousy, s.generation, s.terminal_generation,
+                       s.sent_day, s.sent_count,
+                       r.generation AS room_activity_generation
+                FROM relationship_proactive_state s
+                JOIN relationship_profiles p
+                  ON p.room_id=s.room_id AND p.sender_id=s.sender_id
+                JOIN relationship_room_activity r
+                  ON r.room_id=s.room_id
+                WHERE p.flirt_opt_out=0
+                  AND p.proactive_opt_out=0
+                  AND p.interaction_count >= ?
+                  AND s.last_source_local_id IS NOT NULL
+                  AND s.last_interaction_at <= ?
+                  AND r.last_activity_at <= ?
+                  AND s.terminal_generation < s.generation
+                  AND s.active_request_id=''
+                ORDER BY s.last_sent_at IS NOT NULL, s.last_interaction_at, s.room_id, s.sender_id
+                LIMIT 32
+                """,
+                (required_interactions, minimum_time, minimum_time),
+            ).fetchall()
+            for row in candidates:
+                room = str(row["room_id"])
+                sender = str(row["sender_id"])
+                member_sent = (
+                    int(row["sent_count"] or 0)
+                    if str(row["sent_day"] or "") == day_key
+                    else 0
+                )
+                if member_sent >= member_limit:
+                    continue
+                room_sent = connection.execute(
+                    """
+                    SELECT COALESCE(SUM(sent_count), 0) AS count
+                    FROM relationship_proactive_state
+                    WHERE room_id=? AND sent_day=?
+                    """,
+                    (room, day_key),
+                ).fetchone()
+                if int(room_sent["count"] or 0) >= room_limit:
+                    continue
+                generation = int(row["generation"] or 0)
+                request_id = self._relationship_proactive_request_id(
+                    room,
+                    sender,
+                    generation,
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE relationship_proactive_state
+                    SET active_request_id=?, active_task_id='',
+                        active_claimed_at=?, last_attempt_at=?, updated_at=?
+                    WHERE room_id=? AND sender_id=? AND generation=?
+                      AND terminal_generation < generation
+                      AND active_request_id=''
+                    """,
+                    (
+                        request_id,
+                        current,
+                        current,
+                        current,
+                        room,
+                        sender,
+                        generation,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                claimed = dict(row)
+                claimed["request_id"] = request_id
+                claimed["nudge_generation"] = generation
+                connection.commit()
+                return claimed
+            connection.commit()
+        return None
+
+    def attach_relationship_nudge_task(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        generation: int,
+        request_id: str,
+        task_id: str,
+    ) -> bool:
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET active_task_id=?, updated_at=?
+                WHERE room_id=? AND sender_id=? AND generation=?
+                  AND active_request_id=?
+                """,
+                (
+                    str(task_id or ""),
+                    time.time(),
+                    room,
+                    sender,
+                    int(generation),
+                    str(request_id or ""),
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def abandon_relationship_nudge_claim(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        generation: int,
+        request_id: str,
+        outcome: str,
+        now: float | None = None,
+    ) -> bool:
+        """Close a reservation which never acquired a durable task."""
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET terminal_generation=MAX(terminal_generation, ?),
+                    last_terminal_state=?, pending_jealousy=0,
+                    active_request_id='', active_task_id='',
+                    active_claimed_at=NULL, updated_at=?
+                WHERE room_id=? AND sender_id=? AND generation=?
+                  AND active_request_id=? AND active_task_id=''
+                """,
+                (
+                    int(generation),
+                    str(outcome or "abandoned")[:32],
+                    current,
+                    room,
+                    sender,
+                    int(generation),
+                    str(request_id or ""),
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def is_current_relationship_nudge(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        generation: int,
+        request_id: str,
+        task_id: str,
+        room_activity_generation: int,
+    ) -> bool:
+        if int(room_activity_generation) < 1:
+            return False
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM relationship_proactive_state
+                JOIN relationship_room_activity
+                  ON relationship_room_activity.room_id=relationship_proactive_state.room_id
+                WHERE relationship_proactive_state.room_id=?
+                  AND relationship_proactive_state.sender_id=?
+                  AND relationship_proactive_state.generation=?
+                  AND relationship_proactive_state.active_request_id=?
+                  AND relationship_proactive_state.active_task_id=?
+                  AND relationship_room_activity.generation=?
+                """,
+                (
+                    room,
+                    sender,
+                    int(generation),
+                    str(request_id or ""),
+                    str(task_id or ""),
+                    int(room_activity_generation),
+                ),
+            ).fetchone()
+        return row is not None
+
+    def finish_relationship_nudge(
+        self,
+        room_id: str,
+        sender_id: str,
+        *,
+        generation: int,
+        task_id: str,
+        outcome: str,
+        day: str,
+        now: float | None = None,
+    ) -> bool:
+        """Close one nudge generation so it cannot repeat without new input."""
+        self.initialize()
+        room, sender = self._relationship_identity(room_id, sender_id)
+        current = time.time() if now is None else float(now)
+        sent = str(outcome or "") in {"confirmed", "uncertain"}
+        day_key = str(day or "")[:16]
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET terminal_generation=MAX(terminal_generation, ?),
+                    last_terminal_state=?,
+                    last_sent_at=CASE WHEN ? THEN ? ELSE last_sent_at END,
+                    sent_day=CASE WHEN ? THEN ? ELSE sent_day END,
+                    sent_count=CASE
+                        WHEN ? AND sent_day=? THEN sent_count + 1
+                        WHEN ? THEN 1
+                        ELSE sent_count
+                    END,
+                    pending_jealousy=0,
+                    active_request_id='', active_task_id='',
+                    active_claimed_at=NULL, updated_at=?
+                WHERE room_id=? AND sender_id=? AND generation=?
+                  AND active_task_id=?
+                """,
+                (
+                    int(generation),
+                    str(outcome or "")[:32],
+                    int(sent),
+                    current,
+                    int(sent),
+                    day_key,
+                    int(sent),
+                    day_key,
+                    int(sent),
+                    current,
+                    room,
+                    sender,
+                    int(generation),
+                    str(task_id or ""),
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def recover_relationship_nudges(
+        self,
+        *,
+        now: float | None = None,
+        stale_claim_seconds: float = 60.0,
+    ) -> int:
+        """Repair interrupted nudge claims without replaying an old delivery."""
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        stale_before = current - max(1.0, float(stale_claim_seconds))
+        repaired = 0
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            unattached = connection.execute(
+                """
+                SELECT s.room_id, s.sender_id, s.generation, s.active_request_id,
+                       t.id AS task_id, t.status AS task_status,
+                       t.generation AS task_generation, t.plan_json
+                FROM relationship_proactive_state s
+                JOIN tasks t ON t.request_id=s.active_request_id
+                WHERE s.active_request_id <> '' AND s.active_task_id=''
+                  AND t.room_id=s.room_id AND t.sender_id=s.sender_id
+                """
+            ).fetchall()
+            for row in unattached:
+                try:
+                    plan = json.loads(row["plan_json"] or "{}")
+                    is_matching_nudge = (
+                        str(plan.get("mode") or "") == "relationship_nudge"
+                        and int(plan.get("nudge_generation") or 0)
+                        == int(row["generation"])
+                        and int(row["task_generation"] or 0) >= 1
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    is_matching_nudge = False
+                if not is_matching_nudge:
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE relationship_proactive_state
+                    SET active_task_id=?, updated_at=?
+                    WHERE room_id=? AND sender_id=? AND generation=?
+                      AND active_request_id=? AND active_task_id=''
+                    """,
+                    (
+                        str(row["task_id"]),
+                        current,
+                        row["room_id"],
+                        row["sender_id"],
+                        int(row["generation"]),
+                        row["active_request_id"],
+                    ),
+                )
+                repaired += int(cursor.rowcount)
+
+            terminal = connection.execute(
+                """
+                SELECT s.room_id, s.sender_id, s.generation, s.active_task_id,
+                       t.status AS task_status, t.generation AS task_generation,
+                       t.plan_json,
+                       (
+                           SELECT o.state
+                           FROM outbox_items o
+                           WHERE o.task_id=t.id AND o.generation=t.generation
+                             AND o.is_summary=1
+                           LIMIT 1
+                       ) AS summary_state
+                FROM relationship_proactive_state s
+                JOIN tasks t ON t.id=s.active_task_id
+                WHERE s.active_task_id <> ''
+                  AND t.status IN ('succeeded', 'failed', 'canceled')
+                """
+            ).fetchall()
+            for row in terminal:
+                try:
+                    plan = json.loads(row["plan_json"] or "{}")
+                    is_matching_nudge = (
+                        str(plan.get("mode") or "") == "relationship_nudge"
+                        and int(plan.get("nudge_generation") or 0)
+                        == int(row["generation"])
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    is_matching_nudge = False
+                if not is_matching_nudge:
+                    continue
+                summary_state = str(row["summary_state"] or "")
+                if row["task_status"] == "succeeded" and summary_state in {
+                    "prepared",
+                    "sending",
+                }:
+                    continue
+                if summary_state in {"confirmed", "uncertain"}:
+                    outcome = summary_state
+                elif row["task_status"] == "succeeded":
+                    outcome = summary_state or "skipped"
+                else:
+                    outcome = str(row["task_status"])
+                cursor = connection.execute(
+                    """
+                    UPDATE relationship_proactive_state
+                    SET terminal_generation=MAX(terminal_generation, ?),
+                        last_terminal_state=?, pending_jealousy=0,
+                        active_request_id='', active_task_id='',
+                        active_claimed_at=NULL, updated_at=?
+                    WHERE room_id=? AND sender_id=? AND generation=?
+                      AND active_task_id=?
+                    """,
+                    (
+                        int(row["generation"]),
+                        outcome[:32],
+                        current,
+                        row["room_id"],
+                        row["sender_id"],
+                        int(row["generation"]),
+                        row["active_task_id"],
+                    ),
+                )
+                repaired += int(cursor.rowcount)
+
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET active_request_id='', active_task_id='',
+                    active_claimed_at=NULL, updated_at=?
+                WHERE active_request_id <> '' AND active_task_id=''
+                  AND active_claimed_at IS NOT NULL AND active_claimed_at <= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM tasks
+                      WHERE tasks.request_id=relationship_proactive_state.active_request_id
+                  )
+                """,
+                (current, stale_before),
+            )
+            connection.commit()
+        return repaired + int(cursor.rowcount)
+
+    def relationship_proactive_counts(self) -> dict[str, int]:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS profiles,
+                       COALESCE(SUM(active_request_id <> ''), 0) AS active
+                FROM relationship_proactive_state
+                """
+            ).fetchone()
+        return {
+            "profiles": int(row["profiles"] or 0) if row is not None else 0,
+            "active": int(row["active"] or 0) if row is not None else 0,
+        }
 
     @staticmethod
     def _group_listener_room_id(room_id: str) -> str:

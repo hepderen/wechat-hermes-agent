@@ -9,6 +9,12 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
     monkeypatch.delenv("HERMES_WECHAT_DAILY_COST_LIMIT_USD", raising=False)
     monkeypatch.delenv("HERMES_WECHAT_CHAT_ONLY", raising=False)
     monkeypatch.delenv("HERMES_WECHAT_GROUP_LISTENER_ENABLED", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY", raising=False)
+    monkeypatch.delenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS", raising=False)
 
     settings = Settings.from_env()
 
@@ -25,6 +31,12 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
     assert settings.delivery_reconcile_delay_seconds == 0.75
     assert settings.relationship_memory_enabled is True
     assert settings.relationship_summary_timeout_seconds == 5
+    assert settings.relationship_proactive_enabled is True
+    assert settings.relationship_proactive_idle_seconds == 5400
+    assert settings.relationship_proactive_min_interactions == 3
+    assert settings.relationship_proactive_max_per_member_day == 1
+    assert settings.relationship_proactive_max_per_room_day == 2
+    assert settings.relationship_proactive_timeout_seconds == 6
     assert settings.chat_only_mode is False
     assert settings.group_listener_enabled is True
     assert settings.group_listener_min_reply_gap_seconds == 12
@@ -43,6 +55,24 @@ def test_relationship_memory_settings_are_read_from_environment(monkeypatch):
     settings = Settings.from_env()
     assert settings.relationship_memory_enabled is False
     assert settings.relationship_summary_timeout_seconds == 3.5
+
+
+def test_relationship_proactive_settings_are_read_and_bounded(monkeypatch):
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED", "false")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS", "999999")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS", "0")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY", "99")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY", "99")
+    monkeypatch.setenv("HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS", "0")
+
+    settings = Settings.from_env()
+
+    assert settings.relationship_proactive_enabled is False
+    assert settings.relationship_proactive_idle_seconds == 86400
+    assert settings.relationship_proactive_min_interactions == 1
+    assert settings.relationship_proactive_max_per_member_day == 5
+    assert settings.relationship_proactive_max_per_room_day == 10
+    assert settings.relationship_proactive_timeout_seconds == 1
 
 
 def test_group_listener_settings_are_read_and_bounded_from_environment(monkeypatch):

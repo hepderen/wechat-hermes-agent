@@ -23,6 +23,11 @@ _RELATIONSHIP_SIGNAL_RE = re.compile(
     r"还记得|共同梗|你又)",
     re.IGNORECASE,
 )
+_RELATIONSHIP_JEALOUSY_SIGNAL_RE = re.compile(
+    r"(?:前任|对象|女朋友|男朋友|老婆|老公|喜欢的人|暧昧对象|"
+    r"别的(?:女生|男生|人|AI|机器人)|和(?:她|他|别人)聊)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,10 @@ def parse_relationship_command(message: str) -> RelationshipCommand | None:
         return RelationshipCommand("flirt_off")
     if value in {"可以撩我", "能撩我", "可以暧昧", "能暧昧"}:
         return RelationshipCommand("flirt_on")
+    if value in {"主动找我", "可以主动找我", "多找我聊聊"}:
+        return RelationshipCommand("proactive_on")
+    if value in {"别主动找我", "不要主动找我", "少找我聊天"}:
+        return RelationshipCommand("proactive_off")
     if value in {"正常点", "正常一点", "收着点"}:
         return RelationshipCommand("normal")
     return None
@@ -60,6 +69,11 @@ def parse_relationship_command(message: str) -> RelationshipCommand | None:
 
 def has_relationship_signal(message: str) -> bool:
     return bool(_RELATIONSHIP_SIGNAL_RE.search(str(message or "")))
+
+
+def has_relationship_jealousy_signal(message: str) -> bool:
+    """Classify a light conversational cue without retaining the source text."""
+    return bool(_RELATIONSHIP_JEALOUSY_SIGNAL_RE.search(str(message or "")))
 
 
 def familiarity_for_interactions(interaction_count: int) -> int:
@@ -156,6 +170,7 @@ def relationship_profile_system_block(profile: dict[str, Any] | None) -> str:
         "reciprocity": max(0, min(3, int(profile.get("reciprocity") or 0))),
         "banter_style": str(profile.get("banter_style") or "neutral"),
         "flirt_opt_out": bool(profile.get("flirt_opt_out")),
+        "proactive_opt_out": bool(profile.get("proactive_opt_out")),
         "notes": notes,
     }
     return (

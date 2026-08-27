@@ -135,6 +135,12 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "5400"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "1"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "2"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6"' in SCRIPT
     assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
@@ -254,6 +260,12 @@ def test_environment_examples_match_production_generation_and_budget():
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS=0.75" in example
         assert "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true" in example
         assert "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED=true" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS=5400" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS=3" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY=1" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY=2" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS=6" in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
         assert "WECHAT_CHAT_API_TOKEN=" in example

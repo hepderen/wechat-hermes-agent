@@ -11,8 +11,13 @@ from fastapi.testclient import TestClient
 from app.main import (
     _parse_relationship_summary,
     create_app,
+    deliver_outbox_item,
     effective_session_generation,
     execute_relationship_summary,
+    execute_task,
+    queue_due_relationship_nudge,
+    relationship_nudge_is_current,
+    relationship_proactive_day,
     schedule_relationship_summary,
 )
 from app.policy import stable_session_id
@@ -664,9 +669,451 @@ def test_relationship_metrics_expose_queue_and_feature_state(tmp_path):
     assert health["relationship_memory"] == {
         "enabled": True,
         "summary_active": False,
+        "proactive": {"enabled": True, "profiles": 0, "active": 0},
     }
     assert "wechat_hermes_relationship_memory_enabled 1" in metrics
+    assert "wechat_hermes_relationship_proactive_enabled 1" in metrics
+    assert "wechat_hermes_relationship_proactive_profiles 0" in metrics
+    assert "wechat_hermes_relationship_proactive_active 0" in metrics
     assert "wechat_hermes_relationship_summary_active 0" in metrics
     assert 'wechat_hermes_relationship_summary_jobs{status="queued"} 0' in metrics
     assert "wechat_hermes_relationship_summary_coalesced_total 0" in metrics
     assert "wechat_hermes_relationship_summary_failed_total 0" in metrics
+
+
+def _seed_proactive_profile(
+    runtime,
+    *,
+    sender_id: str = "wxid_member",
+    interactions: int = 3,
+    reciprocity: int = 0,
+    jealousy_signal: bool = False,
+    now: float | None = None,
+) -> int:
+    store = runtime.store
+    source_local_id = max(1, int(interactions))
+    if now is None:
+        now = time.time() - max(
+            2.0,
+            float(runtime.settings.relationship_proactive_idle_seconds) + 1.0,
+        )
+    for local_id in range(1, source_local_id + 1):
+        store.record_relationship_interaction(
+            ROOM_ID,
+            sender_id,
+            source_local_id=local_id,
+            now=now,
+        )
+    store.observe_relationship_room_activity(
+        ROOM_ID,
+        source_local_id=source_local_id,
+        now=now,
+    )
+    if reciprocity:
+        store.apply_relationship_summary(
+            ROOM_ID,
+            sender_id,
+            {
+                "preferred_name": "阿明",
+                "banter_style": "playful",
+                "reciprocity_delta": reciprocity,
+                "notes": [],
+            },
+            source_local_id=source_local_id,
+            now=now,
+        )
+    state = store.record_relationship_proactive_interaction(
+        ROOM_ID,
+        sender_id,
+        source_local_id=source_local_id,
+        jealousy_signal=jealousy_signal,
+        now=now,
+    )
+    assert state is not None
+    return source_local_id
+
+
+def _queue_proactive_nudge(runtime):
+    assert queue_due_relationship_nudge(runtime) is True
+    task = runtime.store.claim_next()
+    assert task is not None
+    assert task["plan"]["mode"] == "relationship_nudge"
+    return task
+
+
+def test_proactive_commands_control_only_the_current_member(tmp_path):
+    runtime = make_runtime(tmp_path)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        disabled = post_chat(
+            client,
+            chat_payload(
+                "@小格 别主动找我",
+                request_id="relationship-proactive-off",
+                local_id=1,
+            ),
+        )
+        enabled = post_chat(
+            client,
+            chat_payload(
+                "@小格 主动找我",
+                request_id="relationship-proactive-on",
+                local_id=2,
+            ),
+        )
+
+    profile = runtime.store.get_relationship_profile(ROOM_ID, "wxid_member")
+    assert disabled.json()["reply"] == "行，我不主动打扰你。"
+    assert enabled.json()["reply"] == "行，空下来我会去找你。"
+    assert profile is not None
+    assert profile["proactive_opt_out"] is False
+    assert runtime.store.relationship_proactive_counts() == {
+        "profiles": 1,
+        "active": 0,
+    }
+
+
+def test_proactive_claim_respects_idle_and_daily_member_room_limits(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+        relationship_proactive_max_per_member_day=1,
+        relationship_proactive_max_per_room_day=2,
+    )
+    store = runtime.store
+    base = time.time()
+    source_a = _seed_proactive_profile(
+        runtime,
+        sender_id="wxid_a",
+        now=base,
+    )
+    source_b = _seed_proactive_profile(
+        runtime,
+        sender_id="wxid_b",
+        now=base,
+    )
+    source_c = _seed_proactive_profile(
+        runtime,
+        sender_id="wxid_c",
+        now=base,
+    )
+    day = relationship_proactive_day(runtime.settings)
+
+    assert (
+        store.claim_due_relationship_nudge(
+            now=base + 0.5,
+            day=day,
+            idle_seconds=1,
+            min_interactions=3,
+            max_per_member_day=1,
+            max_per_room_day=2,
+        )
+        is None
+    )
+    first = store.claim_due_relationship_nudge(
+        now=base + 2,
+        day=day,
+        idle_seconds=1,
+        min_interactions=3,
+        max_per_member_day=1,
+        max_per_room_day=2,
+    )
+    assert first is not None
+    assert first["sender_id"] == "wxid_a"
+    assert first["proactive_source_local_id"] == source_a
+    assert store.attach_relationship_nudge_task(
+        ROOM_ID,
+        "wxid_a",
+        generation=first["nudge_generation"],
+        request_id=first["request_id"],
+        task_id="test-a",
+    )
+    assert store.finish_relationship_nudge(
+        ROOM_ID,
+        "wxid_a",
+        generation=first["nudge_generation"],
+        task_id="test-a",
+        outcome="confirmed",
+        day=day,
+        now=base + 2,
+    )
+
+    store.record_relationship_proactive_interaction(
+        ROOM_ID,
+        "wxid_a",
+        source_local_id=source_a + 1,
+        now=base + 3,
+    )
+    second = store.claim_due_relationship_nudge(
+        now=base + 5,
+        day=day,
+        idle_seconds=1,
+        min_interactions=3,
+        max_per_member_day=1,
+        max_per_room_day=2,
+    )
+    assert second is not None
+    assert second["sender_id"] == "wxid_b"
+    assert second["proactive_source_local_id"] == source_b
+    assert store.attach_relationship_nudge_task(
+        ROOM_ID,
+        "wxid_b",
+        generation=second["nudge_generation"],
+        request_id=second["request_id"],
+        task_id="test-b",
+    )
+    assert store.finish_relationship_nudge(
+        ROOM_ID,
+        "wxid_b",
+        generation=second["nudge_generation"],
+        task_id="test-b",
+        outcome="confirmed",
+        day=day,
+        now=base + 5,
+    )
+
+    assert (
+        store.claim_due_relationship_nudge(
+            now=base + 5,
+            day=day,
+            idle_seconds=1,
+            min_interactions=3,
+            max_per_member_day=1,
+            max_per_room_day=2,
+        )
+        is None
+    )
+    assert source_c == 3
+
+
+def test_proactive_jealous_mood_requires_existing_reciprocity(tmp_path):
+    casual_runtime = make_runtime(
+        tmp_path / "casual",
+        relationship_proactive_idle_seconds=1,
+    )
+    _seed_proactive_profile(casual_runtime, jealousy_signal=True)
+    casual_task = _queue_proactive_nudge(casual_runtime)
+    assert casual_task["plan"]["nudge_mood"] == "casual"
+    assert casual_task["plan"]["nudge_jealousy"] is False
+
+    warm_runtime = make_runtime(
+        tmp_path / "warm",
+        relationship_proactive_idle_seconds=1,
+    )
+    _seed_proactive_profile(
+        warm_runtime,
+        reciprocity=1,
+        jealousy_signal=True,
+    )
+    warm_task = _queue_proactive_nudge(warm_runtime)
+    assert warm_task["plan"]["nudge_mood"] == "playful_jealous"
+    assert warm_task["plan"]["nudge_jealousy"] is True
+
+
+def test_new_member_message_suppresses_a_pending_proactive_nudge(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    source_local_id = _seed_proactive_profile(runtime)
+    task = _queue_proactive_nudge(runtime)
+    assert relationship_nudge_is_current(runtime, task)
+
+    assert runtime.store.observe_relationship_proactive_activity(
+        ROOM_ID,
+        "wxid_member",
+        source_local_id=source_local_id + 1,
+    )
+    assert not relationship_nudge_is_current(runtime, task)
+    asyncio.run(execute_task(runtime, task))
+
+    current = runtime.store.get_task(task["id"])
+    assert current is not None and current["status"] == "canceled"
+    assert runtime.store.next_outbox() is None
+    assert runtime.store.relationship_proactive_counts()["active"] == 0
+
+
+def test_new_room_activity_blocks_and_supersedes_a_proactive_nudge(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    source_local_id = _seed_proactive_profile(runtime)
+    runtime.store.observe_relationship_room_activity(
+        ROOM_ID,
+        source_local_id=source_local_id + 1,
+        now=time.time(),
+    )
+    assert queue_due_relationship_nudge(runtime) is False
+
+    runtime.store.observe_relationship_room_activity(
+        ROOM_ID,
+        source_local_id=source_local_id + 2,
+        now=time.time() - 2,
+    )
+    task = _queue_proactive_nudge(runtime)
+    assert relationship_nudge_is_current(runtime, task)
+
+    # A different member speaking is enough to make this nudge stale.
+    runtime.store.observe_relationship_room_activity(
+        ROOM_ID,
+        source_local_id=source_local_id + 3,
+    )
+    assert not relationship_nudge_is_current(runtime, task)
+    asyncio.run(execute_task(runtime, task))
+
+    current = runtime.store.get_task(task["id"])
+    assert current is not None and current["status"] == "canceled"
+    assert runtime.store.next_outbox() is None
+
+
+def test_any_real_group_ingress_invalidates_a_queued_proactive_nudge(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    source_local_id = _seed_proactive_profile(runtime)
+    task = _queue_proactive_nudge(runtime)
+    assert relationship_nudge_is_current(runtime, task)
+
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            chat_payload(
+                "你们接着聊。",
+                request_id="relationship-other-member-activity",
+                local_id=source_local_id + 1,
+                sender_id="wxid_other_member",
+                mentions_bot=False,
+            ),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+    assert not relationship_nudge_is_current(runtime, task)
+
+
+def test_proactive_nudge_delivers_one_plain_text_item_and_resets_passive_pacing(
+    tmp_path,
+):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+        group_listener_enabled=True,
+    )
+    _seed_proactive_profile(runtime, reciprocity=1)
+    task = _queue_proactive_nudge(runtime)
+
+    asyncio.run(execute_task(runtime, task))
+    current = runtime.store.get_task(task["id"])
+    assert current is not None and current["status"] == "succeeded"
+    outbox = runtime.store.next_outbox()
+    assert outbox is not None and outbox["kind"] == "text"
+    assert bool(outbox["is_summary"]) is True
+    asyncio.run(deliver_outbox_item(runtime, outbox))
+
+    assert len(runtime.chat_api.text) == 1
+    assert runtime.chat_api.text[0][1] == "真实同步回复"
+    assert "做完了" not in runtime.chat_api.text[0][1]
+    assert runtime.store.next_outbox() is None
+    assert runtime.store.relationship_proactive_counts()["active"] == 0
+    listener_state = runtime.store.get_group_listener_state(ROOM_ID)
+    assert listener_state is not None
+    assert listener_state["last_reply_local_id"] == 3
+
+
+def test_proactive_nudge_barrier_suppression_closes_the_generation(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    _seed_proactive_profile(runtime)
+    task = _queue_proactive_nudge(runtime)
+    asyncio.run(execute_task(runtime, task))
+
+    async def blocked_barrier(*_args, **_kwargs):
+        return {"allowed": False}
+
+    runtime.chat_api.check_barrier = blocked_barrier
+    outbox = runtime.store.next_outbox()
+    assert outbox is not None
+    asyncio.run(deliver_outbox_item(runtime, outbox))
+
+    items = runtime.store.list_outbox(task["id"], task["generation"])
+    assert items[0]["state"] == "suppressed"
+    assert runtime.chat_api.text == []
+    assert runtime.store.relationship_proactive_counts()["active"] == 0
+
+
+def test_proactive_nudge_rechecks_room_activity_after_barrier_lookup(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    source_local_id = _seed_proactive_profile(runtime)
+    task = _queue_proactive_nudge(runtime)
+    asyncio.run(execute_task(runtime, task))
+
+    async def barrier_then_new_message(*_args, **_kwargs):
+        runtime.store.observe_relationship_room_activity(
+            ROOM_ID,
+            source_local_id=source_local_id + 1,
+        )
+        return {"allowed": True}
+
+    runtime.chat_api.check_barrier = barrier_then_new_message
+    outbox = runtime.store.next_outbox()
+    assert outbox is not None
+    asyncio.run(deliver_outbox_item(runtime, outbox))
+
+    items = runtime.store.list_outbox(task["id"], task["generation"])
+    assert items[0]["state"] == "suppressed"
+    assert runtime.chat_api.text == []
+    assert runtime.store.relationship_proactive_counts()["active"] == 0
+
+
+def test_proactive_recovery_reattaches_durable_task_and_clears_cancellation(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    _seed_proactive_profile(runtime)
+    assert queue_due_relationship_nudge(runtime) is True
+    task = runtime.store.list_tasks(ROOM_ID)[0]
+    with sqlite3.connect(runtime.store.path) as connection:
+        connection.execute(
+            """
+            UPDATE relationship_proactive_state
+            SET active_task_id=''
+            WHERE room_id=? AND sender_id=?
+            """,
+            (ROOM_ID, "wxid_member"),
+        )
+        connection.commit()
+
+    assert runtime.store.recover_relationship_nudges() == 1
+    assert relationship_nudge_is_current(runtime, task)
+    canceled = runtime.store.cancel_task(task["id"], ROOM_ID)
+    assert canceled is not None and canceled["status"] == "canceled"
+    assert runtime.store.recover_relationship_nudges() == 1
+    assert runtime.store.relationship_proactive_counts()["active"] == 0
+
+
+def test_invalid_proactive_source_closes_the_claim_without_sticking(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        relationship_proactive_idle_seconds=1,
+    )
+    _seed_proactive_profile(runtime)
+    with sqlite3.connect(runtime.store.path) as connection:
+        connection.execute(
+            """
+            UPDATE relationship_proactive_state
+            SET last_source_local_id=0
+            WHERE room_id=? AND sender_id=?
+            """,
+            (ROOM_ID, "wxid_member"),
+        )
+        connection.commit()
+
+    assert queue_due_relationship_nudge(runtime) is False
+    assert runtime.store.relationship_proactive_counts()["active"] == 0

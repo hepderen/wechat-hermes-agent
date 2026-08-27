@@ -57,6 +57,12 @@ class Settings:
     delivery_reconcile_delay_seconds: float = 0.75
     relationship_memory_enabled: bool = True
     relationship_summary_timeout_seconds: float = 5.0
+    relationship_proactive_enabled: bool = True
+    relationship_proactive_idle_seconds: float = 5400.0
+    relationship_proactive_min_interactions: int = 3
+    relationship_proactive_max_per_member_day: int = 1
+    relationship_proactive_max_per_room_day: int = 2
+    relationship_proactive_timeout_seconds: float = 6.0
     group_listener_enabled: bool = False
     group_listener_min_reply_gap_seconds: float = 12.0
     group_listener_min_turns_between_replies: int = 2
@@ -131,6 +137,12 @@ class Settings:
             "relationship_summary_timeout_seconds": (
                 self.relationship_summary_timeout_seconds
             ),
+            "relationship_proactive_idle_seconds": (
+                self.relationship_proactive_idle_seconds
+            ),
+            "relationship_proactive_timeout_seconds": (
+                self.relationship_proactive_timeout_seconds
+            ),
         }
         for name, value in positive_limits.items():
             if not isfinite(float(value)) or float(value) <= 0:
@@ -158,6 +170,16 @@ class Settings:
         if int(self.group_listener_min_turns_between_replies) < 0:
             raise ValueError(
                 "group_listener_min_turns_between_replies must not be negative"
+            )
+        if int(self.relationship_proactive_min_interactions) < 1:
+            raise ValueError("relationship_proactive_min_interactions must be positive")
+        if int(self.relationship_proactive_max_per_member_day) < 1:
+            raise ValueError(
+                "relationship_proactive_max_per_member_day must be positive"
+            )
+        if int(self.relationship_proactive_max_per_room_day) < 1:
+            raise ValueError(
+                "relationship_proactive_max_per_room_day must be positive"
             )
         if any(
             not str(name or "").strip() or len(str(name)) > 48
@@ -366,6 +388,70 @@ class Settings:
                         os.getenv(
                             "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS",
                             "5",
+                        )
+                    ),
+                ),
+            ),
+            relationship_proactive_enabled=env_bool(
+                "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED",
+                True,
+            ),
+            relationship_proactive_idle_seconds=max(
+                300.0,
+                min(
+                    86400.0,
+                    float(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS",
+                            "5400",
+                        )
+                    ),
+                ),
+            ),
+            relationship_proactive_min_interactions=max(
+                1,
+                min(
+                    30,
+                    int(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS",
+                            "3",
+                        )
+                    ),
+                ),
+            ),
+            relationship_proactive_max_per_member_day=max(
+                1,
+                min(
+                    5,
+                    int(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY",
+                            "1",
+                        )
+                    ),
+                ),
+            ),
+            relationship_proactive_max_per_room_day=max(
+                1,
+                min(
+                    10,
+                    int(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY",
+                            "2",
+                        )
+                    ),
+                ),
+            ),
+            relationship_proactive_timeout_seconds=max(
+                1.0,
+                min(
+                    20.0,
+                    float(
+                        os.getenv(
+                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS",
+                            "6",
                         )
                     ),
                 ),

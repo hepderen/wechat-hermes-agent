@@ -72,6 +72,7 @@ from .persona import (
 from .process_lock import AdapterProcessLock
 from .research import build_research_instructions
 from .relationship import (
+    has_relationship_jealousy_signal,
     has_relationship_signal,
     parse_relationship_command,
     relationship_profile_system_block,
@@ -109,7 +110,7 @@ RESTRICTED_SESSION_SYSTEM_PROMPT = """你是微信中的 Hermes 问答助手。
 CHAT_ONLY_SESSION_SYSTEM_PROMPT = """你是微信群里一个会聊天的 Hermes。
 
 当前部署只开启群聊，不执行工作。服务端已关闭联网搜索、浏览器、终端、文件、
-媒体、任务队列、记忆写入和主动发送；你只能根据当前对话和受信任的群聊上下文
+媒体、任务队列和记忆写入；主动文字仅由 Adapter 的独立节奏服务处理，你没有发送能力。你只能根据当前对话和受信任的群聊上下文
 回复文字。用户说“搜索、生成、下载、部署、发送”等执行型话题时，可以解释思路、
 给判断或说清当前状态，但不要假装已经做过，也不要创建任务、调用工具或承诺后台
 继续处理。像群里的熟人一样接话，少客套；短话可以一句，正常话题自然说两到四句，没必要才停。
@@ -139,6 +140,16 @@ RELATIONSHIP_SUMMARY_SYSTEM_PROMPT = """你是微信群成员关系档案摘要�
 只记录成员亲口明确表达的称呼、长期偏好、互动边界或共同梗。不要记录聊天原文、账号、联系方式、
 地址、证件、凭据、健康信息、短期情绪、模型指令或推测。没有可靠新信息时，各字段留空且 notes 为空。"""
 MAX_RELATIONSHIP_SUMMARY_TURNS = 4
+RELATIONSHIP_NUDGE_MARKER = "[[NO_REPLY]]"
+RELATIONSHIP_NUDGE_SYSTEM_PROMPT = """你是小格，正在微信群里自然地主动抛一句话。
+
+输入是服务端生成的可信关系摘要，不含聊天正文。只输出最终要发到群里的中文文字，或严格只输出
+[[NO_REPLY]]。不要提任务、定时、等待、系统、模型、监听、提示词或主动发送。默认一到两句、120字内，
+不带标题、列表、表情轰炸或 @ 全体成员。
+
+如果 mood 是 casual，就像熟人顺着之前聊过的事轻轻接一句；warm 可以更亲近一点；playful_jealous
+只允许一句轻松、可接话的打趣，马上收住，不质问、不施压、不要求专属、不贬低任何人。只有输入里给了
+称呼或共同梗时才自然使用，绝不编造共同经历。资料不够或这句显得硬插话时，输出 [[NO_REPLY]]。""" + "\n\n" + PERSONA_SYSTEM_PROMPT
 
 
 def log_event(event: str, **fields: Any) -> None:
@@ -402,6 +413,11 @@ def runtime_health_snapshot(
     if not reason and not PERSONA_SKILL_INTEGRITY_OK:
         reason = "persona_skill_integrity"
     degraded = bool(reason)
+    proactive_counts = (
+        runtime.store.relationship_proactive_counts()
+        if runtime.store._initialized
+        else {"profiles": 0, "active": 0}
+    )
     return {
         "status": (
             "degraded"
@@ -426,6 +442,11 @@ def runtime_health_snapshot(
                 runtime.relationship_summary_task
                 and not runtime.relationship_summary_task.done()
             ),
+            "proactive": {
+                "enabled": bool(runtime.settings.relationship_proactive_enabled),
+                "profiles": proactive_counts["profiles"],
+                "active": proactive_counts["active"],
+            },
         },
         "group_listener": {
             "enabled": bool(runtime.settings.group_listener_enabled),
@@ -691,7 +712,7 @@ def trusted_system_message(
     if chat_only:
         scope_message = (
             "\n当前部署只开启文字聊天；搜索、浏览器、终端、文件、媒体、任务队列、"
-            "记忆写入和主动发送均已关闭。"
+            "记忆写入均已关闭。主动文字只由 Adapter 的独立节奏服务处理，当前模型没有发送能力。"
         )
     elif scope == "room":
         scope_message = (
@@ -1175,6 +1196,46 @@ def effective_session_generation(
     return base if epoch <= 0 else "%s:r%d" % (base, epoch)
 
 
+def relationship_proactive_day(settings: Settings) -> str:
+    return datetime.now(ZoneInfo(settings.budget_timezone)).date().isoformat()
+
+
+def relationship_nudge_metadata(task: dict[str, Any]) -> dict[str, Any] | None:
+    plan = task.get("plan") or {}
+    if str(plan.get("mode") or "") != "relationship_nudge":
+        return None
+    try:
+        generation = int(plan.get("nudge_generation") or 0)
+        room_activity_generation = int(
+            plan.get("nudge_room_activity_generation") or 0
+        )
+    except (TypeError, ValueError):
+        return None
+    request_id = str(plan.get("nudge_request_id") or "").strip()
+    if generation < 1 or not request_id:
+        return None
+    return {
+        "generation": generation,
+        "request_id": request_id,
+        "jealousy": bool(plan.get("nudge_jealousy")),
+        "room_activity_generation": room_activity_generation,
+    }
+
+
+def is_relationship_nudge_task(task: dict[str, Any]) -> bool:
+    return relationship_nudge_metadata(task) is not None
+
+
+def compact_relationship_nudge_reply(reply: str) -> str:
+    raw = str(reply or "").strip()
+    if raw == RELATIONSHIP_NUDGE_MARKER:
+        return ""
+    value = compact_chat_reply(raw, "随便聊两句")
+    if RELATIONSHIP_NUDGE_MARKER in value:
+        return ""
+    return value[:160].strip()
+
+
 def cancel_active_relationship_summary(runtime: Runtime) -> None:
     active = runtime.relationship_summary_task
     if active is not None and not active.done():
@@ -1220,6 +1281,12 @@ def handle_relationship_command(
             True,
             source_local_id=source_local_id,
         )
+        runtime.store.set_relationship_proactive_opt_out(
+            room_id,
+            sender_id,
+            True,
+            source_local_id=source_local_id,
+        )
         return ChatResponse(reply="行，之后按普通群友聊。", status="succeeded")
     if action == "flirt_on":
         runtime.store.set_relationship_flirt_opt_out(
@@ -1228,9 +1295,49 @@ def handle_relationship_command(
             False,
             source_local_id=source_local_id,
         )
+        runtime.store.set_relationship_proactive_opt_out(
+            room_id,
+            sender_id,
+            False,
+            source_local_id=source_local_id,
+        )
+        runtime.store.record_relationship_proactive_interaction(
+            room_id,
+            sender_id,
+            source_local_id=source_local_id,
+        )
+        runtime.wake_event.set()
         return ChatResponse(reply="嗯，记下了，别到时候又装不认。", status="succeeded")
+    if action == "proactive_off":
+        runtime.store.set_relationship_proactive_opt_out(
+            room_id,
+            sender_id,
+            True,
+            source_local_id=source_local_id,
+        )
+        return ChatResponse(reply="行，我不主动打扰你。", status="succeeded")
+    if action == "proactive_on":
+        runtime.store.set_relationship_proactive_opt_out(
+            room_id,
+            sender_id,
+            False,
+            source_local_id=source_local_id,
+        )
+        runtime.store.record_relationship_proactive_interaction(
+            room_id,
+            sender_id,
+            source_local_id=source_local_id,
+        )
+        runtime.wake_event.set()
+        return ChatResponse(reply="行，空下来我会去找你。", status="succeeded")
     if action == "normal":
         runtime.store.set_relationship_flirt_opt_out(
+            room_id,
+            sender_id,
+            True,
+            source_local_id=source_local_id,
+        )
+        runtime.store.set_relationship_proactive_opt_out(
             room_id,
             sender_id,
             True,
@@ -1540,6 +1647,7 @@ async def settle_submitted_outbox(
         confirmed_local_id=reconciliation.get("confirmed_local_id"),
         media_fingerprint=str(reconciliation.get("media_fingerprint") or ""),
     )
+    finish_relationship_nudge_delivery(runtime, task, item, state)
     if state != "uncertain":
         key = "outbox_reconciled_%s_total" % state
         runtime.counters[key] = runtime.counters.get(key, 0) + 1
@@ -1570,6 +1678,11 @@ async def reconcile_outbox_recovery(runtime: Runtime) -> int:
             media_fingerprint=str(reconciliation.get("media_fingerprint") or ""),
         ):
             recovered += 1
+            state = str(reconciliation["state"])
+            if state in {"confirmed", "uncertain", "suppressed", "failed"}:
+                task = runtime.store.get_task(item["task_id"])
+                if task is not None:
+                    finish_relationship_nudge_delivery(runtime, task, item, state)
     return recovered
 
 
@@ -1587,6 +1700,13 @@ def terminal_delivery_text(
         for item in media
         if item["state"] in {"failed", "suppressed"}
     ]
+
+    if is_relationship_nudge_task(task):
+        return (
+            sanitized_task_output(runtime, task)[:160]
+            if task["status"] == "succeeded"
+            else ""
+        )
 
     if task["status"] == "succeeded":
         output = sanitized_task_output(runtime, task)
@@ -1631,6 +1751,18 @@ async def deliver_outbox_item(
             error="obsolete task generation",
         )
         return
+    if (
+        is_relationship_nudge_task(task)
+        and bool(item.get("is_summary"))
+        and not relationship_nudge_is_current(runtime, task)
+    ):
+        runtime.store.mark_outbox_state(
+            item["id"],
+            "suppressed",
+            error="relationship nudge was superseded by newer activity",
+        )
+        finish_relationship_nudge_delivery(runtime, task, item, "suppressed")
+        return
 
     validated_artifact = None
     if item["kind"] != "text":
@@ -1657,6 +1789,7 @@ async def deliver_outbox_item(
                     operation="artifact preflight",
                 ),
             )
+            finish_relationship_nudge_delivery(runtime, task, item, "failed")
             return
 
     try:
@@ -1686,6 +1819,19 @@ async def deliver_outbox_item(
             "suppressed",
             error="outbound barrier blocked delivery",
         )
+        finish_relationship_nudge_delivery(runtime, task, item, "suppressed")
+        return
+    if (
+        is_relationship_nudge_task(task)
+        and bool(item.get("is_summary"))
+        and not relationship_nudge_is_current(runtime, task)
+    ):
+        runtime.store.mark_outbox_state(
+            item["id"],
+            "suppressed",
+            error="relationship nudge was superseded before submission",
+        )
+        finish_relationship_nudge_delivery(runtime, task, item, "suppressed")
         return
 
     sending = runtime.store.mark_outbox_sending(item["id"])
@@ -1778,6 +1924,8 @@ async def deliver_outbox_item(
         else:
             state = "failed"
         runtime.store.mark_outbox_state(item["id"], state, error=error)
+        if state in {"failed", "suppressed"}:
+            finish_relationship_nudge_delivery(runtime, task, item, state)
         log_event(
             "outbox_delivery_error",
             task_id=task["id"],
@@ -1824,6 +1972,7 @@ async def deliver_outbox_item(
         confirmed_local_id=result.get("confirmed_local_id"),
         media_fingerprint=str(result.get("media_fingerprint") or ""),
     )
+    finish_relationship_nudge_delivery(runtime, task, item, final_state)
     log_event(
         "outbox_item_terminal",
         task_id=task["id"],
@@ -1872,6 +2021,10 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
             if current is not None:
                 prepare_task_outbox(runtime, current)
         return completed
+
+    if is_relationship_nudge_task(task):
+        await execute_relationship_nudge(runtime, task, finish)
+        return
 
     limit_reason = budget_limit_reason(settings, runtime.store)
     if limit_reason:
@@ -1947,7 +2100,8 @@ async def execute_task(runtime: Runtime, task: dict[str, Any]) -> None:
             trusted_envelope
             + (
                 "\n当前部署只开启群聊。服务端已禁用所有工具、终端、文件、浏览器、"
-                "检索、任务和主动发送能力。只回答用户问题，不要声称执行了外部工作。"
+                "检索和任务能力。主动文字只由 Adapter 的独立节奏服务处理；只回答用户问题，"
+                "不要声称执行了外部工作。"
                 if settings.chat_only_mode
                 else "\n这是排队执行的普通对话，不是生产工具任务。服务端已禁用所有工具、"
                 "终端、文件、浏览器和主动发送能力。只回答用户问题，不得声称"
@@ -2520,6 +2674,7 @@ def schedule_relationship_summary(
         source_local_id = trusted_source_local_id(payload)
     visible_message = visible_user_request(message or "")
     force_summary = has_relationship_signal(visible_message)
+    jealousy_signal = has_relationship_jealousy_signal(visible_message)
     try:
         profile, should_summarize = runtime.store.record_relationship_interaction(
             room_id,
@@ -2527,6 +2682,19 @@ def schedule_relationship_summary(
             source_local_id=source_local_id,
             force_summary=force_summary,
         )
+        if runtime.settings.relationship_proactive_enabled:
+            state = runtime.store.record_relationship_proactive_interaction(
+                room_id,
+                sender_id,
+                source_local_id=source_local_id,
+                jealousy_signal=jealousy_signal,
+            )
+            if state is not None:
+                runtime.counters["relationship_nudges_scheduled_total"] = (
+                    runtime.counters.get("relationship_nudges_scheduled_total", 0)
+                    + 1
+                )
+                runtime.wake_event.set()
         if not should_summarize:
             return
         job = runtime.store.enqueue_relationship_summary(
@@ -2801,9 +2969,365 @@ async def run_relationship_summary(
         runtime.wake_event.set()
 
 
+def relationship_nudge_is_current(runtime: Runtime, task: dict[str, Any]) -> bool:
+    metadata = relationship_nudge_metadata(task)
+    if metadata is None:
+        return False
+    return runtime.store.is_current_relationship_nudge(
+        task["room_id"],
+        task["sender_id"],
+        generation=metadata["generation"],
+        request_id=metadata["request_id"],
+        task_id=task["id"],
+        room_activity_generation=metadata["room_activity_generation"],
+    )
+
+
+def finish_relationship_nudge_delivery(
+    runtime: Runtime,
+    task: dict[str, Any],
+    item: dict[str, Any],
+    state: str,
+) -> None:
+    if not item.get("is_summary"):
+        return
+    metadata = relationship_nudge_metadata(task)
+    if metadata is None:
+        return
+    if runtime.store.finish_relationship_nudge(
+        task["room_id"],
+        task["sender_id"],
+        generation=metadata["generation"],
+        task_id=task["id"],
+        outcome=state,
+        day=relationship_proactive_day(runtime.settings),
+    ):
+        key = "relationship_nudges_%s_total" % state
+        runtime.counters[key] = runtime.counters.get(key, 0) + 1
+        log_event(
+            "relationship_nudge_terminal",
+            task_id=task["id"],
+            room_id=task["room_id"],
+            sender_id=task["sender_id"],
+            state=state,
+        )
+        if (
+            state in {"confirmed", "uncertain"}
+            and runtime.settings.group_listener_enabled
+            and int(task.get("source_local_id") or 0) > 0
+        ):
+            # A proactive line is still a real bot turn for passive pacing.
+            runtime.store.mark_group_listener_reply(
+                task["room_id"],
+                int(task["source_local_id"]),
+            )
+
+
+def queue_due_relationship_nudge(runtime: Runtime) -> bool:
+    settings = runtime.settings
+    if not (
+        settings.relationship_memory_enabled
+        and settings.relationship_proactive_enabled
+    ):
+        return False
+    candidate = runtime.store.claim_due_relationship_nudge(
+        now=time.time(),
+        day=relationship_proactive_day(settings),
+        idle_seconds=settings.relationship_proactive_idle_seconds,
+        min_interactions=settings.relationship_proactive_min_interactions,
+        max_per_member_day=settings.relationship_proactive_max_per_member_day,
+        max_per_room_day=settings.relationship_proactive_max_per_room_day,
+    )
+    if candidate is None:
+        return False
+    source_local_id = int(candidate.get("proactive_source_local_id") or 0)
+    request_id = str(candidate["request_id"])
+    nudge_generation = int(candidate["nudge_generation"])
+    room_activity_generation = int(
+        candidate.get("room_activity_generation") or 0
+    )
+    if source_local_id <= 0 or room_activity_generation <= 0:
+        runtime.store.abandon_relationship_nudge_claim(
+            str(candidate["room_id"]),
+            str(candidate["sender_id"]),
+            generation=nudge_generation,
+            request_id=request_id,
+            outcome="invalid_source",
+        )
+        return False
+    mood = (
+        "playful_jealous"
+        if bool(candidate.get("pending_jealousy"))
+        and int(candidate.get("reciprocity") or 0) >= 1
+        else (
+            "warm"
+            if int(candidate.get("reciprocity") or 0) >= 1
+            else "casual"
+        )
+    )
+    digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:24]
+    try:
+        task, created = runtime.store.create_task(
+            request_id=request_id,
+            request_hash=request_hash(
+                {
+                    "mode": "relationship_nudge",
+                    "request_id": request_id,
+                    "source_local_id": source_local_id,
+                    "generation": nudge_generation,
+                    "room_activity_generation": room_activity_generation,
+                }
+            ),
+            room_id=str(candidate["room_id"]),
+            sender_id=str(candidate["sender_id"]),
+            session_id="wechat-relationship-nudge:" + digest,
+            kind="chat",
+            prompt="有个熟人一段时间没说话，写一句自然的主动开场。",
+            max_attempts=1,
+            source_local_id=source_local_id,
+            source_msg_svr_id="",
+            plan={
+                "mode": "relationship_nudge",
+                "nudge_generation": nudge_generation,
+                "nudge_request_id": request_id,
+                "nudge_room_activity_generation": room_activity_generation,
+                "nudge_jealousy": mood == "playful_jealous",
+                "nudge_mood": mood,
+            },
+            delivery_policy="text_only",
+            outbox_required=False,
+        )
+    except Exception:
+        runtime.store.abandon_relationship_nudge_claim(
+            str(candidate["room_id"]),
+            str(candidate["sender_id"]),
+            generation=nudge_generation,
+            request_id=request_id,
+            outcome="task_create_failed",
+        )
+        raise
+    if task is None:
+        runtime.store.abandon_relationship_nudge_claim(
+            str(candidate["room_id"]),
+            str(candidate["sender_id"]),
+            generation=nudge_generation,
+            request_id=request_id,
+            outcome="task_missing",
+        )
+        return False
+    attached = runtime.store.attach_relationship_nudge_task(
+        str(candidate["room_id"]),
+        str(candidate["sender_id"]),
+        generation=nudge_generation,
+        request_id=request_id,
+        task_id=task["id"],
+    )
+    if not attached:
+        runtime.store.complete(
+            task["id"],
+            "canceled",
+            generation=int(task.get("generation") or 1),
+        )
+        runtime.store.abandon_relationship_nudge_claim(
+            str(candidate["room_id"]),
+            str(candidate["sender_id"]),
+            generation=nudge_generation,
+            request_id=request_id,
+            outcome="task_attach_failed",
+        )
+        return False
+    if task["status"] in {"succeeded", "failed", "canceled"}:
+        runtime.store.finish_relationship_nudge(
+            task["room_id"],
+            task["sender_id"],
+            generation=nudge_generation,
+            task_id=task["id"],
+            outcome="recovered",
+            day=relationship_proactive_day(settings),
+        )
+        return False
+    runtime.counters["relationship_nudges_queued_total"] = (
+        runtime.counters.get("relationship_nudges_queued_total", 0) + 1
+    )
+    log_event(
+        "relationship_nudge_queued",
+        task_id=task["id"],
+        room_id=task["room_id"],
+        sender_id=task["sender_id"],
+        generation=nudge_generation,
+        created=created,
+        mood=mood,
+    )
+    runtime.wake_event.set()
+    return True
+
+
+async def execute_relationship_nudge(
+    runtime: Runtime,
+    task: dict[str, Any],
+    finish,
+) -> None:
+    metadata = relationship_nudge_metadata(task)
+    if metadata is None:
+        finish("canceled")
+        return
+    day = relationship_proactive_day(runtime.settings)
+
+    def close_without_delivery(outcome: str, status: str = "canceled") -> None:
+        finish(status)
+        runtime.store.finish_relationship_nudge(
+            task["room_id"],
+            task["sender_id"],
+            generation=metadata["generation"],
+            task_id=task["id"],
+            outcome=outcome,
+            day=day,
+        )
+
+    if not (
+        runtime.settings.relationship_memory_enabled
+        and runtime.settings.relationship_proactive_enabled
+        and relationship_nudge_is_current(runtime, task)
+    ):
+        close_without_delivery("canceled")
+        return
+    if runtime.store.is_cancel_requested(task["id"]):
+        close_without_delivery("canceled")
+        return
+    limit_reason = budget_limit_reason(runtime.settings, runtime.store)
+    if limit_reason:
+        close_without_delivery("failed", "failed")
+        return
+    profile = runtime.store.get_relationship_profile(
+        task["room_id"],
+        task["sender_id"],
+    )
+    if (
+        profile is None
+        or bool(profile.get("flirt_opt_out"))
+        or bool(profile.get("proactive_opt_out"))
+    ):
+        close_without_delivery("canceled")
+        return
+    plan = task.get("plan") or {}
+    mood = str(plan.get("nudge_mood") or "casual")
+    if mood not in {"casual", "warm", "playful_jealous"}:
+        mood = "casual"
+    request = json.dumps(
+        {
+            "preferred_name": str(profile.get("preferred_name") or ""),
+            "familiarity": int(profile.get("familiarity") or 0),
+            "reciprocity": int(profile.get("reciprocity") or 0),
+            "banter_style": str(profile.get("banter_style") or "neutral"),
+            "notes": [
+                {"kind": note.get("kind"), "value": note.get("value")}
+                for note in list(profile.get("notes") or [])[:4]
+            ],
+            "mood": mood,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        await runtime.hermes.ensure_session(
+            task["session_id"],
+            "WeChat relationship nudge",
+            RELATIONSHIP_NUDGE_SYSTEM_PROMPT,
+        )
+        raw_reply, usage = await asyncio.wait_for(
+            runtime.hermes.chat(
+                task["session_id"],
+                request,
+                RELATIONSHIP_NUDGE_SYSTEM_PROMPT,
+                timeout_seconds=runtime.settings.relationship_proactive_timeout_seconds,
+                disable_tools=True,
+            ),
+            timeout=runtime.settings.relationship_proactive_timeout_seconds,
+        )
+    except (RemoteAPIError, TimeoutError, asyncio.TimeoutError) as exc:
+        log_event(
+            "relationship_nudge_generation_failed",
+            task_id=task["id"],
+            room_id=task["room_id"],
+            sender_id=task["sender_id"],
+            error_type=type(exc).__name__,
+        )
+        close_without_delivery("failed", "failed")
+        return
+
+    runtime.store.record_usage(
+        task["id"],
+        task["session_id"],
+        usage,
+        runtime.settings.input_token_cost_per_million,
+        runtime.settings.output_token_cost_per_million,
+        input_text=request + "\n" + RELATIONSHIP_NUDGE_SYSTEM_PROMPT,
+        output_text=raw_reply,
+    )
+    clean_reply, violations = strip_legacy_delivery_markers(raw_reply)
+    if violations:
+        runtime.store.add_task_event(
+            task["id"],
+            "forbidden_media_marker_removed",
+            "count=%d" % violations,
+        )
+    reply = compact_relationship_nudge_reply(clean_reply)
+    if not reply:
+        close_without_delivery("skipped")
+        return
+    if not relationship_nudge_is_current(runtime, task):
+        close_without_delivery("canceled")
+        return
+    runtime.store.set_task_outbox_required(
+        task["id"],
+        True,
+        generation=int(task.get("generation") or 1),
+    )
+    if not finish("succeeded", output=reply, usage=usage):
+        runtime.store.finish_relationship_nudge(
+            task["room_id"],
+            task["sender_id"],
+            generation=metadata["generation"],
+            task_id=task["id"],
+            outcome="canceled",
+            day=day,
+        )
+        return
+    runtime.counters["relationship_nudges_generated_total"] = (
+        runtime.counters.get("relationship_nudges_generated_total", 0) + 1
+    )
+    log_event(
+        "relationship_nudge_generated",
+        task_id=task["id"],
+        room_id=task["room_id"],
+        sender_id=task["sender_id"],
+        mood=mood,
+        reply_chars=len(reply),
+    )
+
+
 async def worker_loop(runtime: Runtime) -> None:
     while not runtime.stopping:
         runtime.store.expire_blocked_tasks()
+        try:
+            repaired_nudges = runtime.store.recover_relationship_nudges()
+            if repaired_nudges:
+                log_event(
+                    "relationship_nudge_reconciled",
+                    repaired=repaired_nudges,
+                )
+        except Exception as exc:
+            runtime.counters["relationship_nudges_reconcile_failed_total"] = (
+                runtime.counters.get(
+                    "relationship_nudges_reconcile_failed_total",
+                    0,
+                )
+                + 1
+            )
+            LOG.warning(
+                "relationship nudge reconciliation failed error_type=%s",
+                type(exc).__name__,
+            )
         terminal = runtime.store.next_terminal_without_outbox()
         if terminal is not None:
             prepare_task_outbox(runtime, terminal)
@@ -2949,6 +3473,27 @@ async def worker_loop(runtime: Runtime) -> None:
                 )
                 continue
 
+        if (
+            runtime.settings.relationship_memory_enabled
+            and runtime.settings.relationship_proactive_enabled
+            and not runtime.execution_lock.locked()
+        ):
+            try:
+                if queue_due_relationship_nudge(runtime):
+                    continue
+            except Exception as exc:
+                runtime.counters["relationship_nudges_schedule_failed_total"] = (
+                    runtime.counters.get(
+                        "relationship_nudges_schedule_failed_total",
+                        0,
+                    )
+                    + 1
+                )
+                LOG.warning(
+                    "relationship nudge scheduling failed error_type=%s",
+                    type(exc).__name__,
+                )
+
         try:
             await asyncio.wait_for(
                 runtime.wake_event.wait(),
@@ -2986,6 +3531,9 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 recovered_relationship_summaries = (
                     runtime.store.recover_relationship_summary_jobs()
                 )
+                recovered_relationship_nudges = (
+                    runtime.store.recover_relationship_nudges()
+                )
                 runtime.relationship_summary_payloads.clear()
                 recovered_outbox = await reconcile_outbox_recovery(runtime)
                 expired = runtime.store.expire_blocked_tasks()
@@ -2999,6 +3547,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                     recovered_inbound=recovered_inbound,
                     recovered_tasks=recovered_tasks,
                     recovered_relationship_summaries=recovered_relationship_summaries,
+                    recovered_relationship_nudges=recovered_relationship_nudges,
                     recovered_outbox=recovered_outbox,
                     expired_blocked_tasks=expired,
                 )
@@ -3090,6 +3639,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
         task_counts = runtime.store.task_counts()
         outbox_counts = runtime.store.outbox_counts()
         relationship_summary_counts = runtime.store.relationship_summary_counts()
+        relationship_proactive_counts = runtime.store.relationship_proactive_counts()
         usage = runtime.store.today_usage(runtime.settings.budget_timezone)
         lines = [
             "# TYPE wechat_hermes_ready gauge",
@@ -3124,6 +3674,15 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 "# TYPE wechat_hermes_relationship_memory_enabled gauge",
                 "wechat_hermes_relationship_memory_enabled %d"
                 % int(runtime.settings.relationship_memory_enabled),
+                "# TYPE wechat_hermes_relationship_proactive_enabled gauge",
+                "wechat_hermes_relationship_proactive_enabled %d"
+                % int(runtime.settings.relationship_proactive_enabled),
+                "# TYPE wechat_hermes_relationship_proactive_profiles gauge",
+                "wechat_hermes_relationship_proactive_profiles %d"
+                % relationship_proactive_counts["profiles"],
+                "# TYPE wechat_hermes_relationship_proactive_active gauge",
+                "wechat_hermes_relationship_proactive_active %d"
+                % relationship_proactive_counts["active"],
                 "# TYPE wechat_hermes_relationship_summary_active gauge",
                 "wechat_hermes_relationship_summary_active %d"
                 % int(snapshot["relationship_memory"]["summary_active"]),
@@ -3169,6 +3728,30 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 "# TYPE wechat_hermes_relationship_summary_canceled_total counter",
                 "wechat_hermes_relationship_summary_canceled_total %d"
                 % runtime.counters.get("relationship_summary_canceled_total", 0),
+                "# TYPE wechat_hermes_relationship_nudges_scheduled_total counter",
+                "wechat_hermes_relationship_nudges_scheduled_total %d"
+                % runtime.counters.get("relationship_nudges_scheduled_total", 0),
+                "# TYPE wechat_hermes_relationship_nudges_queued_total counter",
+                "wechat_hermes_relationship_nudges_queued_total %d"
+                % runtime.counters.get("relationship_nudges_queued_total", 0),
+                "# TYPE wechat_hermes_relationship_nudges_generated_total counter",
+                "wechat_hermes_relationship_nudges_generated_total %d"
+                % runtime.counters.get("relationship_nudges_generated_total", 0),
+                "# TYPE wechat_hermes_relationship_nudges_confirmed_total counter",
+                "wechat_hermes_relationship_nudges_confirmed_total %d"
+                % runtime.counters.get("relationship_nudges_confirmed_total", 0),
+                "# TYPE wechat_hermes_relationship_nudges_schedule_failed_total counter",
+                "wechat_hermes_relationship_nudges_schedule_failed_total %d"
+                % runtime.counters.get(
+                    "relationship_nudges_schedule_failed_total",
+                    0,
+                ),
+                "# TYPE wechat_hermes_relationship_nudges_reconcile_failed_total counter",
+                "wechat_hermes_relationship_nudges_reconcile_failed_total %d"
+                % runtime.counters.get(
+                    "relationship_nudges_reconcile_failed_total",
+                    0,
+                ),
                 "# TYPE wechat_hermes_group_listener_replies_total counter",
                 "wechat_hermes_group_listener_replies_total %d"
                 % runtime.counters.get("group_listener_replies_total", 0),
@@ -3280,6 +3863,38 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if cached is not None:
             return ChatResponse(**cached)
+
+        if (
+            runtime.settings.relationship_memory_enabled
+            and runtime.settings.relationship_proactive_enabled
+            and identity.scope == "room"
+            and room_id is not None
+            and not diagnostic_session
+        ):
+            try:
+                runtime.store.observe_relationship_room_activity(
+                    room_id,
+                    source_local_id=source_local_id,
+                )
+                if source_local_id is not None:
+                    invalidated_nudge = runtime.store.observe_relationship_proactive_activity(
+                        room_id,
+                        sender_id,
+                        source_local_id=source_local_id,
+                        jealousy_signal=has_relationship_jealousy_signal(
+                            visible_user_request(payload.message)
+                        ),
+                    )
+                    if invalidated_nudge:
+                        runtime.wake_event.set()
+                runtime.wake_event.set()
+            except Exception as exc:
+                LOG.warning(
+                    "relationship proactive activity update failed room_id=%s sender_id=%s error_type=%s",
+                    room_id,
+                    sender_id,
+                    type(exc).__name__,
+                )
 
         # Relationship summaries are deliberately low priority. A real inbound
         # message always wins over a pending or running background summary.
