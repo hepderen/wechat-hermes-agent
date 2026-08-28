@@ -353,7 +353,7 @@ def test_record_companion_ingress_isolated_by_room_and_only_injects_prior_turns(
     assert [item["sender_name"] for item in runtime.store.list_companion_timeline("other@chatroom")] == ["隔壁群友"]
 
 
-def test_bot_reply_enters_timeline_once_via_canonical_bridge_context(tmp_path):
+def test_bot_reply_is_available_immediately_and_canonical_echo_is_deduplicated(tmp_path):
     runtime = make_runtime(tmp_path)
     now = time.time()
     first = ChatRequest(
@@ -377,6 +377,11 @@ def test_bot_reply_enters_timeline_once_via_canonical_bridge_context(tmp_path):
         ChatResponse(reply="这条是小格的真实回复", status="succeeded"),
         diagnostic_session=False,
     )
+    immediate = runtime.store.list_companion_timeline(ROOM_ID)
+    assert [(item["local_id"], item["direction"]) for item in immediate] == [
+        (10, "incoming"),
+        (10, "outgoing"),
+    ]
 
     second = ChatRequest(
         message="第二句",
@@ -406,7 +411,7 @@ def test_bot_reply_enters_timeline_once_via_canonical_bridge_context(tmp_path):
     timeline = runtime.store.list_companion_timeline(ROOM_ID)
     assert [(item["local_id"], item["direction"]) for item in timeline] == [
         (10, "incoming"),
-        (11, "outgoing"),
+        (10, "outgoing"),
         (12, "incoming"),
     ]
     assert sum(item["text"] == "这条是小格的真实回复" for item in timeline) == 1

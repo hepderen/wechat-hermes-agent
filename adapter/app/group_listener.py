@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
 import time
 from dataclasses import dataclass
@@ -141,6 +142,8 @@ def passive_listener_turn_prompt(kind: str) -> str:
 %s
 先判断你的回复能否补充具体观点、接住上下文，或让这段对话更自然；只有确实值得说时才回复。
 不要为了刷存在感复述、附和、点评每个人，也不要说自己在监听或要求别人 @ 你。
+先看短期群聊时间线中自己最近说过的话；不要连续解释自己的人格、语气或是否“正常”。
+没有新内容时保持安静，不要换个说法重复上一句。
 不适合插话时，严格只输出 %s，不能带标点、解释或其他文字。适合回复时直接像群成员一样说话。""" % (
         trigger,
         NO_REPLY_MARKER,
@@ -153,3 +156,38 @@ def listener_reply_or_silence(reply: str) -> str:
     if value == NO_REPLY_MARKER:
         return ""
     return value.replace(NO_REPLY_MARKER, "").strip()
+
+
+def _reply_repetition_key(value: object) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def repeats_recent_listener_reply(
+    reply: str,
+    timeline: Iterable[Mapping[str, object]],
+    *,
+    limit: int = 4,
+) -> bool:
+    """Catch near-identical passive replies if the model ignores its silence cue."""
+    candidate = _reply_repetition_key(reply)
+    if len(candidate) < 12:
+        return False
+    checked = 0
+    for item in reversed(list(timeline)):
+        if str(item.get("direction") or "").strip().lower() != "outgoing":
+            continue
+        previous = _reply_repetition_key(item.get("text"))
+        if len(previous) < 12:
+            continue
+        checked += 1
+        if candidate == previous:
+            return True
+        shorter = min(len(candidate), len(previous))
+        if (
+            shorter >= 16
+            and SequenceMatcher(None, candidate, previous).ratio() >= 0.90
+        ):
+            return True
+        if checked >= max(1, int(limit)):
+            break
+    return False

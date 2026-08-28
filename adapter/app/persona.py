@@ -189,6 +189,7 @@ PERSONA_CHAT_ADAPTER = """角色卡由服务端以只读数据资源加载。
 PERSONA_TURN_PROMPT = """按角色卡的示范对话和当前群聊节奏写最终回复。
 - 首句直接接话、给判断或说真实状态，删掉客套开场、复述、标题、小结和无意义的主动延伸。
 - 短接话可以一句；正常互动自然写一到三个短段落。不要为了像人硬凑口头禅，也不要为了短而砍掉完整意思。
+- 短期群聊时间线会包含你自己最近说过的话。不要连续复用同一开场、反问、立场或自我解释；有人反复拿你的语气、人格或固定口癖做文章时，第一次简短接住就够了，之后转回具体话题，旁听场景没有新内容就安静。
 - 跟着对方语气和长度走。事实、身份、状态和限制必须照实；不能用玩笑掩盖未知或失败。"""
 
 PERSONA_TASK_PROMPT = """最终结果先说做成了什么，省掉接单过程、复述和客套话。
@@ -283,6 +284,44 @@ def _remove_machine_wrapping(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _reply_repetition_key(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def _deduplicate_repeated_reply_segments(value: str) -> str:
+    """Remove only exact, substantial repetitions inside one model reply."""
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", value)
+        if paragraph.strip()
+    ]
+    unique_paragraphs: list[str] = []
+    seen_paragraphs: set[str] = set()
+    for paragraph in paragraphs:
+        unique_sentences: list[str] = []
+        seen_sentences: set[str] = set()
+        for raw_sentence in re.split(r"(?<=[。！？!?.])", paragraph):
+            sentence = raw_sentence.strip()
+            if not sentence:
+                continue
+            marker = _reply_repetition_key(sentence)
+            if len(marker) >= 4 and marker in seen_sentences:
+                continue
+            if marker:
+                seen_sentences.add(marker)
+            unique_sentences.append(raw_sentence)
+        compact_paragraph = "".join(unique_sentences).strip()
+        marker = _reply_repetition_key(compact_paragraph)
+        if not compact_paragraph:
+            continue
+        if len(marker) >= 4 and marker in seen_paragraphs:
+            continue
+        if marker:
+            seen_paragraphs.add(marker)
+        unique_paragraphs.append(compact_paragraph)
+    return "\n\n".join(unique_paragraphs).strip()
+
+
 def _truncate_fragment(value: str, limit: int) -> str:
     fragment = value[:limit].rstrip()
     floor = max(1, int(limit * 0.55))
@@ -303,6 +342,7 @@ def compact_chat_reply(reply: str, message: str) -> str:
     value = _remove_machine_wrapping(original)
     if not value:
         value = original
+    value = _deduplicate_repeated_reply_segments(value)
 
     limit = EXPANDED_REPLY_MAX_CHARS if expanded else SHORT_REPLY_MAX_CHARS
     paragraphs = [

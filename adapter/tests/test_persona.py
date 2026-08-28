@@ -215,6 +215,14 @@ def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
     reply = "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。\n\n第四段不该保留。"
     assert compact_chat_reply(reply, "你怎么看") == "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。"
     assert len(compact_chat_reply("x" * 900, "随便聊")) <= SHORT_REPLY_MAX_CHARS + 1
+    assert compact_chat_reply(
+        "这句我接住了。这句我接住了。\n\n别再熬了。\n\n别再熬了。",
+        "随便聊",
+    ) == "这句我接住了。\n\n别再熬了。"
+    assert compact_chat_reply(
+        "Same thought. Same thought. New point.",
+        "Keep it short",
+    ) == "Same thought. New point."
 
 
 def test_card_group_greetings_are_loaded_only_as_a_bounded_proactive_reference():

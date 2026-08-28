@@ -41,6 +41,7 @@ from .group_listener import (
     decide_group_listener,
     listener_reply_or_silence,
     passive_listener_turn_prompt,
+    repeats_recent_listener_reply,
 )
 from .media import (
     ArtifactSigner,
@@ -923,7 +924,7 @@ def record_group_listener_bot_reply(
     *,
     diagnostic_session: bool,
 ) -> None:
-    """Update passive pacing after a Bridge-owned reply is accepted."""
+    """Persist an accepted Bridge-owned reply before the database echo arrives."""
     if (
         diagnostic_session
         or room_id is None
@@ -932,10 +933,26 @@ def record_group_listener_bot_reply(
         or response.status == "ignored"
     ):
         return
-    # The Bridge sends the synchronous reply and later returns the actual
-    # outgoing database record in group_context. Writing it here as well would
-    # create a synthetic duplicate with a different local ID, so timeline
-    # history only accepts the canonical structured record from the Bridge.
+    # The Bridge sends this response after returning from /api/chat. Writing
+    # through here prevents the next turn from missing the bot's own reply if
+    # the structured outgoing record has not appeared in its database yet.
+    # Store-level reconciliation suppresses the later canonical echo.
+    try:
+        runtime.store.record_companion_bot_reply(
+            room_id,
+            source_local_id,
+            response.reply,
+        )
+    except Exception as exc:
+        runtime.counters["companion_bot_reply_write_failed_total"] = (
+            runtime.counters.get("companion_bot_reply_write_failed_total", 0) + 1
+        )
+        LOG.warning(
+            "companion bot reply write failed room_id=%s source_local_id=%s error_type=%s",
+            room_id,
+            source_local_id,
+            type(exc).__name__,
+        )
     if runtime.settings.group_listener_enabled:
         runtime.store.mark_group_listener_reply(room_id, source_local_id)
         runtime.counters["group_listener_replies_total"] = (
@@ -4660,6 +4677,23 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                             )
                             if passive_listener_kind:
                                 reply = listener_reply_or_silence(reply)
+                                if (
+                                    reply
+                                    and passive_listener_kind != "addressed"
+                                    and repeats_recent_listener_reply(
+                                        reply,
+                                        companion_timeline,
+                                    )
+                                ):
+                                    log_event(
+                                        "group_listener_repetitive_reply_suppressed",
+                                        request_id=req_id,
+                                        room_id=room_id,
+                                        sender_id=sender_id,
+                                        source_local_id=source_local_id,
+                                        kind=passive_listener_kind,
+                                    )
+                                    reply = ""
                             return (
                                 reply,
                                 raw_reply,

@@ -40,6 +40,9 @@ COMPANION_TIMELINE_MAX_MESSAGES = 120
 COMPANION_CONTEXT_MESSAGES = 16
 COMPANION_ROOM_STATE_TTL_SECONDS = 30 * 24 * 60 * 60
 COMPANION_TIMELINE_TEXT_CHARS = 4_000
+COMPANION_SYNTHETIC_OUTGOING_PREFIX = "out:"
+COMPANION_SYNTHETIC_OUTGOING_MATCH_SECONDS = 10 * 60
+COMPANION_SYNTHETIC_OUTGOING_MAX_LOCAL_ID_GAP = 64
 OUTBOX_STATES = {
     "prepared",
     "sending",
@@ -3978,6 +3981,37 @@ class AdapterStore:
         ).fetchone()
         return int(row["count"] or 0) if row is not None else 0
 
+    @staticmethod
+    def _matches_recent_synthetic_outgoing(
+        connection: sqlite3.Connection,
+        room_id: str,
+        local_id: int,
+        text: str,
+        now: float,
+    ) -> bool:
+        """Avoid recording a Bridge-confirmed reply twice after local write-through."""
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM companion_timeline
+            WHERE room_id=?
+              AND direction='outgoing'
+              AND event_id GLOB 'out:*:*'
+              AND text=?
+              AND local_id BETWEEN ? AND ?
+              AND created_at >= ?
+            LIMIT 1
+            """,
+            (
+                room_id,
+                text,
+                max(1, int(local_id) - COMPANION_SYNTHETIC_OUTGOING_MAX_LOCAL_ID_GAP),
+                int(local_id),
+                now - COMPANION_SYNTHETIC_OUTGOING_MATCH_SECONDS,
+            ),
+        ).fetchone()
+        return row is not None
+
     def record_companion_timeline(
         self,
         room_id: str,
@@ -4023,26 +4057,43 @@ class AdapterStore:
         with self._lock, closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._purge_expired_companion(connection, current)
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO companion_timeline(
-                    room_id, event_id, local_id, sender_id, sender_name,
-                    direction, text, message_timestamp, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    room,
-                    event,
-                    sequence,
-                    sender,
-                    name,
-                    direction_value,
-                    text_value,
-                    message_timestamp,
-                    current,
-                ),
+            is_synthetic_outgoing = event.startswith(
+                COMPANION_SYNTHETIC_OUTGOING_PREFIX
             )
-            inserted = cursor.rowcount == 1
+            canonical_duplicate = bool(
+                direction_value == "outgoing"
+                and not is_synthetic_outgoing
+                and self._matches_recent_synthetic_outgoing(
+                    connection,
+                    room,
+                    sequence,
+                    text_value,
+                    current,
+                )
+            )
+            if canonical_duplicate:
+                inserted = False
+            else:
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO companion_timeline(
+                        room_id, event_id, local_id, sender_id, sender_name,
+                        direction, text, message_timestamp, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        room,
+                        event,
+                        sequence,
+                        sender,
+                        name,
+                        direction_value,
+                        text_value,
+                        message_timestamp,
+                        current,
+                    ),
+                )
+                inserted = cursor.rowcount == 1
             connection.execute(
                 """
                 DELETE FROM companion_timeline

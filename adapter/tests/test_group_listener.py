@@ -5,6 +5,7 @@ from app.group_listener import (
     classify_group_message,
     decide_group_listener,
     listener_reply_or_silence,
+    repeats_recent_listener_reply,
 )
 from app.store import AdapterStore
 
@@ -96,6 +97,23 @@ def test_plain_name_bypasses_passive_throttle_but_not_message_type_filter():
 def test_silence_marker_never_becomes_outbound_text():
     assert listener_reply_or_silence(NO_REPLY_MARKER) == ""
     assert listener_reply_or_silence("  这个我有点不同意。  ") == "这个我有点不同意。"
+
+
+def test_passive_listener_suppresses_near_identical_recent_reply():
+    timeline = [
+        {
+            "direction": "outgoing",
+            "text": "这个话题别急着下结论，先把关键条件说清楚。",
+        }
+    ]
+    assert repeats_recent_listener_reply(
+        "这个话题先别急着下结论，把关键条件说清楚再聊。",
+        timeline,
+    )
+    assert not repeats_recent_listener_reply(
+        "那今晚还打不打游戏？",
+        timeline,
+    )
 
 
 def test_listener_state_survives_restart_and_only_counts_each_message_once(tmp_path):

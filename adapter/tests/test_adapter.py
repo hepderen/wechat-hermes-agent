@@ -687,6 +687,51 @@ def test_passive_listener_silence_marker_returns_ignored_without_resetting_pacin
     assert state["turns_since_reply"] == 1
 
 
+def test_passive_listener_suppresses_a_repeated_model_reply_from_timeline(tmp_path):
+    runtime = make_runtime(
+        tmp_path,
+        group_listener_enabled=True,
+        group_listener_min_reply_gap_seconds=0,
+        group_listener_min_turns_between_replies=1,
+    )
+    runtime.store.record_companion_bot_reply(
+        ROOM_ID,
+        500,
+        "这个话题别急着下结论，先把关键条件说清楚。",
+    )
+
+    calls = []
+
+    async def repetitive_chat(*_args, **_kwargs):
+        calls.append(True)
+        return (
+            "这个话题先别急着下结论，把关键条件说清楚再聊。",
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    runtime.hermes.chat = repetitive_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "这个事到底怎么处理？",
+                "request_id": "passive-repetition",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 501,
+                "msg_svr_id": "passive-repetition-501",
+            },
+        )
+
+    assert response.json()["reply"] == ""
+    assert response.json()["status"] == "ignored"
+    assert response.json()["task_id"] is None
+    assert len(calls) == 1
+    state = runtime.store.get_group_listener_state(ROOM_ID)
+    assert state is not None
+    assert state["last_reply_local_id"] is None
+
+
 def test_real_mention_bypasses_group_listener_pacing(tmp_path):
     runtime = make_runtime(
         tmp_path,
