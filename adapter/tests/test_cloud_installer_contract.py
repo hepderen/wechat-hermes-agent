@@ -130,7 +130,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "8"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "9"' in SCRIPT
     assert '"HERMES_WECHAT_CHAT_ONLY": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
@@ -250,7 +250,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=8" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=9" in example
         assert "HERMES_WECHAT_CHAT_ONLY=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
@@ -309,7 +309,7 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
     assert 'PREVIOUS_RELEASE_ID=${1:-}' in PERSONA_ROLLBACK
     assert 'EXPECTED_WECHAT_PID=${EXPECTED_WECHAT_PID:-}' in PERSONA_ROLLBACK
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "9"' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "10"' in PERSONA_ROLLBACK
     assert '"HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false"' in PERSONA_ROLLBACK
     assert "systemctl restart wechat-hermes-adapter.service" in PERSONA_ROLLBACK
     assert "wait_for_adapter_ready" in PERSONA_ROLLBACK

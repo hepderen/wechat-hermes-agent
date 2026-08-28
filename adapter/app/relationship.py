@@ -62,8 +62,6 @@ def parse_relationship_command(message: str) -> RelationshipCommand | None:
         return RelationshipCommand("proactive_on")
     if value in {"别主动找我", "不要主动找我", "少找我聊天"}:
         return RelationshipCommand("proactive_off")
-    if value in {"正常点", "正常一点", "收着点"}:
-        return RelationshipCommand("normal")
     return None
 
 

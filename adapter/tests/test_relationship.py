@@ -21,7 +21,11 @@ from app.main import (
     schedule_relationship_summary,
 )
 from app.policy import stable_session_id
-from app.relationship import MAX_RELATIONSHIP_NOTES, RELATIONSHIP_TTL_SECONDS
+from app.relationship import (
+    MAX_RELATIONSHIP_NOTES,
+    RELATIONSHIP_TTL_SECONDS,
+    parse_relationship_command,
+)
 from app.store import AdapterStore
 from tests.test_adapter import ROOM_ID, make_runtime, post_chat
 
@@ -152,20 +156,12 @@ def test_relationship_commands_require_a_real_address_and_rotate_room_session(tm
                 local_id=2,
             ),
         )
-        normal = post_chat(
-            client,
-            chat_payload(
-                "@小格 正常点",
-                request_id="relationship-normal",
-                local_id=3,
-            ),
-        )
         recalled = post_chat(
             client,
             chat_payload(
                 "@小格 你记得我什么",
                 request_id="relationship-recall",
-                local_id=4,
+                local_id=3,
             ),
         )
         forgotten = post_chat(
@@ -173,19 +169,45 @@ def test_relationship_commands_require_a_real_address_and_rotate_room_session(tm
             chat_payload(
                 "@小格 忘掉我",
                 request_id="relationship-forget",
-                local_id=5,
+                local_id=4,
             ),
         )
 
     assert ignored.json()["status"] == "ignored"
     assert enabled.json()["status"] == "succeeded"
-    assert normal.json()["reply"] == "行，正常聊。"
     assert recalled.json()["status"] == "succeeded"
     assert forgotten.json()["status"] == "succeeded"
     assert runtime.store.get_relationship_profile(ROOM_ID, "wxid_member") is None
     assert runtime.store.room_session_epoch(ROOM_ID) == 1
     assert effective_session_generation(runtime, ROOM_ID) == "1:r1"
     assert runtime.hermes.chat_calls == []
+
+
+def test_retired_style_switch_words_route_to_the_persona(tmp_path):
+    runtime = make_runtime(tmp_path)
+    for message in (
+        "正常点",
+        "认真点",
+        "退出老哥模式",
+        "贴吧老哥模式",
+        "锐评一下",
+    ):
+        assert parse_relationship_command(message) is None
+
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            chat_payload(
+                "@小格 正常点",
+                request_id="relationship-retired-style-switch",
+                local_id=1,
+            ),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["reply"] == "真实同步回复"
+    assert len(runtime.hermes.chat_calls) == 1
 
 
 def test_relationship_identity_cannot_be_overridden_by_message_text(tmp_path):

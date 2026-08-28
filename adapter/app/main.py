@@ -1330,20 +1330,6 @@ def handle_relationship_command(
         )
         runtime.wake_event.set()
         return ChatResponse(reply="行，空下来我会去找你。", status="succeeded")
-    if action == "normal":
-        runtime.store.set_relationship_flirt_opt_out(
-            room_id,
-            sender_id,
-            True,
-            source_local_id=source_local_id,
-        )
-        runtime.store.set_relationship_proactive_opt_out(
-            room_id,
-            sender_id,
-            True,
-            source_local_id=source_local_id,
-        )
-        return ChatResponse(reply="行，正常聊。", status="succeeded")
     return ChatResponse(reply="", status="ignored")
 
 

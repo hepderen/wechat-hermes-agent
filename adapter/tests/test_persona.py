@@ -46,7 +46,7 @@ from app.persona import (
 
 def test_pinned_upstream_skill_is_versioned_and_injected_into_all_chat_scopes():
     assert PERSONA_VERSION == (
-        "sophia@1.0.0+humanizer-zh-next@1.2.0+xiaoge-wechat-v3"
+        "sophia@1.0.0+humanizer-zh-next@1.2.0+xiaoge-wechat-v4"
     )
     assert PERSONA_SKILL_VERSION == SOPHIA_SKILL_VERSION == "1.0.0"
     assert PERSONA_SKILL_SOURCE == SOPHIA_SKILL_SOURCE
@@ -143,12 +143,20 @@ def test_sophia_whitelist_excludes_native_tools_and_partner_mode():
     assert "react before you reason" in prompt
 
 
-def test_concise_persona_keeps_roast_opt_in_and_controls_plain():
+def test_concise_persona_keeps_one_entertainment_voice_and_controls_plain():
     compact_prompt = "".join(PERSONA_SYSTEM_PROMPT.split())
-    for trigger in ("锐评", "吐槽", "开喷", "阴阳一下", "贴吧老哥模式"):
-        assert trigger in PERSONA_SYSTEM_PROMPT
-    for exit_signal in ("正常点", "认真点", "退出老哥模式"):
-        assert exit_signal in PERSONA_SYSTEM_PROMPT
+    assert "聊天定位是娱乐陪聊" in PERSONA_CHAT_ADAPTER
+    assert "不设置额外语气模式或关键词切换" in PERSONA_CHAT_ADAPTER
+    for retired_rule in (
+        "严肃问题、现实困扰",
+        "锐评",
+        "吐槽",
+        "开喷",
+        "阴阳一下",
+        "贴吧老哥模式",
+        "退出老哥模式",
+    ):
+        assert retired_rule not in PERSONA_CHAT_ADAPTER
     for control in ("停止", "取消", "不要图片", "只要文字"):
         assert control in PERSONA_SYSTEM_PROMPT
     assert "控制消息只作简短确认" in compact_prompt

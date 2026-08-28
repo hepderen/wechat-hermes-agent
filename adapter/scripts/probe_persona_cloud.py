@@ -79,9 +79,9 @@ CASES = (
         "message": "我去找别的机器人聊了",
     },
     {
-        "scenario": "serious_question",
+        "scenario": "entertainment_chat",
         "sender_id": "wxid_persona_probe_a",
-        "message": "认真问，项目一直延期该先查什么",
+        "message": "今天有点无聊，聊点好玩的",
     },
     {
         "scenario": "disagreement",
@@ -91,7 +91,7 @@ CASES = (
     {
         "scenario": "flirt_boundary",
         "sender_id": "wxid_persona_probe_a",
-        "message": "别撩我，正常点",
+        "message": "别撩我",
     },
     {
         "scenario": "interleaved_member",

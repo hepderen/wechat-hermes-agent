@@ -111,7 +111,7 @@ if metadata.st_uid != 0 or metadata.st_mode & 0o077:
     raise SystemExit("adapter environment must be a non-symlink root-private file")
 
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "9",
+    "HERMES_WECHAT_SESSION_GENERATION": "10",
     "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false",
 }
 lines = path.read_text(encoding="utf-8").splitlines()
