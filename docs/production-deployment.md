@@ -197,6 +197,49 @@ sudo WECHAT_PID=PID \
 
 首次正常用户请求作为生产烟雾测试，不自动向群发送测试内容。
 
+## 已部署服务升级
+
+已运行的实例更新 CCV3 人格时，不运行完整安装器。先将公开仓库固定到待发布提交，记录当下的 PID、哈希和 inode，再使用两个仅替换发布文件的脚本。它们不会重启微信、Chat API 或 Hermes Worker；任一步失败会恢复该服务的前一版本。
+
+~~~bash
+REPO=/var/lib/wechat-hermes/candidates/ccv3-RELEASE_ID
+COMMIT=FULL_40_CHARACTER_COMMIT
+RELEASE_ID=ccv3-SHORT_COMMIT
+
+# 从当前服务器读取，不能复用旧记录。
+EXPECTED_WECHAT_PID=$(pgrep -x wechat)
+EXPECTED_DB_STATE_SHA256=$(sudo sha256sum /home/ubuntu/linux-wechat-bot/db-state.json | awk '{print $1}')
+EXPECTED_SEND_STATE_SHA256=$(sudo sha256sum /home/ubuntu/.cache/wechat-chat-api/send-state.json | awk '{print $1}')
+EXPECTED_BOT_DB_SHA256=$(sudo sha256sum /opt/wechat-ai-bot/data/bot.db | awk '{print $1}')
+EXPECTED_DB_STATE_INODE=$(sudo stat -c '%d:%i' /home/ubuntu/linux-wechat-bot/db-state.json)
+EXPECTED_SEND_STATE_INODE=$(sudo stat -c '%d:%i' /home/ubuntu/.cache/wechat-chat-api/send-state.json)
+EXPECTED_BOT_DB_INODE=$(sudo stat -c '%d:%i' /opt/wechat-ai-bot/data/bot.db)
+
+sudo env SOURCE_ROOT="${REPO}/adapter" RELEASE_ID="${RELEASE_ID}" \
+  EXPECTED_SOURCE_COMMIT="${COMMIT}" \
+  EXPECTED_WECHAT_PID="${EXPECTED_WECHAT_PID}" \
+  EXPECTED_DB_STATE_SHA256="${EXPECTED_DB_STATE_SHA256}" \
+  EXPECTED_SEND_STATE_SHA256="${EXPECTED_SEND_STATE_SHA256}" \
+  EXPECTED_BOT_DB_SHA256="${EXPECTED_BOT_DB_SHA256}" \
+  EXPECTED_DB_STATE_INODE="${EXPECTED_DB_STATE_INODE}" \
+  EXPECTED_SEND_STATE_INODE="${EXPECTED_SEND_STATE_INODE}" \
+  EXPECTED_BOT_DB_INODE="${EXPECTED_BOT_DB_INODE}" \
+  bash "${REPO}/adapter/deploy/deploy_ccv3_adapter_release.sh"
+
+sudo env SOURCE_ROOT="${REPO}" RELEASE_ID="${RELEASE_ID}" \
+  EXPECTED_SOURCE_COMMIT="${COMMIT}" \
+  EXPECTED_WECHAT_PID="${EXPECTED_WECHAT_PID}" \
+  EXPECTED_DB_STATE_SHA256="${EXPECTED_DB_STATE_SHA256}" \
+  EXPECTED_SEND_STATE_SHA256="${EXPECTED_SEND_STATE_SHA256}" \
+  EXPECTED_BOT_DB_SHA256="${EXPECTED_BOT_DB_SHA256}" \
+  EXPECTED_DB_STATE_INODE="${EXPECTED_DB_STATE_INODE}" \
+  EXPECTED_SEND_STATE_INODE="${EXPECTED_SEND_STATE_INODE}" \
+  EXPECTED_BOT_DB_INODE="${EXPECTED_BOT_DB_INODE}" \
+  bash "${REPO}/chat-api/deploy/deploy_bridge_release.sh"
+~~~
+
+在两次切换后运行 adapter/scripts/smoke_cloud.py --read-only。该检查只读取健康状态、鉴权和工具目录，不会调用模型或向群发送任何内容。
+
 ## 运行检查
 
 ```bash

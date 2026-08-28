@@ -15,6 +15,17 @@ SSHD_HARDENING = (
     / "deploy"
     / "sshd-wechat-hermes.conf"
 ).read_text(encoding="utf-8")
+CCV3_ADAPTER_RELEASE = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "deploy_ccv3_adapter_release.sh"
+).read_text(encoding="utf-8")
+BRIDGE_RELEASE = (
+    Path(__file__).resolve().parents[2]
+    / "chat-api"
+    / "deploy"
+    / "deploy_bridge_release.sh"
+).read_text(encoding="utf-8")
 
 
 def test_sshd_hardening_disables_password_and_root_login():
@@ -310,6 +321,49 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
     assert "fixed character card source lock mismatch" in SCRIPT
     assert "--exclude 'skills/humanizer-zh-next'" in SCRIPT
     assert 'data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n")' in SCRIPT
+
+
+def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
+    assert "EXPECTED_SOURCE_COMMIT" in CCV3_ADAPTER_RELEASE
+    assert 'git -C "$SOURCE_ROOT" rev-parse HEAD' in CCV3_ADAPTER_RELEASE
+    assert "assert_ccv3_persona_resources" in CCV3_ADAPTER_RELEASE
+    assert "sophia@1.0.0+ccv3-xiaoge@1.0.0" in CCV3_ADAPTER_RELEASE
+    assert "skills/humanizer-zh-next" in CCV3_ADAPTER_RELEASE
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "10"' in CCV3_ADAPTER_RELEASE
+    assert (
+        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700"'
+        in CCV3_ADAPTER_RELEASE
+    )
+    assert (
+        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3"'
+        in CCV3_ADAPTER_RELEASE
+    )
+    assert (
+        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6"'
+        in CCV3_ADAPTER_RELEASE
+    )
+    assert "restoring previous Adapter release" in CCV3_ADAPTER_RELEASE
+    assert "systemctl restart wechat-hermes-adapter.service" in CCV3_ADAPTER_RELEASE
+    assert "systemctl restart hermes-worker.service" not in CCV3_ADAPTER_RELEASE
+    assert "systemctl restart wechat-chat-api.service" not in CCV3_ADAPTER_RELEASE
+    for protected in (
+        "/home/ubuntu/linux-wechat-bot/db-state.json",
+        "/home/ubuntu/.cache/wechat-chat-api/send-state.json",
+        "/opt/wechat-ai-bot/data/bot.db",
+    ):
+        assert protected in CCV3_ADAPTER_RELEASE
+
+
+def test_bridge_only_release_requires_a_ready_ccv3_adapter_and_preserves_state():
+    assert "EXPECTED_SOURCE_COMMIT" in BRIDGE_RELEASE
+    assert '"$SOURCE_ROOT/chat-api/db_bridge.py"' in BRIDGE_RELEASE
+    assert "sophia@1.0.0+ccv3-xiaoge@1.0.0" in BRIDGE_RELEASE
+    assert "Adapter is not CCV3-ready" in BRIDGE_RELEASE
+    assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED"' in BRIDGE_RELEASE
+    assert "restoring previous Bridge release" in BRIDGE_RELEASE
+    assert "systemctl restart linux-wechat-bridge.service" in BRIDGE_RELEASE
+    assert "systemctl restart wechat-chat-api.service" not in BRIDGE_RELEASE
+    assert "systemctl restart hermes-worker.service" not in BRIDGE_RELEASE
 
 
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
