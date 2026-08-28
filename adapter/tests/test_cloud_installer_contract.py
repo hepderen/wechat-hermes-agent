@@ -313,6 +313,7 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
     assert "https://github.com/kwaroran/character-card-spec-v3" in SCRIPT
     assert "f3a86af019fbd99f788f7a1155f399655b34ab35" in SCRIPT
     assert "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c" in SCRIPT
+    assert "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95" in SCRIPT
     assert "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4" in SCRIPT
     assert "https://github.com/sharbelxyz/sophia" in SCRIPT
     assert "f2cd448553d61aa3c2ea774dc7e2296f09d4b584" in SCRIPT

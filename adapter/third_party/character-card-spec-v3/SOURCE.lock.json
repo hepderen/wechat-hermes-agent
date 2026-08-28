@@ -7,7 +7,7 @@
   "reviewed_at": "2026-08-28",
   "runtime_mode": "json_only_safe_subset",
   "files": {
-    "LICENSE": "108ba896c939ccf7278aac0115cd66db85d68352d00b4fc7c8abb13263f616d7",
+    "LICENSE": "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95",
     "SPEC_V3.md": "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c"
   },
   "audit": {
