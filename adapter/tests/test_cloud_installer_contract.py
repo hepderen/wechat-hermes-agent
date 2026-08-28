@@ -302,6 +302,8 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
     assert "f2cd448553d61aa3c2ea774dc7e2296f09d4b584" in SCRIPT
     assert "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301" in SCRIPT
     assert "assert_persona_skill_bundle" in SCRIPT
+    assert "eol_normalized_files" in SCRIPT
+    assert 'data.replace(b"\\r\\n", b"\\n").replace(b"\\r", b"\\n")' in SCRIPT
 
 
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():

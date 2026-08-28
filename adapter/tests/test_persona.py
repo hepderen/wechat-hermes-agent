@@ -108,6 +108,11 @@ def test_upstream_skill_lock_matches_the_audited_read_only_bundle():
         assert lock["files"]["SKILL.md"] == sha256
         assert lock["runtime_mode"] == "read_only_prompt_resource"
         assert lock["audit"]["executable_files"] == []
+        normalized_files = lock.get("eol_normalized_files", [])
+        assert isinstance(normalized_files, list)
+        assert len(normalized_files) == len(set(normalized_files))
+        assert set(normalized_files).issubset(lock["files"])
+        assert "SKILL.md" not in normalized_files
         assert (skill_dir / "LICENSE").is_file()
         assert (skill_dir / "THIRD_PARTY_NOTICES.md").is_file()
         assert not [

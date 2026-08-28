@@ -139,11 +139,33 @@ for raw_root in sys.argv[1:]:
     actual = hashlib.sha256((root / "SKILL.md").read_bytes()).hexdigest()
     if expected != expected_bundle["sha256"] or actual != expected:
         raise SystemExit("persona Skill SHA-256 mismatch")
-    for relative, digest in lock.get("files", {}).items():
+    files = lock.get("files", {})
+    normalized_files = lock.get("eol_normalized_files", [])
+    if (
+        not isinstance(files, dict)
+        or not isinstance(normalized_files, list)
+        or any(not isinstance(relative, str) for relative in normalized_files)
+        or len(set(normalized_files)) != len(normalized_files)
+        or not set(normalized_files).issubset(files)
+        or "SKILL.md" in normalized_files
+    ):
+        raise SystemExit("persona Skill EOL normalization lock is invalid")
+    normalized_files = set(normalized_files)
+    for relative, digest in files.items():
         path = (root / relative).resolve()
         if path.parent != root and root not in path.parents:
             raise SystemExit("persona Skill lock path escapes bundle")
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        if not path.is_file():
+            raise SystemExit("persona Skill file hash mismatch: " + relative)
+        data = path.read_bytes()
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != digest and relative in normalized_files:
+            if b"\0" in data:
+                raise SystemExit("persona Skill normalized file contains NUL: " + relative)
+            actual = hashlib.sha256(
+                data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            ).hexdigest()
+        if actual != digest:
             raise SystemExit("persona Skill file hash mismatch: " + relative)
     for path in root.rglob("*"):
         if path.is_symlink():

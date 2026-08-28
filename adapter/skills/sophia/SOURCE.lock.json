@@ -15,6 +15,7 @@
     "loaded_sections": ["Persona & Voice"],
     "loaded_sha256": "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301"
   },
+  "eol_normalized_files": ["LICENSE"],
   "files": {
     "LICENSE": "16052d83fffe65a08a199e3b941a0c28fa8f2440ccf3539e0dd97433479bd5fd",
     "SKILL.md": "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301",

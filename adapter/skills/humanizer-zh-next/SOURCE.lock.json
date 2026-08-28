@@ -14,6 +14,7 @@
     "loaded_file": "SKILL.md",
     "loaded_sha256": "19c4a1a2b86aabd47ac385a7da1011188d6edc6a61f16b896ffbe412ab0b40b7"
   },
+  "eol_normalized_files": [".gitignore", "LICENSE"],
   "files": {
     ".gitignore": "ee1c66fbf7f1dd2f3d7a96fbdaf36b0e815898f27b3a6d88f1bba9d5ec315398",
     "LICENSE": "ee22b9630ed75f4b473a80c344685aa652f8d24f34ad88860e90d4eff094b4b1",
