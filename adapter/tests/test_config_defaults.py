@@ -32,10 +32,10 @@ def test_production_resource_defaults_match_v2_plan(monkeypatch):
     assert settings.relationship_memory_enabled is True
     assert settings.relationship_summary_timeout_seconds == 5
     assert settings.relationship_proactive_enabled is True
-    assert settings.relationship_proactive_idle_seconds == 5400
+    assert settings.relationship_proactive_idle_seconds == 2700
     assert settings.relationship_proactive_min_interactions == 3
-    assert settings.relationship_proactive_max_per_member_day == 1
-    assert settings.relationship_proactive_max_per_room_day == 2
+    assert settings.relationship_proactive_max_per_member_day == 3
+    assert settings.relationship_proactive_max_per_room_day == 6
     assert settings.relationship_proactive_timeout_seconds == 6
     assert settings.chat_only_mode is False
     assert settings.group_listener_enabled is True

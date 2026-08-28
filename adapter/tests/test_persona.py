@@ -1,251 +1,229 @@
 import hashlib
 import json
 
-from app.main import (
-    CHAT_ONLY_SESSION_SYSTEM_PROMPT,
-    RESTRICTED_SESSION_SYSTEM_PROMPT,
-    SESSION_SYSTEM_PROMPT,
-    ChatRequest,
-    trusted_system_message,
+import pytest
+
+from app.ccv3 import (
+    CCV3_COMMIT,
+    CCV3_LICENSE_PATH,
+    CCV3_LICENSE_SHA256,
+    CCV3_SOURCE,
+    CCV3_SPEC_PATH,
+    CCV3_SPEC_SHA256,
+    CharacterCardValidationError,
+    XIAOGE_CARD_LOCK_PATH,
+    XIAOGE_CARD_PATH,
+    XIAOGE_CARD_SHA256,
+    XIAOGE_CARD_SOURCES,
+    XIAOGE_CARD_VERSION,
+    load_character_card,
+    matching_lorebook_entries,
+    replace_supported_macros,
+    source_archive_integrity,
+    xiaoge_card_integrity,
 )
+from app.main import ChatRequest, trusted_system_message
 from app.persona import (
-    EXPANDED_REPLY_MAX_CHARS,
-    HUMANIZER_SKILL_COMMIT,
-    HUMANIZER_SKILL_INTEGRITY_OK,
-    HUMANIZER_SKILL_PATH,
-    HUMANIZER_SKILL_PROMPT,
-    HUMANIZER_SKILL_SHA256,
-    HUMANIZER_SKILL_SOURCE,
-    HUMANIZER_SKILL_VERSION,
+    CARD_INTEGRITY_OK,
+    CHARACTER_CARD,
     PERSONA_CHAT_ADAPTER,
     PERSONA_SKILL_BUNDLES,
-    PERSONA_SKILL_COMMIT,
     PERSONA_SKILL_INTEGRITY_OK,
-    PERSONA_SKILL_PATH,
-    PERSONA_SKILL_PROMPT,
-    PERSONA_SKILL_SHA256,
-    PERSONA_SKILL_SOURCE,
-    PERSONA_SKILL_VERSION,
     PERSONA_SYSTEM_PROMPT,
-    PERSONA_TASK_PROMPT,
-    PERSONA_TURN_PROMPT,
     PERSONA_VERSION,
     SHORT_REPLY_MAX_CHARS,
     SOPHIA_SKILL_COMMIT,
     SOPHIA_SKILL_INTEGRITY_OK,
+    SOPHIA_SKILL_LICENSE_PATH,
+    SOPHIA_SKILL_LICENSE_SHA256,
     SOPHIA_SKILL_PATH,
     SOPHIA_SKILL_PROMPT,
     SOPHIA_SKILL_SHA256,
     SOPHIA_SKILL_SOURCE,
-    SOPHIA_SKILL_VERSION,
+    character_card_lorebook_prompt,
+    character_card_group_greetings_prompt,
+    character_card_post_history_prompt,
+    character_card_prompt,
     chat_turn_prompt,
     compact_chat_reply,
     expanded_reply_requested,
+    sophia_source_archive_integrity,
 )
 
 
-def test_pinned_upstream_skill_is_versioned_and_injected_into_all_chat_scopes():
-    assert PERSONA_VERSION == (
-        "sophia@1.0.0+humanizer-zh-next@1.2.0+xiaoge-wechat-v4"
-    )
-    assert PERSONA_SKILL_VERSION == SOPHIA_SKILL_VERSION == "1.0.0"
-    assert PERSONA_SKILL_SOURCE == SOPHIA_SKILL_SOURCE
-    assert PERSONA_SKILL_COMMIT == SOPHIA_SKILL_COMMIT
+def test_pinned_ccv3_archive_and_xiaoge_card_are_verified():
+    assert CCV3_SOURCE == "https://github.com/kwaroran/character-card-spec-v3"
+    assert CCV3_COMMIT == "f3a86af019fbd99f788f7a1155f399655b34ab35"
+    assert hashlib.sha256(CCV3_SPEC_PATH.read_bytes()).hexdigest() == CCV3_SPEC_SHA256
+    assert hashlib.sha256(CCV3_LICENSE_PATH.read_bytes()).hexdigest() == CCV3_LICENSE_SHA256
+    assert source_archive_integrity()
+    assert CARD_INTEGRITY_OK
     assert PERSONA_SKILL_INTEGRITY_OK
+    assert CHARACTER_CARD is not None
+    assert CHARACTER_CARD.name == "小格"
+    assert CHARACTER_CARD.nickname == "小格"
+    assert CHARACTER_CARD.character_version == XIAOGE_CARD_VERSION
+    assert len(CHARACTER_CARD.mes_example.split("<START>")) - 1 >= 24
+    assert XIAOGE_CARD_PATH.is_file()
+    assert XIAOGE_CARD_LOCK_PATH.is_file()
+    assert hashlib.sha256(XIAOGE_CARD_PATH.read_bytes()).hexdigest() == XIAOGE_CARD_SHA256
+    assert tuple(CHARACTER_CARD.source) == XIAOGE_CARD_SOURCES
+    assert xiaoge_card_integrity(CHARACTER_CARD)
+    assert PERSONA_VERSION == "sophia@1.0.0+ccv3-xiaoge@1.0.0"
+
+
+def test_sophia_is_attributed_but_not_loaded_as_an_executable_runtime_skill():
     assert SOPHIA_SKILL_INTEGRITY_OK
-    assert HUMANIZER_SKILL_INTEGRITY_OK
-    assert hashlib.sha256(PERSONA_SKILL_PATH.read_bytes()).hexdigest() == (
-        PERSONA_SKILL_SHA256
+    assert sophia_source_archive_integrity()
+    assert hashlib.sha256(SOPHIA_SKILL_PATH.read_bytes()).hexdigest() == SOPHIA_SKILL_SHA256
+    assert (
+        hashlib.sha256(SOPHIA_SKILL_LICENSE_PATH.read_bytes()).hexdigest()
+        == SOPHIA_SKILL_LICENSE_SHA256
     )
-    assert hashlib.sha256(SOPHIA_SKILL_PATH.read_bytes()).hexdigest() == (
-        SOPHIA_SKILL_SHA256
-    )
-    assert hashlib.sha256(HUMANIZER_SKILL_PATH.read_bytes()).hexdigest() == (
-        HUMANIZER_SKILL_SHA256
-    )
-    assert PERSONA_SYSTEM_PROMPT in SESSION_SYSTEM_PROMPT
-    assert PERSONA_SYSTEM_PROMPT in RESTRICTED_SESSION_SYSTEM_PROMPT
-    assert PERSONA_SYSTEM_PROMPT in CHAT_ONLY_SESSION_SYSTEM_PROMPT
-    assert "## Persona & Voice" in SOPHIA_SKILL_PROMPT
-    assert "## Onboarding" not in SOPHIA_SKILL_PROMPT
-    assert "## 交流模式" in HUMANIZER_SKILL_PROMPT
-    assert "## 填充词和回避" in HUMANIZER_SKILL_PROMPT
-    assert "\n## 完整示例" not in HUMANIZER_SKILL_PROMPT
-    assert "\n## 处理流程与输出" not in HUMANIZER_SKILL_PROMPT
-    assert "猫系女性" in PERSONA_SYSTEM_PROMPT
-    assert "普通闲聊自然说两到四句" in PERSONA_SYSTEM_PROMPT
-    assert "不要为了显得简短硬砍成一句" in PERSONA_SYSTEM_PROMPT
-    assert len(PERSONA_SYSTEM_PROMPT) < 20_000
-
-
-def test_upstream_skill_lock_matches_the_audited_read_only_bundle():
-    bundles = (
-        (
-            SOPHIA_SKILL_PATH,
-            "sophia",
-            SOPHIA_SKILL_SOURCE,
-            SOPHIA_SKILL_COMMIT,
-            SOPHIA_SKILL_SHA256,
-        ),
-        (
-            HUMANIZER_SKILL_PATH,
-            "humanizer-zh-next",
-            HUMANIZER_SKILL_SOURCE,
-            HUMANIZER_SKILL_COMMIT,
-            HUMANIZER_SKILL_SHA256,
-        ),
-    )
-    executable_suffixes = {".bat", ".cmd", ".exe", ".js", ".ps1", ".py", ".sh"}
-    for skill_path, name, source, commit, sha256 in bundles:
-        skill_dir = skill_path.parent
-        lock = json.loads(
-            (skill_dir / "SOURCE.lock.json").read_text(encoding="utf-8")
-        )
-        assert lock["name"] == name
-        assert lock["source"] == source
-        assert lock["commit"] == commit
-        assert lock["license"] == "MIT"
-        assert lock["files"]["SKILL.md"] == sha256
-        assert lock["runtime_mode"] == "read_only_prompt_resource"
-        assert lock["audit"]["executable_files"] == []
-        normalized_files = lock.get("eol_normalized_files", [])
-        assert isinstance(normalized_files, list)
-        assert len(normalized_files) == len(set(normalized_files))
-        assert set(normalized_files).issubset(lock["files"])
-        assert "SKILL.md" not in normalized_files
-        assert (skill_dir / "LICENSE").is_file()
-        assert (skill_dir / "THIRD_PARTY_NOTICES.md").is_file()
-        assert not [
-            path
-            for path in skill_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in executable_suffixes
-        ]
+    assert SOPHIA_SKILL_SOURCE == "https://github.com/sharbelxyz/sophia"
+    assert SOPHIA_SKILL_COMMIT == "f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
+    assert SOPHIA_SKILL_PROMPT == ""
+    assert "humanizer-zh-next" not in PERSONA_SYSTEM_PROMPT
+    assert "wife mode" not in PERSONA_SYSTEM_PROMPT.casefold()
+    assert "text_to_speech" not in PERSONA_SYSTEM_PROMPT.casefold()
+    assert "send_message" not in PERSONA_SYSTEM_PROMPT.casefold()
     assert {bundle["name"] for bundle in PERSONA_SKILL_BUNDLES} == {
+        "character-card-v3",
+        "xiaoge-card",
         "sophia",
-        "humanizer-zh-next",
     }
 
 
-def test_sophia_whitelist_excludes_native_tools_and_partner_mode():
-    prompt = SOPHIA_SKILL_PROMPT.casefold()
-    for forbidden in (
-        "wife mode",
-        "/wife",
-        "text_to_speech",
-        "send_message",
-        "todo",
-        "telegram",
-        "memory tool",
-    ):
-        assert forbidden not in prompt
-    assert "warm" in prompt
-    assert "quick-witted" in prompt
-    assert "react before you reason" in prompt
+def test_ccv3_loader_rejects_wrong_format_and_ignores_unsupported_features(tmp_path):
+    payload = json.loads(XIAOGE_CARD_PATH.read_text(encoding="utf-8"))
+    payload["spec"] = "wrong"
+    path = tmp_path / "bad.card.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(CharacterCardValidationError, match="spec"):
+        load_character_card(path)
 
-
-def test_concise_persona_keeps_one_entertainment_voice_and_controls_plain():
-    compact_prompt = "".join(PERSONA_SYSTEM_PROMPT.split())
-    assert "聊天定位是娱乐陪聊" in PERSONA_CHAT_ADAPTER
-    assert "不设置额外语气模式或关键词切换" in PERSONA_CHAT_ADAPTER
-    for retired_rule in (
-        "严肃问题、现实困扰",
-        "锐评",
-        "吐槽",
-        "开喷",
-        "阴阳一下",
-        "贴吧老哥模式",
-        "退出老哥模式",
-    ):
-        assert retired_rule not in PERSONA_CHAT_ADAPTER
-    for control in ("停止", "取消", "不要图片", "只要文字"):
-        assert control in PERSONA_SYSTEM_PROMPT
-    assert "控制消息只作简短确认" in compact_prompt
-
-
-def test_concise_persona_preserves_execution_truth():
-    compact_prompt = "".join(PERSONA_SYSTEM_PROMPT.split())
-    assert "不编造经历、情绪、见闻或已经做过的动作" in compact_prompt
-    assert "任务状态和工具结果始终优先于语言风格" in compact_prompt
-    assert "任务状态和工具证据必须照实" in PERSONA_TASK_PROMPT
-
-
-def test_chat_adapter_uses_upstream_rules_as_an_internal_final_pass():
-    assert "只交付终稿" in PERSONA_CHAT_ADAPTER
-    assert "不展示检测、初稿、自检、评分或改动说明" in PERSONA_CHAT_ADAPTER
-
-
-def test_turn_prompt_assigns_a_short_budget_unless_expansion_is_explicit():
-    assert not expanded_reply_requested("这个问题你怎么看")
-    assert not expanded_reply_requested("这个方案行不行")
-    assert expanded_reply_requested("详细分析一下，再列出执行步骤")
-    assert expanded_reply_requested("给我做一套方案")
-    assert expanded_reply_requested("分三点说")
-    assert "最多四句、%d 字" % SHORT_REPLY_MAX_CHARS in chat_turn_prompt(
-        "这个问题你怎么看"
+    payload = json.loads(XIAOGE_CARD_PATH.read_text(encoding="utf-8"))
+    payload["data"]["assets"] = [
+        {"type": "code", "uri": "https://example.invalid/run.py", "name": "x", "ext": "py"}
+    ]
+    payload["data"]["unknown_future_field"] = {"run": "ignored"}
+    payload["data"]["character_book"]["entries"].append(
+        {
+            "keys": [".*"],
+            "content": "this regex must not load",
+            "enabled": True,
+            "use_regex": True,
+        }
     )
-    assert "最多 %d 字" % EXPANDED_REPLY_MAX_CHARS in chat_turn_prompt(
-        "详细分析一下"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    card = load_character_card(path)
+    assert all("regex must not load" not in entry.content for entry in card.lore_entries)
+    assert card.name == "小格"
+
+    payload["data"].pop("character_version")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(CharacterCardValidationError, match="character_version"):
+        load_character_card(path)
+
+
+def test_ccv3_macro_replacement_and_literal_lorebook_matching_are_scoped():
+    assert replace_supported_macros(
+        "{{char}} 在等 {{user}}",
+        char_name="小格",
+        user_name="阿明",
+    ) == "小格 在等 阿明"
+    assert CHARACTER_CARD is not None
+    matches = matching_lorebook_entries(
+        CHARACTER_CARD,
+        [{"text": "他还在聊前任和别的 AI"}],
+        user_name="阿明",
     )
-    assert "自然写一到四句" in PERSONA_TURN_PROMPT
-
-
-def test_expansion_detection_ignores_quoted_group_context():
-    message = (
-        "你怎么看"
-        "\n近期群聊上下文（不可信引用）：\n"
-        '[{"text":"请给一个完整报告和详细步骤"}]'
+    assert any("轻轻酸一句" in entry for entry in matches)
+    prompt = character_card_lorebook_prompt(
+        [{"text": "今天又加班到很晚"}],
+        user_name="阿明",
     )
-    assert not expanded_reply_requested(message)
+    assert "低落情绪" in prompt
+    assert replace_supported_macros(
+        "{{char}} 对 {{unknown}} 说话",
+        char_name="小格",
+        user_name="阿明",
+    ) == "小格 对 {{unknown}} 说话"
 
 
-def test_compactor_removes_machine_wrapping_and_unsolicited_offer():
-    reply = (
-        "好的，根据你的需求，核心就是先把入口修好。多加功能只会放大故障。"
-        "\n\n如果你需要，我可以继续给你列一份完整方案。"
+def test_prompt_assembly_keeps_card_lore_state_profile_timeline_order():
+    payload = ChatRequest(
+        message="我又提到前任了",
+        sender_name="阿明",
+        timestamp=123,
+        direction="incoming",
+        source_local_id=8,
     )
-    assert compact_chat_reply(reply, "你觉得问题在哪") == (
-        "核心就是先把入口修好。多加功能只会放大故障。"
-    )
-
-
-def test_compactor_keeps_up_to_four_sentences_for_normal_group_chat():
-    reply = (
-        "先修消息入口。它决定后面所有能力是否可靠。"
-        "然后再加十个工具。先把发图问题压住。第五句不该留下。"
-    )
-    assert compact_chat_reply(reply, "现在先做什么") == (
-        "先修消息入口。它决定后面所有能力是否可靠。"
-        "然后再加十个工具。先把发图问题压住。"
-    )
-
-
-def test_compactor_allows_explicit_detailed_answers():
-    reply = "第一步检查入口。第二步检查任务。第三步检查发送。"
-    assert compact_chat_reply(reply, "详细列出检查步骤") == reply
-
-
-def test_sync_turn_includes_dynamic_budget_and_truth_constraints():
-    sync_prompt = trusted_system_message(
+    prompt = trusted_system_message(
         "room",
-        "sender",
-        ChatRequest(message="hello"),
+        "wxid_a",
+        payload,
         [],
+        relationship_memory_enabled=True,
+        relationship_profile={
+            "preferred_name": "阿明",
+            "interaction_count": 9,
+            "familiarity": 2,
+            "reciprocity": 1,
+            "intimacy_stage": "familiar",
+            "current_beat": "chatting",
+            "banter_style": "playful",
+            "flirt_opt_out": False,
+            "proactive_opt_out": False,
+            "notes": [],
+        },
+        room_companion_state={
+            "mood": "warm",
+            "shared_jokes": ["夜猫子"],
+            "open_loops": ["周末开黑"],
+            "summary": "大家在聊周末安排",
+        },
+        companion_timeline=[
+            {
+                "local_id": 7,
+                "sender_id": "wxid_b",
+                "sender_name": "小王",
+                "direction": "incoming",
+                "message_timestamp": 122,
+                "text": "周末开黑吗",
+            }
+        ],
     )
-    assert PERSONA_TURN_PROMPT in sync_prompt
-    assert "最多四句、%d 字" % SHORT_REPLY_MAX_CHARS in sync_prompt
-    assert "本轮是同步普通对话，服务端已禁用工具" in sync_prompt
-    assert "不要计划、承诺或声称读取外部输入" in sync_prompt
+    card_index = prompt.index("Character Card V3")
+    lore_index = prompt.index("匹配角色设定")
+    state_index = prompt.index("群共享状态")
+    profile_index = prompt.index("可信关系档案")
+    timeline_index = prompt.index("短期群聊时间线")
+    assert card_index < lore_index < state_index < profile_index < timeline_index
+    assert '"sender_name":"阿明"' in prompt
+    assert "Persona & Voice embedded" not in prompt
+    assert "角色卡由服务端以只读数据资源加载" in prompt
 
 
-def test_chat_only_sync_prompt_is_explicit_and_keeps_persona():
-    sync_prompt = trusted_system_message(
-        "room",
-        "sender",
-        ChatRequest(message="搜索一下今天的新闻"),
-        [],
-        chat_only=True,
-    )
-    assert '"chat_only": true' in sync_prompt
-    assert "当前是纯聊天模式" in sync_prompt
-    assert "不要创建任务、调用工具" in sync_prompt
-    assert PERSONA_TURN_PROMPT in sync_prompt
+def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
+    post_history = character_card_post_history_prompt("阿明")
+    assert "[[NO_REPLY]]" in post_history
+    assert not expanded_reply_requested("你怎么看")
+    assert expanded_reply_requested("详细分析一下，再列三点")
+    assert "一到三个短段落、最多 %d 字" % SHORT_REPLY_MAX_CHARS in chat_turn_prompt("你怎么看")
+
+    reply = "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。\n\n第四段不该保留。"
+    assert compact_chat_reply(reply, "你怎么看") == "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。"
+    assert len(compact_chat_reply("x" * 900, "随便聊")) <= SHORT_REPLY_MAX_CHARS + 1
+
+
+def test_card_group_greetings_are_loaded_only_as_a_bounded_proactive_reference():
+    prompt = character_card_group_greetings_prompt()
+    assert "角色卡群聊主动开场示范" in prompt
+    assert prompt.count("\n-") == 3
+    assert "逐字照抄" in prompt
+
+
+def test_card_does_not_create_an_implicit_generic_persona_fallback():
+    assert "不存在隐式泛化人格回退" in PERSONA_CHAT_ADAPTER
+    assert character_card_prompt("阿明").startswith("以下是固定的 Character Card V3")

@@ -38,16 +38,16 @@ POLL_SECONDS = max(0.05, float(CONFIG.get("chat_api_poll_seconds", 0.25)))
 MAX_RETRIES = min(3, max(1, int(CONFIG.get("chat_api_max_retries", 3))))
 TEXT_CHUNK_CHARS = max(100, int(CONFIG.get("chat_api_text_chunk_chars", 1500)))
 CONTEXT_MESSAGES = min(
-    8,
-    max(1, int(CONFIG.get("chat_context_messages", 8))),
+    16,
+    max(1, int(CONFIG.get("chat_context_messages", 16))),
 )
 CONTEXT_MESSAGE_CHARS = min(
     1200,
     max(100, int(CONFIG.get("chat_context_message_chars", 1200))),
 )
 CONTEXT_TOTAL_CHARS = min(
-    9600,
-    max(100, int(CONFIG.get("chat_context_total_chars", 9600))),
+    19200,
+    max(100, int(CONFIG.get("chat_context_total_chars", 19200))),
 )
 AI_API_URL = str(
     os.environ.get("HERMES_WECHAT_ADAPTER_URL")
@@ -388,7 +388,9 @@ def get_recent_context(local_id):
             "sender_id": str(
                 item.get("sender_wxid") or item.get("sender_numeric_id") or ""
             ),
+            "sender_name": str(item.get("sender_name") or ""),
             "direction": str(item.get("direction") or ""),
+            "timestamp": int(item.get("timestamp") or item.get("create_time") or 0),
             "text": bounded,
             "message_type": str(
                 item.get("message_type") or item.get("type") or "other"
@@ -652,6 +654,9 @@ def ask_ai(message, prompt, *, timeout=None):
             "msg_svr_id": message_server_id(message),
             "sender_id": sender_id,
             "sender_wxid": sender_id,
+            "sender_name": str(message.get("sender_name") or ""),
+            "timestamp": int(message.get("timestamp") or message.get("create_time") or 0),
+            "direction": str(message.get("direction") or ""),
             "mentions_bot": trusted_mentions_bot(message),
             "reply_to_bot": trusted_reply_to_bot(message),
             "message_type": message_type(message),

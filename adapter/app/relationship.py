@@ -14,6 +14,12 @@ MAX_RELATIONSHIP_NOTE_CHARS = 80
 MAX_PREFERRED_NAME_CHARS = 24
 RELATIONSHIP_NOTE_KINDS = frozenset({"preference", "inside_joke", "boundary"})
 RELATIONSHIP_BANTER_STYLES = frozenset({"neutral", "soft", "playful", "direct"})
+COMPANION_MOODS = frozenset(
+    {"casual", "warm", "playful", "focused", "quiet", "playful_jealous"}
+)
+MAX_COMPANION_STATE_ITEMS = 8
+MAX_COMPANION_STATE_ITEM_CHARS = 100
+MAX_COMPANION_SUMMARY_CHARS = 640
 
 _TRAILING_COMMAND_PUNCTUATION_RE = re.compile(r"[。.!！?？~～]+$")
 _LEADING_MENTION_RE = re.compile(r"^\s*@[^\s@]{1,48}\s*")
@@ -87,6 +93,19 @@ def familiarity_for_interactions(interaction_count: int) -> int:
     return 0
 
 
+def intimacy_stage(interaction_count: int, reciprocity: int = 0) -> str:
+    """Keep relationship labels deterministic and scoped to one member."""
+    interactions = max(0, int(interaction_count or 0))
+    warmth = max(0, int(reciprocity or 0))
+    if interactions >= 16 and warmth >= 2:
+        return "close"
+    if interactions >= 8 or warmth >= 2:
+        return "familiar"
+    if interactions >= 3:
+        return "warming"
+    return "new"
+
+
 def _normalized_text(value: Any, *, limit: int) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip())
     text = text.replace("\x00", "")
@@ -151,6 +170,44 @@ def normalize_relationship_summary(value: Any) -> dict[str, Any]:
     }
 
 
+def normalize_room_companion_state(value: Any) -> dict[str, Any]:
+    """Narrow the room summary model output to inert, reusable facts."""
+    payload = value if isinstance(value, dict) else {}
+    mood = str(payload.get("mood") or "").strip().lower()
+    if mood not in COMPANION_MOODS:
+        mood = "casual"
+
+    def values(name: str) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        raw_values = payload.get(name)
+        if not isinstance(raw_values, list):
+            return result
+        for raw in raw_values[:MAX_COMPANION_STATE_ITEMS]:
+            text = _normalized_text(raw, limit=MAX_COMPANION_STATE_ITEM_CHARS)
+            if not text or contains_sensitive_memory("companion_" + name, text):
+                continue
+            marker = text.casefold()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(text)
+        return result
+
+    summary = _normalized_text(
+        payload.get("summary"),
+        limit=MAX_COMPANION_SUMMARY_CHARS,
+    )
+    if summary and contains_sensitive_memory("companion_summary", summary):
+        summary = ""
+    return {
+        "mood": mood,
+        "shared_jokes": values("shared_jokes"),
+        "open_loops": values("open_loops"),
+        "summary": summary,
+    }
+
+
 def relationship_profile_system_block(profile: dict[str, Any] | None) -> str:
     if not profile:
         return "\n当前成员没有关系档案，按初次自然聊天处理。"
@@ -166,6 +223,8 @@ def relationship_profile_system_block(profile: dict[str, Any] | None) -> str:
         "interaction_count": max(0, int(profile.get("interaction_count") or 0)),
         "familiarity": max(0, min(4, int(profile.get("familiarity") or 0))),
         "reciprocity": max(0, min(3, int(profile.get("reciprocity") or 0))),
+        "intimacy_stage": str(profile.get("intimacy_stage") or "new"),
+        "current_beat": str(profile.get("current_beat") or ""),
         "banter_style": str(profile.get("banter_style") or "neutral"),
         "flirt_opt_out": bool(profile.get("flirt_opt_out")),
         "proactive_opt_out": bool(profile.get("proactive_opt_out")),

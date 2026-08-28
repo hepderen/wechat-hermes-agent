@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -23,6 +24,8 @@ from .relationship import (
     MAX_RELATIONSHIP_NOTES,
     RELATIONSHIP_TTL_SECONDS,
     familiarity_for_interactions,
+    intimacy_stage,
+    normalize_room_companion_state,
     normalize_relationship_summary,
 )
 
@@ -32,6 +35,11 @@ TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
 MAX_DELIVERY_ATTEMPTS = 3
 PROJECT_MEMORY_TTL_SECONDS = 90 * 24 * 60 * 60
 PREFERENCE_MEMORY_TTL_SECONDS = 180 * 24 * 60 * 60
+COMPANION_TIMELINE_TTL_SECONDS = 24 * 60 * 60
+COMPANION_TIMELINE_MAX_MESSAGES = 120
+COMPANION_CONTEXT_MESSAGES = 16
+COMPANION_ROOM_STATE_TTL_SECONDS = 30 * 24 * 60 * 60
+COMPANION_TIMELINE_TEXT_CHARS = 4_000
 OUTBOX_STATES = {
     "prepared",
     "sending",
@@ -281,6 +289,9 @@ class AdapterStore:
                             CHECK(familiarity BETWEEN 0 AND 4),
                         reciprocity INTEGER NOT NULL DEFAULT 0
                             CHECK(reciprocity BETWEEN 0 AND 3),
+                        intimacy_stage TEXT NOT NULL DEFAULT 'new'
+                            CHECK(intimacy_stage IN ('new', 'warming', 'familiar', 'close')),
+                        current_beat TEXT NOT NULL DEFAULT '',
                         banter_style TEXT NOT NULL DEFAULT 'neutral'
                             CHECK(banter_style IN ('neutral', 'soft', 'playful', 'direct')),
                         flirt_opt_out INTEGER NOT NULL DEFAULT 0
@@ -390,6 +401,58 @@ class AdapterStore:
                     DROP INDEX IF EXISTS idx_relationship_jobs_active;
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_relationship_jobs_active
                     ON relationship_summary_jobs(room_id, sender_id)
+                    WHERE status='queued';
+
+                    CREATE TABLE IF NOT EXISTS companion_timeline (
+                        room_id TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        local_id INTEGER NOT NULL,
+                        sender_id TEXT NOT NULL DEFAULT '',
+                        sender_name TEXT NOT NULL DEFAULT '',
+                        direction TEXT NOT NULL DEFAULT 'incoming',
+                        text TEXT NOT NULL,
+                        message_timestamp REAL NOT NULL,
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY(room_id, event_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_companion_timeline_room_order
+                    ON companion_timeline(room_id, local_id DESC, created_at DESC);
+                    DROP INDEX IF EXISTS idx_companion_timeline_expiry;
+                    CREATE INDEX IF NOT EXISTS idx_companion_timeline_expiry
+                    ON companion_timeline(message_timestamp);
+
+                    CREATE TABLE IF NOT EXISTS room_companion_state (
+                        room_id TEXT PRIMARY KEY,
+                        mood TEXT NOT NULL DEFAULT 'casual',
+                        shared_jokes_json TEXT NOT NULL DEFAULT '[]',
+                        open_loops_json TEXT NOT NULL DEFAULT '[]',
+                        summary TEXT NOT NULL DEFAULT '',
+                        source_local_id INTEGER,
+                        message_count INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        expires_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_room_companion_state_expiry
+                    ON room_companion_state(expires_at);
+
+                    CREATE TABLE IF NOT EXISTS companion_summary_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        room_id TEXT NOT NULL,
+                        source_local_id INTEGER,
+                        trigger TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'dropped')),
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        error_type TEXT NOT NULL DEFAULT '',
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_companion_summary_jobs_pending
+                    ON companion_summary_jobs(status, created_at, id);
+                    DROP INDEX IF EXISTS idx_companion_summary_jobs_active;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_companion_summary_jobs_active
+                    ON companion_summary_jobs(room_id)
                     WHERE status='queued';
 
                     CREATE TABLE IF NOT EXISTS skill_registry (
@@ -512,6 +575,20 @@ class AdapterStore:
                         """
                         ALTER TABLE relationship_profiles
                         ADD COLUMN proactive_opt_out INTEGER NOT NULL DEFAULT 0
+                        """
+                    )
+                if "intimacy_stage" not in relationship_columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE relationship_profiles
+                        ADD COLUMN intimacy_stage TEXT NOT NULL DEFAULT 'new'
+                        """
+                    )
+                if "current_beat" not in relationship_columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE relationship_profiles
+                        ADD COLUMN current_beat TEXT NOT NULL DEFAULT ''
                         """
                     )
                 tool_event_columns = {
@@ -2906,27 +2983,31 @@ class AdapterStore:
             self._purge_expired_relationships(connection, current)
             row = connection.execute(
                 """
-                SELECT interaction_count FROM relationship_profiles
+                SELECT interaction_count, reciprocity FROM relationship_profiles
                 WHERE room_id=? AND sender_id=?
                 """,
                 (room, sender),
             ).fetchone()
             interaction_count = int(row["interaction_count"] or 0) + 1 if row else 1
             familiarity = familiarity_for_interactions(interaction_count)
+            reciprocity = int(row["reciprocity"] or 0) if row else 0
+            stage = intimacy_stage(interaction_count, reciprocity)
             expires_at = current + RELATIONSHIP_TTL_SECONDS
             if row is None:
                 connection.execute(
                     """
                     INSERT INTO relationship_profiles(
                         room_id, sender_id, interaction_count, familiarity,
+                        intimacy_stage, current_beat,
                         last_source_local_id, created_at, updated_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'chatting', ?, ?, ?, ?)
                     """,
                     (
                         room,
                         sender,
                         interaction_count,
                         familiarity,
+                        stage,
                         local_id,
                         current,
                         current,
@@ -2937,13 +3018,15 @@ class AdapterStore:
                 connection.execute(
                     """
                     UPDATE relationship_profiles
-                    SET interaction_count=?, familiarity=?, last_source_local_id=?,
+                    SET interaction_count=?, familiarity=?, intimacy_stage=?,
+                        current_beat='chatting', last_source_local_id=?,
                         updated_at=?, expires_at=?
                     WHERE room_id=? AND sender_id=?
                     """,
                     (
                         interaction_count,
                         familiarity,
+                        stage,
                         local_id,
                         current,
                         expires_at,
@@ -3831,6 +3914,528 @@ class AdapterStore:
             ).fetchone()
         return int(row["count"] or 0) if row is not None else 0
 
+    @staticmethod
+    def _companion_room_id(room_id: str) -> str:
+        room = str(room_id or "").strip()
+        if not room:
+            raise ValueError("companion timeline requires a room identity")
+        return room
+
+    @staticmethod
+    def _companion_text(value: Any) -> str:
+        text = str(value or "").replace("\x00", "").strip()
+        return text[:COMPANION_TIMELINE_TEXT_CHARS]
+
+    @staticmethod
+    def _companion_name(value: Any) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").replace("\x00", "")).strip()
+        return text[:96]
+
+    @staticmethod
+    def _companion_is_meaningful(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if len(normalized) < 2 or not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", normalized):
+            return False
+        return normalized.casefold() not in {
+            "哈哈",
+            "哈哈哈",
+            "666",
+            "ok",
+            "好的",
+            "收到",
+            "嗯",
+            "嗯嗯",
+        }
+
+    @staticmethod
+    def _purge_expired_companion(
+        connection: sqlite3.Connection,
+        now: float,
+    ) -> None:
+        connection.execute(
+            """
+            DELETE FROM companion_timeline
+            WHERE message_timestamp <= ? OR created_at <= ?
+            """,
+            (
+                now - COMPANION_TIMELINE_TTL_SECONDS,
+                now - COMPANION_TIMELINE_TTL_SECONDS,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM room_companion_state WHERE expires_at <= ?",
+            (now,),
+        )
+
+    def _companion_message_count(
+        self,
+        connection: sqlite3.Connection,
+        room_id: str,
+    ) -> int:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM companion_timeline WHERE room_id=?",
+            (room_id,),
+        ).fetchone()
+        return int(row["count"] or 0) if row is not None else 0
+
+    def record_companion_timeline(
+        self,
+        room_id: str,
+        *,
+        event_id: str,
+        local_id: int,
+        sender_id: str,
+        sender_name: str = "",
+        direction: str = "incoming",
+        text: str,
+        timestamp: float | int | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Persist one trusted structured group record for no more than 24 hours."""
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        event = str(event_id or "").strip()
+        if not event or len(event) > 256:
+            raise ValueError("companion timeline event identity is invalid")
+        sequence = int(local_id)
+        if sequence <= 0:
+            raise ValueError("companion timeline requires a positive local ID")
+        text_value = self._companion_text(text)
+        if not text_value:
+            return {"inserted": False, "meaningful": False, "message_count": 0}
+        sender = str(sender_id or "").strip()[:256]
+        name = self._companion_name(sender_name)
+        direction_value = str(direction or "incoming").strip().lower()
+        if direction_value not in {"incoming", "outgoing", "unknown"}:
+            direction_value = "unknown"
+        try:
+            message_timestamp = float(timestamp or current)
+        except (TypeError, ValueError):
+            message_timestamp = current
+        if message_timestamp <= 0 or message_timestamp > current + 300:
+            message_timestamp = current
+        if message_timestamp <= current - COMPANION_TIMELINE_TTL_SECONDS:
+            # Bridge context can contain a historical page. Do not extend the
+            # retention window merely because it was observed again today.
+            return {"inserted": False, "meaningful": False, "message_count": 0}
+
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_companion(connection, current)
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO companion_timeline(
+                    room_id, event_id, local_id, sender_id, sender_name,
+                    direction, text, message_timestamp, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    room,
+                    event,
+                    sequence,
+                    sender,
+                    name,
+                    direction_value,
+                    text_value,
+                    message_timestamp,
+                    current,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            connection.execute(
+                """
+                DELETE FROM companion_timeline
+                WHERE room_id=? AND event_id IN (
+                    SELECT event_id FROM companion_timeline
+                    WHERE room_id=?
+                    ORDER BY local_id DESC, created_at DESC, event_id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (room, room, COMPANION_TIMELINE_MAX_MESSAGES),
+            )
+            message_count = self._companion_message_count(connection, room)
+            connection.execute(
+                """
+                INSERT INTO room_companion_state(
+                    room_id, message_count, created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    message_count=excluded.message_count,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    message_count,
+                    current,
+                    current,
+                    current + COMPANION_ROOM_STATE_TTL_SECONDS,
+                ),
+            )
+            connection.commit()
+        return {
+            "inserted": inserted,
+            "meaningful": inserted and self._companion_is_meaningful(text_value),
+            "message_count": message_count,
+        }
+
+    def record_companion_bot_reply(
+        self,
+        room_id: str,
+        source_local_id: int,
+        text: str,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        value = self._companion_text(text)
+        if not value:
+            return {"inserted": False, "meaningful": False, "message_count": 0}
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+        return self.record_companion_timeline(
+            room_id,
+            event_id="out:%d:%s" % (int(source_local_id), digest),
+            local_id=source_local_id,
+            sender_id="",
+            sender_name="小格",
+            direction="outgoing",
+            text=value,
+            timestamp=now,
+            now=now,
+        )
+
+    def list_companion_timeline(
+        self,
+        room_id: str,
+        *,
+        before_local_id: int | None = None,
+        limit: int = COMPANION_CONTEXT_MESSAGES,
+        now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        bounded_limit = max(1, min(COMPANION_CONTEXT_MESSAGES, int(limit)))
+        query = """
+            SELECT local_id, sender_id, sender_name, direction, text,
+                   message_timestamp, created_at
+            FROM companion_timeline
+            WHERE room_id=?
+        """
+        params: list[Any] = [room]
+        if before_local_id is not None and int(before_local_id) > 0:
+            query += " AND local_id < ?"
+            params.append(int(before_local_id))
+        query += " ORDER BY local_id DESC, created_at DESC, event_id DESC LIMIT ?"
+        params.append(bounded_limit)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_companion(connection, current)
+            rows = connection.execute(query, params).fetchall()
+            connection.commit()
+        return [dict(row) for row in reversed(rows)]
+
+    @staticmethod
+    def _room_companion_state(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        state = dict(row)
+        for key in ("shared_jokes", "open_loops"):
+            raw = state.pop(key + "_json", "[]")
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                parsed = []
+            state[key] = parsed if isinstance(parsed, list) else []
+        return state
+
+    def get_room_companion_state(
+        self,
+        room_id: str,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_companion(connection, current)
+            row = connection.execute(
+                "SELECT * FROM room_companion_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        return self._room_companion_state(row)
+
+    def invalidate_room_companion_state(
+        self,
+        room_id: str,
+        *,
+        now: float | None = None,
+    ) -> None:
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_companion(connection, current)
+            count = self._companion_message_count(connection, room)
+            connection.execute(
+                """
+                INSERT INTO room_companion_state(
+                    room_id, shared_jokes_json, open_loops_json, summary,
+                    message_count, created_at, updated_at, expires_at
+                ) VALUES (?, '[]', '[]', '', ?, ?, ?, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    mood='casual', shared_jokes_json='[]', open_loops_json='[]',
+                    summary='', message_count=excluded.message_count,
+                    updated_at=excluded.updated_at, expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    count,
+                    current,
+                    current,
+                    current + COMPANION_ROOM_STATE_TTL_SECONDS,
+                ),
+            )
+            connection.commit()
+
+    def apply_room_companion_state(
+        self,
+        room_id: str,
+        summary: dict[str, Any],
+        *,
+        source_local_id: int | None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        normalized = normalize_room_companion_state(summary)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._purge_expired_companion(connection, current)
+            count = self._companion_message_count(connection, room)
+            connection.execute(
+                """
+                INSERT INTO room_companion_state(
+                    room_id, mood, shared_jokes_json, open_loops_json, summary,
+                    source_local_id, message_count, created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    mood=excluded.mood,
+                    shared_jokes_json=excluded.shared_jokes_json,
+                    open_loops_json=excluded.open_loops_json,
+                    summary=excluded.summary,
+                    source_local_id=COALESCE(excluded.source_local_id, room_companion_state.source_local_id),
+                    message_count=excluded.message_count,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    normalized["mood"],
+                    json_dumps(normalized["shared_jokes"]),
+                    json_dumps(normalized["open_loops"]),
+                    normalized["summary"],
+                    local_id,
+                    count,
+                    current,
+                    current,
+                    current + COMPANION_ROOM_STATE_TTL_SECONDS,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM room_companion_state WHERE room_id=?",
+                (room,),
+            ).fetchone()
+            connection.commit()
+        state = self._room_companion_state(row)
+        if state is None:
+            raise RuntimeError("room companion state was not persisted")
+        return state
+
+    def enqueue_companion_summary(
+        self,
+        room_id: str,
+        *,
+        source_local_id: int | None,
+        trigger: str,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize()
+        room = self._companion_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        local_id = (
+            int(source_local_id)
+            if source_local_id is not None and int(source_local_id) > 0
+            else None
+        )
+        trigger_value = str(trigger or "timeline")[:64]
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            queued = connection.execute(
+                "SELECT id FROM companion_summary_jobs WHERE room_id=? AND status='queued'",
+                (room,),
+            ).fetchone()
+            if queued is not None:
+                connection.execute(
+                    """
+                    UPDATE companion_summary_jobs
+                    SET source_local_id=CASE
+                            WHEN ? IS NULL THEN source_local_id
+                            WHEN source_local_id IS NULL OR ? >= source_local_id THEN ?
+                            ELSE source_local_id
+                        END,
+                        trigger=?, updated_at=?
+                    WHERE id=? AND status='queued'
+                    """,
+                    (
+                        local_id,
+                        local_id,
+                        local_id,
+                        trigger_value,
+                        current,
+                        int(queued["id"]),
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM companion_summary_jobs WHERE id=?",
+                    (int(queued["id"]),),
+                ).fetchone()
+                connection.commit()
+                result = dict(row) if row is not None else None
+                if result is not None:
+                    result["_coalesced"] = True
+                return result
+            cursor = connection.execute(
+                """
+                INSERT INTO companion_summary_jobs(
+                    room_id, source_local_id, trigger, status, created_at, updated_at
+                ) VALUES (?, ?, ?, 'queued', ?, ?)
+                """,
+                (room, local_id, trigger_value, current, current),
+            )
+            row = connection.execute(
+                "SELECT * FROM companion_summary_jobs WHERE id=?",
+                (cursor.lastrowid,),
+            ).fetchone()
+            connection.commit()
+        result = dict(row) if row is not None else None
+        if result is not None:
+            result["_coalesced"] = False
+        return result
+
+    def claim_companion_summary(self) -> dict[str, Any] | None:
+        self.initialize()
+        current = time.time()
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM companion_summary_jobs
+                WHERE status='queued'
+                ORDER BY created_at, id LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            cursor = connection.execute(
+                """
+                UPDATE companion_summary_jobs
+                SET status='running', attempts=attempts + 1, updated_at=?
+                WHERE id=? AND status='queued'
+                """,
+                (current, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return None
+            claimed = connection.execute(
+                "SELECT * FROM companion_summary_jobs WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            connection.commit()
+        return dict(claimed) if claimed is not None else None
+
+    def finish_companion_summary(
+        self,
+        job_id: int,
+        *,
+        status: str,
+        error_type: str = "",
+        now: float | None = None,
+    ) -> bool:
+        if status not in {"succeeded", "failed", "dropped"}:
+            raise ValueError("companion summary status is invalid")
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE companion_summary_jobs
+                SET status=?, error_type=?, updated_at=?
+                WHERE id=? AND status IN ('queued', 'running')
+                """,
+                (status, str(error_type or "")[:80], current, int(job_id)),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def recover_companion_summary_jobs(self) -> int:
+        """Timeline-backed jobs can resume after a process restart."""
+        self.initialize()
+        current = time.time()
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE companion_summary_jobs
+                SET status='queued', error_type='recovered_after_restart', updated_at=?
+                WHERE status='running'
+                """,
+                (current,),
+            )
+            connection.commit()
+        return int(cursor.rowcount)
+
+    def companion_summary_counts(self) -> dict[str, int]:
+        self.initialize()
+        counts = {
+            status: 0
+            for status in ("queued", "running", "succeeded", "failed", "dropped")
+        }
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM companion_summary_jobs GROUP BY status"
+            ).fetchall()
+        for row in rows:
+            counts[str(row["status"])] = int(row["count"])
+        return counts
+
+    def companion_context_counts(self) -> dict[str, int]:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(DISTINCT room_id) FROM companion_timeline) AS timeline_rooms,
+                    (SELECT COUNT(*) FROM room_companion_state) AS state_rooms
+                """
+            ).fetchone()
+        return {
+            "timeline_rooms": int(row["timeline_rooms"] or 0) if row else 0,
+            "state_rooms": int(row["state_rooms"] or 0) if row else 0,
+        }
+
     def room_session_epoch(self, room_id: str) -> int:
         self.initialize()
         room = str(room_id or "").strip()
@@ -3863,6 +4468,38 @@ class AdapterStore:
             connection.execute(
                 "DELETE FROM relationship_summary_jobs WHERE room_id=? AND sender_id=?",
                 (room, sender),
+            )
+            connection.execute(
+                "DELETE FROM companion_timeline WHERE room_id=? AND sender_id=?",
+                (room, sender),
+            )
+            connection.execute(
+                """
+                UPDATE companion_summary_jobs
+                SET status='dropped', error_type='member_forgotten', updated_at=?
+                WHERE room_id=? AND status IN ('queued', 'running')
+                """,
+                (current, room),
+            )
+            remaining_messages = self._companion_message_count(connection, room)
+            connection.execute(
+                """
+                INSERT INTO room_companion_state(
+                    room_id, mood, shared_jokes_json, open_loops_json, summary,
+                    message_count, created_at, updated_at, expires_at
+                ) VALUES (?, 'casual', '[]', '[]', '', ?, ?, ?, ?)
+                ON CONFLICT(room_id) DO UPDATE SET
+                    mood='casual', shared_jokes_json='[]', open_loops_json='[]',
+                    summary='', message_count=excluded.message_count,
+                    updated_at=excluded.updated_at, expires_at=excluded.expires_at
+                """,
+                (
+                    room,
+                    remaining_messages,
+                    current,
+                    current,
+                    current + COMPANION_ROOM_STATE_TTL_SECONDS,
+                ),
             )
             connection.execute(
                 """
@@ -4105,10 +4742,15 @@ class AdapterStore:
                     + int(normalized["reciprocity_delta"]),
                 ),
             )
+            stage = intimacy_stage(
+                int(current_profile["interaction_count"] or 0),
+                reciprocity,
+            )
             connection.execute(
                 """
                 UPDATE relationship_profiles
-                SET preferred_name=?, banter_style=?, reciprocity=?,
+                SET preferred_name=?, banter_style=?, reciprocity=?, intimacy_stage=?,
+                    current_beat='known',
                     last_source_local_id=COALESCE(?, last_source_local_id),
                     updated_at=?, expires_at=?
                 WHERE room_id=? AND sender_id=?
@@ -4117,6 +4759,7 @@ class AdapterStore:
                     preferred_name,
                     banter_style,
                     reciprocity,
+                    stage,
                     local_id,
                     current,
                     current + RELATIONSHIP_TTL_SECONDS,

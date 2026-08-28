@@ -95,87 +95,125 @@ assert_protected_file() {
 }
 
 assert_persona_skill_bundle() {
-  local humanizer_root="$SOURCE_ROOT/skills/humanizer-zh-next"
+  local ccv3_root="$SOURCE_ROOT/third_party/character-card-spec-v3"
+  local card_root="$SOURCE_ROOT/personas"
   local sophia_root="$SOURCE_ROOT/skills/sophia"
-  python3 - "$humanizer_root" "$sophia_root" <<'PY'
+  python3 - "$ccv3_root" "$card_root" "$sophia_root" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-expected_bundles = {
-    "humanizer-zh-next": {
-        "version": "1.2.0",
-        "source": "https://github.com/Hyacehila/humanizer-zh-next",
-        "commit": "cf08ea33910a094f6738cec01ed9c6fc19acc2f9",
-        "sha256": "19c4a1a2b86aabd47ac385a7da1011188d6edc6a61f16b896ffbe412ab0b40b7",
-    },
-    "sophia": {
-        "version": "1.0.0",
-        "source": "https://github.com/sharbelxyz/sophia",
-        "commit": "f2cd448553d61aa3c2ea774dc7e2296f09d4b584",
-        "sha256": "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301",
-    },
-}
-seen = set()
-for raw_root in sys.argv[1:]:
-    root = Path(raw_root).resolve(strict=True)
-    for required in ("SKILL.md", "SOURCE.lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md"):
-        if not (root / required).is_file():
-            raise SystemExit("persona Skill resource is missing: " + required)
-    lock = json.loads((root / "SOURCE.lock.json").read_text(encoding="utf-8"))
-    name = lock.get("name")
-    expected_bundle = expected_bundles.get(name)
-    if expected_bundle is None or name in seen:
-        raise SystemExit("persona Skill lock name mismatch")
-    seen.add(name)
-    if lock.get("license") != "MIT" or any(
-        lock.get(key) != value
-        for key, value in expected_bundle.items()
-        if key != "sha256"
-    ):
-        raise SystemExit("persona Skill lock metadata mismatch")
-    expected = lock.get("audit", {}).get("loaded_sha256")
-    actual = hashlib.sha256((root / "SKILL.md").read_bytes()).hexdigest()
-    if expected != expected_bundle["sha256"] or actual != expected:
-        raise SystemExit("persona Skill SHA-256 mismatch")
-    files = lock.get("files", {})
-    normalized_files = lock.get("eol_normalized_files", [])
-    if (
-        not isinstance(files, dict)
-        or not isinstance(normalized_files, list)
-        or any(not isinstance(relative, str) for relative in normalized_files)
-        or len(set(normalized_files)) != len(normalized_files)
-        or not set(normalized_files).issubset(files)
-        or "SKILL.md" in normalized_files
-    ):
-        raise SystemExit("persona Skill EOL normalization lock is invalid")
-    normalized_files = set(normalized_files)
-    for relative, digest in files.items():
-        path = (root / relative).resolve()
-        if path.parent != root and root not in path.parents:
-            raise SystemExit("persona Skill lock path escapes bundle")
-        if not path.is_file():
-            raise SystemExit("persona Skill file hash mismatch: " + relative)
-        data = path.read_bytes()
-        actual = hashlib.sha256(data).hexdigest()
-        if actual != digest and relative in normalized_files:
-            if b"\0" in data:
-                raise SystemExit("persona Skill normalized file contains NUL: " + relative)
-            actual = hashlib.sha256(
-                data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-            ).hexdigest()
-        if actual != digest:
-            raise SystemExit("persona Skill file hash mismatch: " + relative)
+CCV3_SOURCE = "https://github.com/kwaroran/character-card-spec-v3"
+CCV3_COMMIT = "f3a86af019fbd99f788f7a1155f399655b34ab35"
+CCV3_SPEC_SHA256 = "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c"
+CCV3_LICENSE_SHA256 = "108ba896c939ccf7278aac0115cd66db85d68352d00b4fc7c8abb13263f616d7"
+CARD_SHA256 = "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4"
+SOPHIA_SHA256 = "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301"
+
+
+def fail(message):
+    raise SystemExit("CCV3 persona resource validation failed: " + message)
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(path.name + " is invalid: " + type(exc).__name__)
+
+
+def sha256(path):
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(path.name + " is unavailable: " + type(exc).__name__)
+
+
+def checked_root(raw_root, label):
+    root = Path(raw_root)
+    if root.is_symlink() or not root.is_dir():
+        fail(label + " root is invalid")
+    root = root.resolve(strict=True)
     for path in root.rglob("*"):
         if path.is_symlink():
-            raise SystemExit("persona Skill contains a symbolic link")
-        if path.is_file() and path.suffix.lower() in {
-            ".bat", ".cmd", ".exe", ".js", ".ps1", ".py", ".sh"
-        }:
-            raise SystemExit("persona Skill contains executable content: " + str(path))
-if seen != set(expected_bundles):
-    raise SystemExit("persona Skill bundle set mismatch")
+            fail(label + " contains a symbolic link")
+    return root
+
+
+ccv3_root = checked_root(sys.argv[1], "CCV3 archive")
+card_root = checked_root(sys.argv[2], "character card")
+sophia_root = checked_root(sys.argv[3], "Sophia archive")
+
+ccv3_lock = read_json(ccv3_root / "SOURCE.lock.json")
+if (
+    ccv3_lock.get("name") != "character-card-spec-v3"
+    or ccv3_lock.get("source") != CCV3_SOURCE
+    or ccv3_lock.get("commit") != CCV3_COMMIT
+    or ccv3_lock.get("license") != "MIT"
+    or ccv3_lock.get("files", {}).get("SPEC_V3.md") != CCV3_SPEC_SHA256
+    or ccv3_lock.get("files", {}).get("LICENSE") != CCV3_LICENSE_SHA256
+):
+    fail("CCV3 source lock metadata mismatch")
+if sha256(ccv3_root / "SPEC_V3.md") != CCV3_SPEC_SHA256:
+    fail("CCV3 specification SHA-256 mismatch")
+if sha256(ccv3_root / "LICENSE") != CCV3_LICENSE_SHA256:
+    fail("CCV3 license SHA-256 mismatch")
+
+card_path = card_root / "xiaoge.card.json"
+card_lock = read_json(card_root / "SOURCE.lock.json")
+expected_card_sources = [
+    "https://github.com/kwaroran/character-card-spec-v3/tree/" + CCV3_COMMIT,
+    "https://github.com/sharbelxyz/sophia/tree/f2cd448553d61aa3c2ea774dc7e2296f09d4b584",
+]
+if (
+    card_lock.get("schema_version") != 1
+    or card_lock.get("name") != "xiaoge-card"
+    or card_lock.get("version") != "1.0.0"
+    or card_lock.get("format") != "chara_card_v3/3.0"
+    or card_lock.get("source") != expected_card_sources
+    or card_lock.get("files", {}).get("xiaoge.card.json") != CARD_SHA256
+    or sha256(card_path) != CARD_SHA256
+):
+    fail("fixed character card source lock mismatch")
+card = read_json(card_path)
+data = card.get("data") if isinstance(card, dict) else None
+if (
+    not isinstance(data, dict)
+    or card.get("spec") != "chara_card_v3"
+    or card.get("spec_version") != "3.0"
+    or data.get("name") != "小格"
+    or data.get("nickname") != "小格"
+    or data.get("character_version") != "1.0.0"
+    or data.get("source") != expected_card_sources
+):
+    fail("fixed character card format or source mismatch")
+
+sophia_lock = read_json(sophia_root / "SOURCE.lock.json")
+if (
+    sophia_lock.get("name") != "sophia"
+    or sophia_lock.get("version") != "1.0.0"
+    or sophia_lock.get("source") != "https://github.com/sharbelxyz/sophia"
+    or sophia_lock.get("commit") != "f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
+    or sophia_lock.get("license") != "MIT"
+    or sophia_lock.get("audit", {}).get("loaded_sha256") != SOPHIA_SHA256
+    or sha256(sophia_root / "SKILL.md") != SOPHIA_SHA256
+):
+    fail("Sophia attribution archive mismatch")
+for relative, digest in sophia_lock.get("files", {}).items():
+    if not isinstance(relative, str) or not isinstance(digest, str):
+        fail("Sophia source lock file entry is invalid")
+    path = (sophia_root / relative).resolve()
+    if path.parent != sophia_root and sophia_root not in path.parents:
+        fail("Sophia source lock path escapes archive")
+    data = path.read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != digest and relative == "LICENSE":
+        actual = hashlib.sha256(
+            data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        ).hexdigest()
+    if actual != digest:
+        fail("Sophia source lock file mismatch: " + relative)
 PY
 }
 
@@ -346,6 +384,7 @@ install_adapter() {
     --exclude '.pytest_cache' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
+    --exclude 'skills/humanizer-zh-next' \
     "$SOURCE_ROOT/" "$release_root/"
 
   python3 -m venv "$release_root/.venv"
@@ -1074,12 +1113,20 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "9",
+    "HERMES_WECHAT_SESSION_GENERATION": "10",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
     "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
+    "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "true",
+    "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS": "5",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6",
+    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
     "ALLOW_PRIVATE_WECHAT_CHAT": "false",
     "HERMES_WECHAT_WORKER_POLL_SECONDS": "1",
@@ -1108,14 +1155,6 @@ for key, value in {
     "HERMES_WECHAT_CLEANUP_MAX_AGE_SECONDS": "172800",
     "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "5",
     "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.75",
-    "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS": "5",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "5400",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "1",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "2",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6",
 }.items():
     adapter.setdefault(key, value)
 

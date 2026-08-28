@@ -58,10 +58,10 @@ class Settings:
     relationship_memory_enabled: bool = True
     relationship_summary_timeout_seconds: float = 5.0
     relationship_proactive_enabled: bool = True
-    relationship_proactive_idle_seconds: float = 5400.0
+    relationship_proactive_idle_seconds: float = 2700.0
     relationship_proactive_min_interactions: int = 3
-    relationship_proactive_max_per_member_day: int = 1
-    relationship_proactive_max_per_room_day: int = 2
+    relationship_proactive_max_per_member_day: int = 3
+    relationship_proactive_max_per_room_day: int = 6
     relationship_proactive_timeout_seconds: float = 6.0
     group_listener_enabled: bool = False
     group_listener_min_reply_gap_seconds: float = 12.0
@@ -403,7 +403,7 @@ class Settings:
                     float(
                         os.getenv(
                             "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS",
-                            "5400",
+                            "2700",
                         )
                     ),
                 ),
@@ -427,7 +427,7 @@ class Settings:
                     int(
                         os.getenv(
                             "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY",
-                            "1",
+                            "3",
                         )
                     ),
                 ),
@@ -439,7 +439,7 @@ class Settings:
                     int(
                         os.getenv(
                             "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY",
-                            "2",
+                            "6",
                         )
                     ),
                 ),

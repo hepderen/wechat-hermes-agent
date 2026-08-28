@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+import runpy
+from pathlib import Path
+
+
+def test_persona_probe_uses_at_least_24_non_delivery_ccv3_scenarios():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "probe_persona_cloud.py"
+    values = runpy.run_path(str(script))
+    cases = values["CASES"]
+
+    assert len(cases) >= 24
+    assert all(
+        {"scenario", "sender_id", "sender_name", "message"}.issubset(case)
+        for case in cases
+    )
+    assert len({case["scenario"] for case in cases}) == len(cases)
+    assert "diagnostic_session_id" in script.read_text(encoding="utf-8")
+    assert "diagnostic-no-delivery" in script.read_text(encoding="utf-8")
+    assert "humanizer-zh-next\" in skills" in script.read_text(encoding="utf-8")

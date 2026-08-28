@@ -100,6 +100,16 @@ def cleanup_database(
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
+
+        def has_table(name: str) -> bool:
+            return connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name=?
+                """,
+                (name,),
+            ).fetchone() is not None
+
         expired_task_ids = [
             row[0]
             for row in connection.execute(
@@ -210,6 +220,40 @@ def cleanup_database(
             (cutoff,),
         )
         counts["relationship_summary_jobs"] = int(cursor.rowcount)
+        if has_table("companion_timeline"):
+            cursor = connection.execute(
+                """
+                DELETE FROM companion_timeline
+                WHERE message_timestamp <= ? OR created_at <= ?
+                """,
+                (current - 24 * 60 * 60, current - 24 * 60 * 60),
+            )
+            counts["companion_timeline"] = int(cursor.rowcount)
+        else:
+            counts["companion_timeline"] = 0
+        if has_table("room_companion_state"):
+            cursor = connection.execute(
+                """
+                DELETE FROM room_companion_state
+                WHERE expires_at <= ?
+                """,
+                (current,),
+            )
+            counts["room_companion_state"] = int(cursor.rowcount)
+        else:
+            counts["room_companion_state"] = 0
+        if has_table("companion_summary_jobs"):
+            cursor = connection.execute(
+                """
+                DELETE FROM companion_summary_jobs
+                WHERE status IN ('succeeded', 'failed', 'dropped')
+                  AND updated_at < ?
+                """,
+                (cutoff,),
+            )
+            counts["companion_summary_jobs"] = int(cursor.rowcount)
+        else:
+            counts["companion_summary_jobs"] = 0
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             connection.rollback()

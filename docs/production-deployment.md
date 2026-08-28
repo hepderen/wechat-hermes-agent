@@ -127,11 +127,11 @@ sudo --preserve-env \
 3. 备份并迁移 Adapter SQLite。
 4. 安装版本化 Adapter 和 Hermes runtime。
 5. 应用 Hermes 日志、API scope 和工具证据加固补丁。
-6. 禁用 Hermes 动态 `skills` 工具集，部署锁定提交和哈希的只读 Sophia 与 `humanizer-zh-next` 资源；Sophia 只注入 `Persona & Voice`，不提供语音、主动发送、wife mode、todo、Telegram 或原生 memory 接口。
+6. 禁用 Hermes 动态 `skills` 工具集，部署锁定提交和哈希的 CCV3 规范、MIT License、`xiaoge.card.json` 与 Sophia 署名归档；只加载卡片安全文本字段，不加载 Humanizer、语音、wife mode、todo、Telegram 或原生 memory 接口。
 7. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
 8. 写入四个隔离环境文件。
 
-当前聊天发布将 `HERMES_WECHAT_CHAT_ONLY=true`，并把 Hermes 默认模型切换为 `gpt-5.4-mini`。执行型消息会在 Adapter 路由层降级为普通文字会话，已有生产任务会被取消并抑制交付。Bridge 与 Adapter 均启用 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true`：未点名消息会先经过低信号过滤和房间节流，再让模型决定是否插话；它们始终禁工具且不创建任务。默认节流为 12 秒与 2 个群消息，直接文本叫“小格”可绕过节流。`HERMES_WECHAT_SESSION_GENERATION` 设为 `9`，使已有群聊创建带新版常态监听和自然 1 至 4 句回复规则的新 Hermes Session；旧 Session 只保留为历史记录。小格始终使用轻松娱乐的陪聊口吻，不提供任何关键词人设切换。`HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true` 默认开启成员关系档案，`HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5` 限制空闲摘要的单次时长。`HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED=true` 时，满足互动门槛的成员和整个群都闲置后可收到一条受控主动文字；默认是 5400 秒、3 次互动、每成员每天 1 次、每群每天 2 次和 6 秒模型超时。它仍受 Outbox、幂等键、发送栅栏和当前代次校验约束；任意新群消息、停止、取消或 `别主动找我` 后，不会发送旧代次。使用 `主动找我` 可重新打开该成员的主动消息。
+当前聊天发布将 `HERMES_WECHAT_CHAT_ONLY=true`，并把 Hermes 默认模型切换为 `gpt-5.4-mini`。执行型消息会在 Adapter 路由层降级为普通文字会话，已有生产任务会被取消并抑制交付。Bridge 与 Adapter 均启用 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true`：未点名消息会先经过低信号过滤和房间节流，再让模型决定是否插话；它们始终禁工具且不创建任务。默认节流为 12 秒与 2 个群消息，直接文本叫“小格”可绕过节流。`HERMES_WECHAT_SESSION_GENERATION` 设为 `10`，使已有群聊创建带 CCV3 人格、群时间线和自然段落节奏的新 Hermes Session；旧 Session 只保留为历史记录。小格始终使用轻松娱乐的陪聊口吻，不提供任何关键词人设切换。Adapter 按群保存 24 小时、最多 120 条结构化时间线，每轮只注入最近 16 条，并把房间摘要保留最多 30 天。`HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true` 默认开启成员关系档案，`HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5` 限制空闲摘要的单次时长。`HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED=true` 时，满足互动门槛的成员和整个群都闲置后可收到一条受控主动文字；默认是 2700 秒、3 次互动、每成员每天 3 次、每群每天 6 次和 6 秒模型超时。它仍受 Outbox、幂等键、发送栅栏和当前代次校验约束；任意新群消息、停止、取消或 `别主动找我` 后，不会发送旧代次。使用 `主动找我` 可重新打开该成员的主动消息。
 
 Hermes 环境同时固定 `HERMES_HOME_MODE=2770`。Hermes 每次启动都会维持运行目录的组访问权限，使独立清理用户能够执行日志和 Session 保留策略；文件本身继续使用私有权限。
 
@@ -213,7 +213,7 @@ systemctl --no-pager --full status \
 
 ## 回滚
 
-人格回滚保留 Hermes Adapter、Adapter SQLite 和成员关系档案，只切换回已安装的上一版 Adapter 发布。它会把 `HERMES_WECHAT_SESSION_GENERATION` 设为 `10` 并关闭 `HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED`，使旧人格不再注入档案内容；不会删除档案、重启微信、清理游标或发送状态：
+人格回滚保留 Hermes Adapter、Adapter SQLite 和成员关系档案，只切换回已安装的上一版 Adapter 发布。它会把 `HERMES_WECHAT_SESSION_GENERATION` 设为 `11` 并关闭 `HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED`，使旧人格不再注入档案内容；不会删除档案、重启微信、清理游标或发送状态：
 
 ```bash
 sudo EXPECTED_WECHAT_PID=PID \

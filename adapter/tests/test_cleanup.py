@@ -228,6 +228,80 @@ def test_cleanup_expires_relationship_profiles_and_retains_active_summary_jobs(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_cleanup_expires_companion_context_and_retains_active_companion_summary(
+    tmp_path,
+):
+    store = AdapterStore(tmp_path / "adapter.db")
+    store.initialize()
+    now = 1_800_000_000.0
+    record_cutoff = now - 30 * 86400
+    stale = record_cutoff - 1
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            """
+            INSERT INTO companion_timeline(
+                room_id, event_id, local_id, sender_id, sender_name, direction,
+                text, message_timestamp, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "expired-companion@chatroom",
+                "incoming:1",
+                1,
+                "wxid_member",
+                "旧群友",
+                "incoming",
+                "过期群消息",
+                now - 24 * 60 * 60 - 1,
+                stale,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO room_companion_state(
+                room_id, mood, shared_jokes_json, open_loops_json, summary,
+                message_count, created_at, updated_at, expires_at
+            ) VALUES (?, 'warm', '[]', '[]', '过期摘要', 1, ?, ?, ?)
+            """,
+            ("expired-companion@chatroom", stale, stale, now - 1),
+        )
+        connection.execute(
+            """
+            INSERT INTO companion_summary_jobs(
+                room_id, source_local_id, trigger, status, attempts, error_type,
+                created_at, updated_at
+            ) VALUES (?, 1, 'terminal', 'succeeded', 1, '', ?, ?)
+            """,
+            ("expired-companion@chatroom", stale, stale),
+        )
+        connection.execute(
+            """
+            INSERT INTO companion_summary_jobs(
+                room_id, source_local_id, trigger, status, attempts, error_type,
+                created_at, updated_at
+            ) VALUES (?, 2, 'active', 'queued', 0, '', ?, ?)
+            """,
+            ("active-companion@chatroom", stale, stale),
+        )
+        connection.commit()
+
+    counts = cleanup_database(store.path, record_cutoff, now=now)
+
+    assert counts["companion_timeline"] == 1
+    assert counts["room_companion_state"] == 1
+    assert counts["companion_summary_jobs"] == 1
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM companion_timeline"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM room_companion_state"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT status FROM companion_summary_jobs"
+        ).fetchall() == [("queued",)]
+
+
 def touch_with_age(path: Path, age_days: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("data", encoding="utf-8")

@@ -75,6 +75,20 @@ class FakeState:
 STATE = FakeState()
 
 
+def foreground_hermes_chat_count() -> int:
+    """Keep companion-maintenance calls out of foreground routing assertions."""
+    summary_prefixes = (
+        "wechat-companion-summary:",
+        "wechat-relationship-summary:",
+    )
+    with STATE.lock:
+        return sum(
+            item["event"] == "hermes.chat"
+            and not str(item.get("session_id") or "").startswith(summary_prefixes)
+            for item in STATE.events
+        )
+
+
 class JsonHandler(BaseHTTPRequestHandler):
     server_version = "WechatHermesFake/1"
 
@@ -214,13 +228,32 @@ class HermesHandler(JsonHandler):
             self.send_json(201, {"id": session_id})
             return
         if path.startswith("/api/sessions/") and path.endswith("/chat"):
-            STATE.record("hermes.chat", message=str(payload.get("message") or ""))
+            session_id = urllib.parse.unquote(
+                path[len("/api/sessions/") : -len("/chat")].strip("/")
+            )
+            STATE.record(
+                "hermes.chat",
+                session_id=session_id,
+                message=str(payload.get("message") or ""),
+            )
+            if session_id.startswith("wechat-companion-summary:"):
+                content = json.dumps(
+                    {
+                        "mood": "playful",
+                        "shared_jokes": ["假栈群梗"],
+                        "open_loops": ["继续验证群聊上下文"],
+                        "summary": "假栈已生成可用的群聊短摘要。",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                content = "FAKE_SYNC_OK:" + str(payload.get("message") or "")[:80]
             self.send_json(
                 200,
                 {
                     "message": {
-                        "content": "FAKE_SYNC_OK:"
-                        + str(payload.get("message") or "")[:80]
+                        "content": content
                     },
                     "usage": {"input_tokens": 4, "output_tokens": 3},
                 },
@@ -757,13 +790,10 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                     "succeeded",
                 ]:
                     raise AssertionError("three structured mentions were not independent")
-                with STATE.lock:
-                    chat_count = sum(
-                        item["event"] == "hermes.chat" for item in STATE.events
-                    )
+                chat_count = foreground_hermes_chat_count()
                 if chat_count != 3:
                     raise AssertionError(
-                        "expected 3 Hermes chats, got %d" % chat_count
+                        "expected 3 foreground Hermes chats, got %d" % chat_count
                     )
 
                 passive_reply = post_chat(
@@ -794,13 +824,10 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "low-signal passive group chat was not suppressed"
                     )
-                with STATE.lock:
-                    passive_chat_count = sum(
-                        item["event"] == "hermes.chat" for item in STATE.events
-                    )
+                passive_chat_count = foreground_hermes_chat_count()
                 if passive_chat_count != 4:
                     raise AssertionError(
-                        "passive group routing produced an unexpected chat count"
+                        "passive group routing produced an unexpected foreground chat count"
                     )
 
                 success_reply = post_chat(

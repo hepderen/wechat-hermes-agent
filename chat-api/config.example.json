@@ -10,6 +10,10 @@
   "group_name": "Example Group",
   "mention": "@Hermes",
   "bot_wxid": "wxid_replace_me",
+  "bot_name": "小格",
+  "member_names": {
+    "wxid_example_member": "Example member"
+  },
   "poll_seconds": 0.15,
   "health_check_seconds": 10.0,
   "health_monitor_failure_limit": 3,

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import build_runtime, create_app
-from tests.test_adapter import make_runtime, make_settings
+from tests.test_adapter import ROOM_ID, make_runtime, make_settings, post_chat
 
 
 def test_build_runtime_uses_distinct_chat_api_token(tmp_path):
@@ -138,6 +138,29 @@ def test_persona_integrity_degrades_health(monkeypatch, tmp_path):
         assert health["ready"] is False
         assert health["degraded_reason"] == "persona_skill_integrity"
         assert health["persona"]["integrity"] is False
+
+
+def test_persona_integrity_rejects_chat_instead_of_using_generic_fallback(
+    monkeypatch, tmp_path
+):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "PERSONA_SKILL_INTEGRITY_OK", False)
+    runtime = make_runtime(tmp_path)
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "你好",
+                "request_id": "invalid-persona-card",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 1,
+                "mentions_bot": True,
+            },
+        )
+    assert response.status_code == 503
+    assert runtime.hermes.chat_calls == []
 
 
 def test_missing_cleanup_status_uses_bounded_startup_grace(tmp_path):

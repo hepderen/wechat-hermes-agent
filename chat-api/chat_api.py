@@ -146,6 +146,20 @@ def split_group_content(content):
     return "", content
 
 
+def normalize_member_names(value):
+    """Load only locally configured structured contact/group-member names."""
+    if not isinstance(value, dict):
+        return {}
+    names = {}
+    for raw_identity, raw_name in value.items():
+        identity = str(raw_identity or "").strip()
+        name = re.sub(r"\s+", " ", str(raw_name or "").replace("\x00", "")).strip()
+        if not identity or len(identity) > 256 or not name or len(name) > 96:
+            continue
+        names[identity] = name
+    return names
+
+
 def parse_mention(body, mention):
     normalized = unicodedata.normalize("NFKC", body or "")
     mention = unicodedata.normalize("NFKC", mention)
@@ -654,6 +668,14 @@ class SnapshotReader:
         self.group_name = config.get("group_name", self.group_id)
         self.mention = config.get("mention", "@Hermes")
         self.bot_wxid = str(config.get("bot_wxid") or "").strip()
+        self.member_names = normalize_member_names(
+            config.get("member_names") or config.get("group_member_names")
+        )
+        self.bot_name = re.sub(
+            r"\s+",
+            " ",
+            str(config.get("bot_name") or "小格").replace("\x00", ""),
+        ).strip()[:96] or "小格"
         self.table_name = "Msg_" + hashlib.md5(self.group_id.encode("utf-8")).hexdigest()
         self.cache_dir = Path(config.get("cache_dir", "~/.cache/wechat-chat-api")).expanduser()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -935,6 +957,14 @@ class SnapshotReader:
         visible_mention, prompt = parse_mention(body, self.mention)
         if (native_mentions_bot or reply_to_bot) and not visible_mention:
             prompt = " ".join(body.split())
+        sender_name = (
+            str(getattr(self, "bot_name", "小格") or "小格")
+            if direction == "outgoing"
+            else dict(getattr(self, "member_names", {}) or {}).get(
+                sender_wxid,
+                "",
+            )
+        )
         return {
             "id": "%s:%s" % (self.group_id, row["local_id"]),
             "group_id": self.group_id,
@@ -947,6 +977,7 @@ class SnapshotReader:
             "sort_seq": int(row["sort_seq"] or 0),
             "sender_numeric_id": int(row["real_sender_id"] or 0),
             "sender_wxid": sender_wxid,
+            "sender_name": sender_name,
             "timestamp": int(row["create_time"] or 0),
             "status": int(row["status"] or 0),
             "origin_source": source,

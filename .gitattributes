@@ -11,6 +11,7 @@
 *.example text eol=lf
 /adapter/skills/sophia/SKILL.md -text -whitespace
 /adapter/skills/humanizer-zh-next/SKILL.md -text -whitespace
+/adapter/third_party/character-card-spec-v3/SPEC_V3.md -whitespace
 *.png binary
 *.jpg binary
 *.jpeg binary

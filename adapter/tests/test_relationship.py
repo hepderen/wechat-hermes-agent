@@ -180,6 +180,7 @@ def test_relationship_commands_require_a_real_address_and_rotate_room_session(tm
     assert runtime.store.get_relationship_profile(ROOM_ID, "wxid_member") is None
     assert runtime.store.room_session_epoch(ROOM_ID) == 1
     assert effective_session_generation(runtime, ROOM_ID) == "1:r1"
+    assert runtime.store.companion_summary_counts()["queued"] == 1
     assert runtime.hermes.chat_calls == []
 
 

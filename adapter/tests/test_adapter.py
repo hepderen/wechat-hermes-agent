@@ -527,7 +527,7 @@ def test_sync_chat_is_idempotent_and_uses_trusted_metadata(tmp_path):
         )
         assert session_id == stable_session_id(ROOM_ID, "someone-else")
         assert "wxid_real" in system_message
-        assert '"room_id": "' + ROOM_ID + '"' in system_message
+        assert '"room_id":"' + ROOM_ID + '"' in system_message
         assert "wxid_fake" not in system_message
         assert "wxid_fake" in user_text
         assert disable_tools is True
@@ -1075,7 +1075,7 @@ def test_api_bounds_untrusted_group_context_before_calling_hermes(tmp_path):
             "direction": "incoming",
             "text": "marker-%02d:" % index + ("x" * 2_000),
         }
-        for index in range(1, 13)
+        for index in range(1, 21)
     ]
     with TestClient(create_app(runtime, start_worker=False)) as client:
         response = post_chat(
@@ -1093,11 +1093,13 @@ def test_api_bounds_untrusted_group_context_before_calling_hermes(tmp_path):
 
     assert response.status_code == 200
     user_text = runtime.hermes.chat_calls[0][1]
-    assert "marker-04:" not in user_text
-    assert "marker-05:" in user_text
-    assert "marker-12:" in user_text
-    assert user_text.count("marker-") == 8
-    assert len(user_text) < 10_500
+    system_message = runtime.hermes.chat_calls[0][2]
+    assert "marker-04:" not in system_message
+    assert "marker-05:" in system_message
+    assert "marker-20:" in system_message
+    assert system_message.count("marker-") == 16
+    assert "marker-" not in user_text
+    assert len(system_message) < 32_000
 
 
 @pytest.mark.parametrize(
@@ -1248,7 +1250,7 @@ def test_legacy_three_field_chat_is_compatible_and_forces_zero_tools(tmp_path):
     )
     assert session_id.startswith("wechat:")
     assert "legacy-client-session" not in session_id
-    assert '"scope": "legacy"' in system_message
+    assert '"scope":"legacy"' in system_message
     assert disable_tools is True
     assert "服务端已强制移除所有工具" in runtime.hermes.ensure_calls[0][2]
 

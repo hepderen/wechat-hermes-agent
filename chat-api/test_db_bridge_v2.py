@@ -892,11 +892,13 @@ class BridgeV2IngressTests(unittest.TestCase):
                 "local_id": index,
                 "local_type": 1,
                 "sender_wxid": "wxid_%d" % index,
+                "sender_name": "成员%d" % index,
                 "direction": "incoming",
+                "timestamp": 1000 + index,
                 "message_type": "text",
                 "text": "marker-%02d:" % index + ("x" * 2_000),
             }
-            for index in range(1, 13)
+            for index in range(1, 21)
         ]
         requested = []
 
@@ -911,12 +913,14 @@ class BridgeV2IngressTests(unittest.TestCase):
         ):
             context = self.bridge.get_recent_context(99)
 
-        self.assertIn("before=99&limit=8", requested[0])
-        self.assertEqual(len(context), 8)
+        self.assertIn("before=99&limit=16", requested[0])
+        self.assertEqual(len(context), 16)
         self.assertEqual(context[0]["local_id"], 5)
-        self.assertEqual(context[-1]["local_id"], 12)
+        self.assertEqual(context[-1]["local_id"], 20)
+        self.assertEqual(context[0]["sender_name"], "成员5")
+        self.assertEqual(context[0]["timestamp"], 1005)
         self.assertTrue(all(len(item["text"]) <= 1200 for item in context))
-        self.assertLessEqual(sum(len(item["text"]) for item in context), 9600)
+        self.assertLessEqual(sum(len(item["text"]) for item in context), 19200)
 
 
 if __name__ == "__main__":
