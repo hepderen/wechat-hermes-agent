@@ -11,11 +11,22 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from .security import redact_sensitive_text
+
 
 RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 TRANSIENT_FAILURE_RE = re.compile(
     r"(?:\bHTTP\s*(?:status\s*)?(?:408|425|429|500|502|503|504)\b|"
     r"rate[ _-]?limit|too many requests|temporarily unavailable|限流)",
+    re.IGNORECASE,
+)
+HERMES_CHAT_FAILURE_RE = re.compile(
+    r"^\s*API\s+call\s+failed\s+after\s+\d+\s+retries?\s*:\s*"
+    r"(?P<detail>.+?)\s*$",
+    re.IGNORECASE,
+)
+HTTP_STATUS_RE = re.compile(
+    r"\bHTTP(?:\s+status)?\s*[:=]?\s*(?P<status>[1-5]\d{2})\b",
     re.IGNORECASE,
 )
 
@@ -82,6 +93,149 @@ def transient_failure_delay_seconds(message: str, attempts: int) -> float:
     return retry_delay_seconds(
         RemoteAPIError("transient upstream failure", retryable=True),
         attempts,
+    )
+
+
+def _error_detail(value: Any) -> str:
+    """Extract a short human-readable detail from an upstream error value."""
+    if isinstance(value, dict):
+        for key in ("message", "detail", "reason", "description", "error"):
+            if key in value:
+                detail = _error_detail(value.get(key))
+                if detail:
+                    return detail
+        return ""
+    if value is None or isinstance(value, (list, tuple, set)):
+        return ""
+    return str(value).strip()
+
+
+def _error_status_code(*values: Any) -> int | None:
+    """Find a valid HTTP status in structured fields or an error string."""
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+        text = str(value or "").strip()
+        if not text:
+            continue
+        match = HTTP_STATUS_RE.search(text)
+        if match:
+            return int(match.group("status"))
+        if text.isdigit() and 100 <= int(text) <= 599:
+            return int(text)
+    return None
+
+
+def _hermes_chat_failure(
+    response: httpx.Response,
+    data: dict[str, Any],
+    content: str,
+) -> RemoteAPIError | None:
+    """Turn Hermes' occasionally soft-reported failures into real errors.
+
+    Older Hermes API builds returned HTTP 200 and put the provider retry error
+    in the assistant message. Newer builds expose an error/hermes envelope or
+    response headers. A normal assistant response remains untouched unless one
+    of those explicit failure contracts is present.
+    """
+    headers = getattr(response, "headers", {}) or {}
+    error_value = data.get("error")
+    hermes_value = data.get("hermes")
+    message_value = data.get("message")
+    message_error = (
+        message_value.get("error")
+        if isinstance(message_value, dict)
+        else None
+    )
+
+    detail = ""
+    status_hint: Any = None
+    failure_kind = "hermes_chat_upstream_error"
+
+    if error_value:
+        detail = _error_detail(error_value)
+        if isinstance(error_value, dict):
+            status_hint = error_value.get("status_code") or error_value.get(
+                "status"
+            )
+        failure_kind = "hermes_chat_error_envelope"
+    elif message_error:
+        detail = _error_detail(message_error)
+        failure_kind = "hermes_chat_message_error"
+
+    if isinstance(hermes_value, dict):
+        hermes_failed = bool(hermes_value.get("failed"))
+        hermes_partial = bool(hermes_value.get("partial"))
+        hermes_incomplete = hermes_value.get("completed") is False
+        hermes_detail = _error_detail(hermes_value.get("error"))
+        if hermes_failed or hermes_partial or hermes_incomplete or hermes_detail:
+            detail = detail or hermes_detail
+            status_hint = status_hint or hermes_value.get("status_code")
+            failure_kind = "hermes_chat_incomplete"
+
+    raw_status = str(data.get("status") or "").strip().lower()
+    if raw_status in {"failed", "error", "incomplete", "partial"}:
+        detail = detail or _error_detail(data.get("reason"))
+        failure_kind = "hermes_chat_status_error"
+
+    header_failed = str(headers.get("X-Hermes-Completed") or "").lower() == "false"
+    header_partial = str(headers.get("X-Hermes-Partial") or "").lower() == "true"
+    header_detail = str(headers.get("X-Hermes-Error") or "").strip()
+    if header_failed or header_partial or header_detail:
+        detail = detail or header_detail
+        failure_kind = "hermes_chat_header_error"
+
+    legacy_match = HERMES_CHAT_FAILURE_RE.match(content)
+    if legacy_match:
+        detail = detail or legacy_match.group("detail").strip()
+        failure_kind = "hermes_chat_legacy_upstream_error"
+
+    structured_failure = (
+        bool(error_value)
+        or bool(message_error)
+        or (
+            isinstance(hermes_value, dict)
+            and (
+                bool(hermes_value.get("failed"))
+                or bool(hermes_value.get("partial"))
+                or hermes_value.get("completed") is False
+                or bool(hermes_value.get("error"))
+            )
+        )
+        or raw_status in {"failed", "error", "incomplete", "partial"}
+        or header_failed
+        or header_partial
+        or bool(header_detail)
+        or legacy_match is not None
+    )
+    if not structured_failure:
+        return None
+
+    status_code = _error_status_code(
+        status_hint,
+        detail,
+        headers.get("X-Hermes-Status-Code"),
+    )
+    if status_code is None and response.status_code != 200:
+        status_code = response.status_code
+    retryable = bool(
+        status_code in RETRYABLE_HTTP_STATUSES
+        or TRANSIENT_FAILURE_RE.search(detail or "")
+    )
+    bounded_detail = redact_sensitive_text(detail, limit=400)
+    message = "Hermes chat upstream failure"
+    if status_code is not None:
+        message += " (HTTP %d)" % status_code
+    if bounded_detail:
+        message += ": " + bounded_detail
+    return RemoteAPIError(
+        message,
+        status_code,
+        error_type=failure_kind,
+        pre_submission=True,
+        retryable=retryable,
     )
 
 
@@ -171,8 +325,33 @@ class HermesClient:
             raise RemoteAPIError("Hermes chat request failed") from exc
         if response.status_code != 200:
             raise response_error(response)
-        data = response.json()
-        content = ((data.get("message") or {}).get("content") or "").strip()
+        try:
+            data = response.json()
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RemoteAPIError(
+                "Hermes chat returned invalid JSON",
+                response.status_code,
+                error_type="invalid_response",
+                retryable=True,
+                pre_submission=True,
+            ) from exc
+        if not isinstance(data, dict):
+            raise RemoteAPIError(
+                "Hermes chat returned a non-object response",
+                response.status_code,
+                error_type="invalid_response",
+                pre_submission=True,
+            )
+        message_value = data.get("message")
+        raw_content = (
+            message_value.get("content")
+            if isinstance(message_value, dict)
+            else None
+        )
+        content = raw_content.strip() if isinstance(raw_content, str) else ""
+        failure = _hermes_chat_failure(response, data, content)
+        if failure is not None:
+            raise failure
         if not content:
             raise RemoteAPIError("Hermes returned an empty session response")
         return content, data.get("usage") or {}

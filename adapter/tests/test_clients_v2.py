@@ -79,6 +79,136 @@ def test_non_transient_run_failure_does_not_backoff():
     assert clients.transient_failure_delay_seconds("invalid prompt", 1) == 0
 
 
+def test_chat_keeps_normal_text_that_mentions_an_http_status(monkeypatch):
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return Response(
+                200,
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "HTTP 503 是服务端状态码，不是这次请求的结果。",
+                    }
+                },
+            )
+
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **_kwargs: Client())
+    hermes = HermesClient("http://127.0.0.1:8642", "secret")
+
+    content, _usage = asyncio.run(
+        hermes.chat("session-1", "解释 503", "回答问题")
+    )
+
+    assert content.startswith("HTTP 503")
+
+
+@pytest.mark.parametrize(
+    ("payload", "headers", "expected_status", "expected_kind"),
+    (
+        (
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "API call failed after 3 retries: HTTP 503: "
+                        "Service temporarily unavailable"
+                    ),
+                }
+            },
+            {},
+            503,
+            "hermes_chat_legacy_upstream_error",
+        ),
+        (
+            {
+                "error": {
+                    "message": "provider overloaded",
+                    "status_code": 503,
+                },
+                "message": {"role": "assistant", "content": ""},
+            },
+            {},
+            503,
+            "hermes_chat_error_envelope",
+        ),
+        (
+            {
+                "hermes": {
+                    "completed": False,
+                    "partial": True,
+                    "error": "upstream timeout",
+                },
+                "message": {"role": "assistant", "content": "半截"},
+            },
+            {"X-Hermes-Status-Code": "504"},
+            504,
+            "hermes_chat_incomplete",
+        ),
+    ),
+)
+def test_chat_converts_soft_hermes_failures_to_retryable_errors(
+    monkeypatch,
+    payload,
+    headers,
+    expected_status,
+    expected_kind,
+):
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return Response(200, payload, headers)
+
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **_kwargs: Client())
+    hermes = HermesClient("http://127.0.0.1:8642", "secret")
+
+    with pytest.raises(RemoteAPIError) as caught:
+        asyncio.run(hermes.chat("session-1", "你好", "回答问题"))
+
+    assert caught.value.status_code == expected_status
+    assert caught.value.error_type == expected_kind
+    assert caught.value.retryable is True
+    assert caught.value.pre_submission is True
+    assert "HTTP %d" % expected_status in str(caught.value)
+
+
+def test_chat_rejects_invalid_json_as_a_remote_error(monkeypatch):
+    class InvalidJSONResponse:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            raise ValueError("broken response")
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return InvalidJSONResponse()
+
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **_kwargs: Client())
+    hermes = HermesClient("http://127.0.0.1:8642", "secret")
+
+    with pytest.raises(RemoteAPIError) as caught:
+        asyncio.run(hermes.chat("session-1", "你好", "回答问题"))
+
+    assert caught.value.error_type == "invalid_response"
+
+
 def test_wait_run_publishes_sse_tool_events():
     events = [
         {"event": "tool.started", "tool": "terminal"},
