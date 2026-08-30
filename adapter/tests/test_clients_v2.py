@@ -127,6 +127,34 @@ def test_chat_keeps_normal_text_that_mentions_an_http_status(monkeypatch):
         ),
         (
             {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "API call failed after 3 retries. HTTP 503: "
+                        "Service temporarily unavailable"
+                    ),
+                }
+            },
+            {},
+            503,
+            "hermes_chat_legacy_upstream_error",
+        ),
+        (
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "API failed after 3 retries — HTTP 503: "
+                        "Service temporarily unavailable"
+                    ),
+                }
+            },
+            {},
+            503,
+            "hermes_chat_legacy_upstream_error",
+        ),
+        (
+            {
                 "error": {
                     "message": "provider overloaded",
                     "status_code": 503,

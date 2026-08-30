@@ -21,7 +21,8 @@ TRANSIENT_FAILURE_RE = re.compile(
     re.IGNORECASE,
 )
 HERMES_CHAT_FAILURE_RE = re.compile(
-    r"^\s*API\s+call\s+failed\s+after\s+\d+\s+retries?\s*:\s*"
+    r"^\s*API(?:\s+call)?\s+failed\s+after\s+\d+\s+retries?\s*"
+    r"(?:(?::|[.\u002d\u2012\u2013\u2014])\s*|\s+)"
     r"(?P<detail>.+?)\s*$",
     re.IGNORECASE,
 )
