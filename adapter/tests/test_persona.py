@@ -211,6 +211,7 @@ def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
     assert not expanded_reply_requested("你怎么看")
     assert expanded_reply_requested("详细分析一下，再列三点")
     assert "一到三个短段落、最多 %d 字" % SHORT_REPLY_MAX_CHARS in chat_turn_prompt("你怎么看")
+    assert "不要用“嗯，来了”" in chat_turn_prompt("你怎么看")
 
     reply = "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。\n\n第四段不该保留。"
     assert compact_chat_reply(reply, "你怎么看") == "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。"
@@ -223,6 +224,11 @@ def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
         "Same thought. Same thought. New point.",
         "Keep it short",
     ) == "Same thought. New point."
+    assert compact_chat_reply(
+        "嗯，来了。这个方案先把入口捋顺。",
+        "你怎么看",
+    ) == "这个方案先把入口捋顺。"
+    assert compact_chat_reply("我在想这个问题。", "你怎么看") == "我在想这个问题。"
 
 
 def test_card_group_greetings_are_loaded_only_as_a_bounded_proactive_reference():

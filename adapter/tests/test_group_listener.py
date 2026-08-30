@@ -7,6 +7,7 @@ from app.group_listener import (
     is_low_information_reply,
     listener_reply_or_silence,
     repeats_recent_listener_reply,
+    strip_leading_presence_confirmation,
 )
 from app.store import AdapterStore
 
@@ -106,6 +107,20 @@ def test_presence_only_replies_are_classified_as_low_information():
     assert is_low_information_reply("嗯\u061c，来\u00ad了。")
     assert is_low_information_reply("我在")
     assert not is_low_information_reply("我在看你说的第二点")
+
+
+def test_presence_prefix_is_removed_only_when_a_real_reply_follows():
+    assert strip_leading_presence_confirmation(
+        "嗯，来了。这个方案先把入口捋顺。"
+    ) == "这个方案先把入口捋顺。"
+    assert strip_leading_presence_confirmation("我在。先看第二点。") == "先看第二点。"
+    assert strip_leading_presence_confirmation("到啦，别急着下结论。") == "别急着下结论。"
+    assert strip_leading_presence_confirmation("我在想这个问题") == "我在想这个问题"
+    assert strip_leading_presence_confirmation("来了个新问题") == "来了个新问题"
+    assert strip_leading_presence_confirmation("嗯，来了。") == "嗯，来了。"
+    assert listener_reply_or_silence("嗯，来了。这个方案先把入口捋顺。\u2063") == (
+        "这个方案先把入口捋顺。"
+    )
 
 
 def test_internal_cleanup_keeps_composite_emoji_intact():

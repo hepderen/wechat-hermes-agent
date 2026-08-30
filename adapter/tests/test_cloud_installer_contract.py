@@ -147,7 +147,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "11"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in SCRIPT
     assert '"HERMES_WECHAT_CHAT_ONLY": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
@@ -264,7 +264,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=11" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=12" in example
         assert "HERMES_WECHAT_CHAT_ONLY=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
@@ -328,7 +328,7 @@ def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
     assert "assert_ccv3_persona_resources" in CCV3_ADAPTER_RELEASE
     assert "sophia@1.0.0+ccv3-xiaoge@1.1.1" in CCV3_ADAPTER_RELEASE
     assert "skills/humanizer-zh-next" in CCV3_ADAPTER_RELEASE
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "11"' in CCV3_ADAPTER_RELEASE
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in CCV3_ADAPTER_RELEASE
     assert "Legacy relationship environment values are ignored" in CCV3_ADAPTER_RELEASE
     assert "restoring previous Adapter release" in CCV3_ADAPTER_RELEASE
     assert "systemctl restart wechat-hermes-adapter.service" in CCV3_ADAPTER_RELEASE
@@ -375,7 +375,7 @@ def test_chat_api_release_is_reversible_and_checks_plain_text_delivery():
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
     assert 'PREVIOUS_RELEASE_ID=${1:-}' in PERSONA_ROLLBACK
     assert 'EXPECTED_WECHAT_PID=${EXPECTED_WECHAT_PID:-}' in PERSONA_ROLLBACK
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "13"' in PERSONA_ROLLBACK
     assert "systemctl restart wechat-hermes-adapter.service" in PERSONA_ROLLBACK
     assert "wait_for_adapter_ready" in PERSONA_ROLLBACK
     assert "http://127.0.0.1:8000/health" in PERSONA_ROLLBACK

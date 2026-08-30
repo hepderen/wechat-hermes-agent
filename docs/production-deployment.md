@@ -131,7 +131,7 @@ sudo --preserve-env \
 7. 安装 Chat API、结构化 Bridge、systemd、cleanup timer 和 logrotate。
 8. 写入四个隔离环境文件。
 
-当前聊天发布将 `HERMES_WECHAT_CHAT_ONLY=true`，并把 Hermes 默认模型切换为 `gpt-5.4-mini`。执行型消息会在 Adapter 路由层降级为普通文字会话，已有生产任务会被取消并抑制交付。Bridge 与 Adapter 均启用 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true`：未点名消息会先经过低信号过滤和房间节流，再让模型决定是否插话；它们始终禁工具且不创建任务。默认节流为 12 秒与 3 个群消息，直接文本叫“小格”可绕过节流。`HERMES_WECHAT_SESSION_GENERATION` 设为 `11`，使已有群聊创建带 CCV3 人格、群时间线和自然段落节奏的新 Hermes Session；旧 Session 只保留为历史记录。小格始终使用轻松娱乐的陪聊口吻，不提供关键词人设切换。Adapter 按群保存 24 小时、最多 120 条结构化时间线，每轮只注入最近 16 条，并把房间摘要保留最多 30 天。生产只使用群级时间线和共享摘要，不创建、读取或注入 `(room_id, sender_id)` 成员关系档案，也不运行成员定向主动消息；旧环境中的 `HERMES_WECHAT_RELATIONSHIP_*` 变量会被忽略。
+当前聊天发布将 `HERMES_WECHAT_CHAT_ONLY=true`，并把 Hermes 默认模型切换为 `gpt-5.4-mini`。执行型消息会在 Adapter 路由层降级为普通文字会话，已有生产任务会被取消并抑制交付。Bridge 与 Adapter 均启用 `HERMES_WECHAT_GROUP_LISTENER_ENABLED=true`：未点名消息会先经过低信号过滤和房间节流，再让模型决定是否插话；它们始终禁工具且不创建任务。默认节流为 12 秒与 3 个群消息，直接文本叫“小格”可绕过节流。`HERMES_WECHAT_SESSION_GENERATION` 设为 `12`，使已有群聊创建带 CCV3 人格、群时间线和自然段落节奏的新 Hermes Session；旧 Session 只保留为历史记录。小格始终使用轻松娱乐的陪聊口吻，不提供关键词人设切换。Adapter 按群保存 24 小时、最多 120 条结构化时间线，每轮只注入最近 16 条，并把房间摘要保留最多 30 天。生产只使用群级时间线和共享摘要，不创建、读取或注入 `(room_id, sender_id)` 成员关系档案，也不运行成员定向主动消息；旧环境中的 `HERMES_WECHAT_RELATIONSHIP_*` 变量会被忽略。
 
 Hermes 环境同时固定 `HERMES_HOME_MODE=2770`。Hermes 每次启动都会维持运行目录的组访问权限，使独立清理用户能够执行日志和 Session 保留策略；文件本身继续使用私有权限。
 
@@ -267,7 +267,7 @@ systemctl --no-pager --full status \
 
 ## 回滚
 
-人格回滚保留 Hermes Adapter 和 Adapter SQLite，只切换回已安装的上一版 Adapter 发布。它会把 `HERMES_WECHAT_SESSION_GENERATION` 设为 `12`；生产仍只使用群级上下文，不会读取旧成员关系数据，也不会删除数据库、重启微信、清理游标或发送状态：
+人格回滚保留 Hermes Adapter 和 Adapter SQLite，只切换回已安装的上一版 Adapter 发布。它会把 `HERMES_WECHAT_SESSION_GENERATION` 设为 `13`；生产仍只使用群级上下文，不会读取旧成员关系数据，也不会删除数据库、重启微信、清理游标或发送状态：
 
 ```bash
 sudo EXPECTED_WECHAT_PID=PID \

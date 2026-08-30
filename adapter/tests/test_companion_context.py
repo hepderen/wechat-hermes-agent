@@ -13,6 +13,7 @@ from app.main import (
     ChatResponse,
     ChatRequest,
     bounded_companion_timeline,
+    companion_prompt_timeline,
     create_app,
     execute_companion_summary,
     record_group_listener_bot_reply,
@@ -433,3 +434,23 @@ def test_companion_context_budget_keeps_the_latest_16_records_without_oversize_t
     assert [item["local_id"] for item in bounded] == list(range(9, 25))
     assert all(len(item["text"]) <= MAX_GROUP_CONTEXT_MESSAGE_CHARS for item in bounded)
     assert sum(len(item["text"]) for item in bounded) <= MAX_GROUP_CONTEXT_TOTAL_CHARS
+
+
+def test_companion_prompt_timeline_removes_stale_arrival_prefixes_from_bot_history():
+    timeline = [
+        {
+            "local_id": 1,
+            "direction": "outgoing",
+            "text": "嗯，来了。这个话题先把前提说清楚。",
+        },
+        {
+            "local_id": 2,
+            "direction": "incoming",
+            "text": "我在想这个问题。",
+        },
+    ]
+
+    prompt_timeline = companion_prompt_timeline(timeline)
+
+    assert prompt_timeline[0]["text"] == "这个话题先把前提说清楚。"
+    assert prompt_timeline[1]["text"] == "我在想这个问题。"

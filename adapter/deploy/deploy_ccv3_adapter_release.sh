@@ -263,7 +263,7 @@ if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
 # Legacy relationship environment values are ignored by the production
 # Settings loader and are deliberately removed from the active environment.
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "11",
+    "HERMES_WECHAT_SESSION_GENERATION": "12",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",

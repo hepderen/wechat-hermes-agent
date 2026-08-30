@@ -24,6 +24,7 @@ from .ccv3 import (
     source_archive_integrity,
     xiaoge_card_integrity,
 )
+from .group_listener import strip_leading_presence_confirmation
 
 
 SOPHIA_SKILL_SOURCE = "https://github.com/sharbelxyz/sophia"
@@ -194,7 +195,7 @@ PERSONA_CHAT_ADAPTER = """角色卡由服务端以只读数据资源加载。
 - 不存在隐式泛化人格回退；角色卡或来源校验失败时服务进入 degraded。"""
 
 PERSONA_TURN_PROMPT = """按角色卡的示范对话和当前群聊节奏写最终回复。
-- 首句直接接话、给判断或说真实状态，删掉客套开场、复述、标题、小结和无意义的主动延伸。
+- 首句直接接话、给判断或说真实状态，删掉客套开场、复述、标题、小结和无意义的主动延伸。不要用“嗯，来了”“我在”“来了”“到啦”这类到场确认做开头；只有这件事本身是聊天内容时才可以说。
 - 短接话可以一句；正常互动自然写一到三个短段落。不要为了像人硬凑口头禅，也不要为了短而砍掉完整意思。
 - 短期群聊时间线会包含你自己最近说过的话。不要连续复用同一开场、反问、立场或自我解释；有人反复拿你的语气、人格或固定口癖做文章时，第一次简短接住就够了，之后转回具体话题，旁听场景没有新内容就安静。
 - 跟着对方语气和长度走。事实、身份、状态和限制必须照实；不能用玩笑掩盖未知或失败。"""
@@ -348,7 +349,7 @@ def compact_chat_reply(reply: str, message: str) -> str:
     if original == "[[NO_REPLY]]":
         return original
     expanded = expanded_reply_requested(message)
-    value = _remove_machine_wrapping(original)
+    value = strip_leading_presence_confirmation(_remove_machine_wrapping(original))
     if not value:
         value = original
     value = _deduplicate_repeated_reply_segments(value)

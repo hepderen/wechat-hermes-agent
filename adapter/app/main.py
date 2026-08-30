@@ -43,6 +43,7 @@ from .group_listener import (
     listener_reply_or_silence,
     passive_listener_turn_prompt,
     repeats_recent_listener_reply,
+    strip_leading_presence_confirmation,
     strip_internal_format_chars,
 )
 from .media import (
@@ -827,7 +828,8 @@ def companion_prompt_timeline(
         if not record["text"]:
             continue
         if str(item.get("direction") or "").strip().lower() == "outgoing":
-            text = record["text"]
+            text = strip_leading_presence_confirmation(record["text"])
+            record["text"] = text
             if is_low_information_reply(text):
                 continue
             key = re.sub(r"[^\w\u4e00-\u9fff]+", "", text.casefold())
@@ -855,14 +857,14 @@ def clean_companion_state(state: dict[str, Any] | None) -> dict[str, Any]:
     def clean_list(values: object) -> list[str]:
         cleaned: list[str] = []
         for item in list(values or [])[:8]:
-            value = strip_internal_format_chars(item).strip()
+            value = strip_leading_presence_confirmation(item)
             if value and not _is_presence_only_sentence(value):
                 cleaned.append(value)
         return cleaned
 
     summary_parts = re.split(
         r"(?<=[。！？!?；;])|\n",
-        strip_internal_format_chars(state.get("summary")).strip(),
+        strip_leading_presence_confirmation(state.get("summary")),
     )
     summary = "".join(
         part
@@ -990,7 +992,7 @@ def record_group_listener_bot_reply(
     diagnostic_session: bool,
 ) -> None:
     """Persist an accepted Bridge-owned reply before the database echo arrives."""
-    reply = strip_internal_format_chars(response.reply).strip()
+    reply = strip_leading_presence_confirmation(response.reply)
     if (
         diagnostic_session
         or room_id is None
@@ -1049,6 +1051,8 @@ def record_companion_ingress(
     # sender display name from the primary envelope cannot be replaced.
     primary_direction = str(payload.direction or "incoming").strip().lower()
     primary_text = strip_internal_format_chars(payload.message).strip()
+    if primary_direction == "outgoing":
+        primary_text = strip_leading_presence_confirmation(primary_text)
     if primary_direction == "outgoing" and is_low_information_reply(primary_text):
         # Old releases could echo a presence ping into the timeline. Do not
         # let a newly observed copy recreate that training signal.
@@ -1068,6 +1072,8 @@ def record_companion_ingress(
         if item.local_id is None or item.local_id <= 0 or item.local_id >= source_local_id:
             continue
         item_text = strip_internal_format_chars(item.text).strip()
+        if str(item.direction or "").strip().lower() == "outgoing":
+            item_text = strip_leading_presence_confirmation(item_text)
         if (
             str(item.direction or "").strip().lower() == "outgoing"
             and is_low_information_reply(item_text)

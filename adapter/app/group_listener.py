@@ -55,6 +55,17 @@ _LOW_INFORMATION_REPLY_RE = re.compile(
     r"^(?:嗯+)?(?:我)?(?:来啦?|在呢?|在的|到啦?|到了?)(?:呀|啊|呢|哦|喽)?$",
     re.IGNORECASE,
 )
+# A bare arrival acknowledgement adds no value before an actual reply.  Match
+# it only when a delimiter proves that a substantive remainder follows, so
+# normal wording such as "我在想这个问题" remains intact.
+_LEADING_PRESENCE_CONFIRMATION_RE = re.compile(
+    r"^\s*(?:嗯+[，,\s]*)?"
+    r"(?:(?:我)?来(?:了|啦)|(?:我)?在(?:呢|的)?|(?:我)?到(?:了|啦))"
+    r"(?:呀|啊|呢|哦|喽)?"
+    r"(?=[，,。.!！?？:：~～\s])"
+    r"[，,。.!！?？:：~～\s]+",
+    re.IGNORECASE,
+)
 _QUESTION_RE = re.compile(
     r"(?:[?？]|(?:怎么|为什么|为何|如何|谁|多少|几|哪儿|哪里|"
     r"能不能|可不可以|行不行|是否|是不是|咋办|咋样|怎样).{0,32}$|"
@@ -97,6 +108,22 @@ def _normalized_text(message: str) -> str:
 def strip_internal_format_chars(value: object) -> str:
     """Remove invisible delivery/control characters from user-visible text."""
     return _INTERNAL_FORMAT_RE.sub("", str(value or "").replace("\x00", ""))
+
+
+def strip_leading_presence_confirmation(reply: object) -> str:
+    """Remove a canned arrival prefix when it precedes a real reply.
+
+    Whole acknowledgements stay unchanged so ``is_low_information_reply`` can
+    suppress them.  This avoids turning a valid no-content response into an
+    empty message while preventing old model/session habits from reaching the
+    user or being retained as future conversation context.
+    """
+    value = strip_internal_format_chars(reply).strip()
+    match = _LEADING_PRESENCE_CONFIRMATION_RE.match(value)
+    if match is None:
+        return value
+    remainder = value[match.end() :].strip()
+    return remainder if remainder else value
 
 
 def _is_low_signal(text: str) -> bool:
@@ -198,7 +225,7 @@ def passive_listener_turn_prompt(kind: str) -> str:
 
 def listener_reply_or_silence(reply: str) -> str:
     """Do not let the internal silence marker escape into a WeChat message."""
-    value = strip_internal_format_chars(reply).strip()
+    value = strip_leading_presence_confirmation(reply)
     if value == NO_REPLY_MARKER:
         return ""
     value = value.replace(NO_REPLY_MARKER, "").strip()
