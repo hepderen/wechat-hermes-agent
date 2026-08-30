@@ -4461,6 +4461,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             and not chat_only_mode
             and not passive_group_message
         )
+        diagnostic_chat_only = diagnostic_session and chat_only_mode
         execution_plan = build_execution_plan(
             payload.message,
             payload.message_type,
@@ -4474,11 +4475,21 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                     status_code=400,
                     detail="Diagnostic sessions require an authorized room identity",
                 )
-            if command is not None or execution_intent:
+            if not diagnostic_chat_only and (
+                command is not None or execution_intent
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail="Diagnostic sessions cannot execute tasks or commands",
                 )
+        if diagnostic_chat_only:
+            # A chat-only diagnostic session is used for persona probes. Its
+            # input must remain a plain model turn even when the text contains
+            # words that the production task classifier recognizes.
+            command = None
+            relationship_command = None
+            execution_intent = False
+            execution_requested = False
         if room_id is None:
             task_room_id = identity.scope + ":" + sender_id
         else:
