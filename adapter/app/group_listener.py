@@ -19,6 +19,42 @@ _LOW_SIGNAL_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+_GREETING_ONLY_RE = re.compile(
+    r"^(?:你好|您好|嗨|哈喽|hello|hi|hey|早上好|早安|晚安|晚上好|"
+    r"在吗|有人吗|来了|回来了)(?:呀|啊|呢|哦|喽)?[!！。.,，~～?？]*$",
+    re.IGNORECASE,
+)
+# Very short acknowledgements carry no new information.  Keeping this list
+# explicit avoids suppressing legitimate concise answers such as "行，周五".
+LOW_INFORMATION_REPLY_KEYS = frozenset(
+    {
+        "嗯来了",
+        "嗯我来了",
+        "我来了",
+        "嗯来啦",
+        "我来啦",
+        "来了",
+        "嗯在",
+        "我在",
+        "在呢",
+        "在的",
+        "到啦",
+        "我到啦",
+    }
+)
+# These are formatting/control characters that have appeared in old delivery
+# correlation markers. They are not useful in a WeChat chat message and must
+# not affect classification, repetition checks, or model-visible context.
+# Preserve U+200D (zero-width joiner): it is part of normal composite emoji.
+# The other entries are legacy delivery markers or directional controls.
+_INTERNAL_FORMAT_RE = re.compile(
+    r"[\u00ad\u061c\u200b\u200c\u200e\u200f\u202a-\u202e"
+    r"\u2060-\u206f\ufeff]"
+)
+_LOW_INFORMATION_REPLY_RE = re.compile(
+    r"^(?:嗯+)?(?:我)?(?:来啦?|在呢?|在的|到啦?|到了?)(?:呀|啊|呢|哦|喽)?$",
+    re.IGNORECASE,
+)
 _QUESTION_RE = re.compile(
     r"(?:[?？]|(?:怎么|为什么|为何|如何|谁|多少|几|哪儿|哪里|"
     r"能不能|可不可以|行不行|是否|是不是|咋办|咋样|怎样).{0,32}$|"
@@ -51,7 +87,16 @@ def normalize_listener_names(values: Iterable[str]) -> tuple[str, ...]:
 
 
 def _normalized_text(message: str) -> str:
-    return re.sub(r"\s+", "", str(message or "").strip())
+    return re.sub(
+        r"\s+",
+        "",
+        strip_internal_format_chars(str(message or "").strip()),
+    )
+
+
+def strip_internal_format_chars(value: object) -> str:
+    """Remove invisible delivery/control characters from user-visible text."""
+    return _INTERNAL_FORMAT_RE.sub("", str(value or "").replace("\x00", ""))
 
 
 def _is_low_signal(text: str) -> bool:
@@ -59,7 +104,7 @@ def _is_low_signal(text: str) -> bool:
         return True
     if not _MEANINGFUL_CHARACTER_RE.search(text):
         return True
-    return bool(_LOW_SIGNAL_RE.fullmatch(text))
+    return bool(_LOW_SIGNAL_RE.fullmatch(text) or _GREETING_ONLY_RE.fullmatch(text))
 
 
 def classify_group_message(
@@ -143,6 +188,7 @@ def passive_listener_turn_prompt(kind: str) -> str:
 先判断你的回复能否补充具体观点、接住上下文，或让这段对话更自然；只有确实值得说时才回复。
 不要为了刷存在感复述、附和、点评每个人，也不要说自己在监听或要求别人 @ 你。
 先看短期群聊时间线中自己最近说过的话；不要连续解释自己的人格、语气或是否“正常”。
+不要只回“嗯，来了”“来了”“我在”这类没有内容的存在确认；要么接具体话题，要么保持安静。
 没有新内容时保持安静，不要换个说法重复上一句。
 不适合插话时，严格只输出 %s，不能带标点、解释或其他文字。适合回复时直接像群成员一样说话。""" % (
         trigger,
@@ -152,14 +198,30 @@ def passive_listener_turn_prompt(kind: str) -> str:
 
 def listener_reply_or_silence(reply: str) -> str:
     """Do not let the internal silence marker escape into a WeChat message."""
-    value = str(reply or "").strip()
+    value = strip_internal_format_chars(reply).strip()
     if value == NO_REPLY_MARKER:
         return ""
-    return value.replace(NO_REPLY_MARKER, "").strip()
+    value = value.replace(NO_REPLY_MARKER, "").strip()
+    return "" if is_low_information_reply(value) else value
 
 
 def _reply_repetition_key(value: object) -> str:
-    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+    return re.sub(
+        r"[^\w\u4e00-\u9fff]+",
+        "",
+        strip_internal_format_chars(value).casefold(),
+    )
+
+
+def is_low_information_reply(reply: str) -> bool:
+    """Recognize canned presence pings that should not fill a group chat."""
+    candidate = _reply_repetition_key(
+        strip_internal_format_chars(reply).strip()
+    )
+    return bool(
+        candidate in LOW_INFORMATION_REPLY_KEYS
+        or _LOW_INFORMATION_REPLY_RE.fullmatch(candidate)
+    )
 
 
 def repeats_recent_listener_reply(
@@ -170,14 +232,17 @@ def repeats_recent_listener_reply(
 ) -> bool:
     """Catch near-identical passive replies if the model ignores its silence cue."""
     candidate = _reply_repetition_key(reply)
-    if len(candidate) < 12:
+    if not candidate:
+        return False
+    short_candidate = candidate in LOW_INFORMATION_REPLY_KEYS
+    if len(candidate) < 12 and not short_candidate:
         return False
     checked = 0
     for item in reversed(list(timeline)):
         if str(item.get("direction") or "").strip().lower() != "outgoing":
             continue
         previous = _reply_repetition_key(item.get("text"))
-        if len(previous) < 12:
+        if not previous or (len(previous) < 12 and previous not in LOW_INFORMATION_REPLY_KEYS):
             continue
         checked += 1
         if candidate == previous:

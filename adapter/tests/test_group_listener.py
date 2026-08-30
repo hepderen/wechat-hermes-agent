@@ -4,6 +4,7 @@ from app.group_listener import (
     NO_REPLY_MARKER,
     classify_group_message,
     decide_group_listener,
+    is_low_information_reply,
     listener_reply_or_silence,
     repeats_recent_listener_reply,
 )
@@ -97,6 +98,19 @@ def test_plain_name_bypasses_passive_throttle_but_not_message_type_filter():
 def test_silence_marker_never_becomes_outbound_text():
     assert listener_reply_or_silence(NO_REPLY_MARKER) == ""
     assert listener_reply_or_silence("  这个我有点不同意。  ") == "这个我有点不同意。"
+    assert listener_reply_or_silence("嗯，来了。\u061c\u00ad") == ""
+
+
+def test_presence_only_replies_are_classified_as_low_information():
+    assert is_low_information_reply("嗯，来了。\u200b\u2063")
+    assert is_low_information_reply("嗯\u061c，来\u00ad了。")
+    assert is_low_information_reply("我在")
+    assert not is_low_information_reply("我在看你说的第二点")
+
+
+def test_internal_cleanup_keeps_composite_emoji_intact():
+    value = "看看\U0001f469\u200d\U0001f4bb\u2063"
+    assert listener_reply_or_silence(value) == "看看\U0001f469\u200d\U0001f4bb"
 
 
 def test_passive_listener_suppresses_near_identical_recent_reply():

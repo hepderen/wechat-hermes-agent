@@ -55,9 +55,12 @@ class Settings:
     cleanup_max_age_seconds: int = 172800
     delivery_reconcile_attempts: int = 5
     delivery_reconcile_delay_seconds: float = 0.75
-    relationship_memory_enabled: bool = True
+    # Kept in the dataclass for SQLite/schema compatibility and legacy unit
+    # tests. Production configuration never enables member-level relationship
+    # storage; room timeline and room summary are the only companion context.
+    relationship_memory_enabled: bool = False
     relationship_summary_timeout_seconds: float = 5.0
-    relationship_proactive_enabled: bool = True
+    relationship_proactive_enabled: bool = False
     relationship_proactive_idle_seconds: float = 2700.0
     relationship_proactive_min_interactions: int = 3
     relationship_proactive_max_per_member_day: int = 3
@@ -65,7 +68,7 @@ class Settings:
     relationship_proactive_timeout_seconds: float = 6.0
     group_listener_enabled: bool = False
     group_listener_min_reply_gap_seconds: float = 12.0
-    group_listener_min_turns_between_replies: int = 2
+    group_listener_min_turns_between_replies: int = 3
     group_listener_names: tuple[str, ...] = ("小格", "Hermes")
 
     def validate_startup(self) -> None:
@@ -376,86 +379,17 @@ class Settings:
                     ),
                 ),
             ),
-            relationship_memory_enabled=env_bool(
-                "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED",
-                True,
-            ),
-            relationship_summary_timeout_seconds=max(
-                1.0,
-                min(
-                    10.0,
-                    float(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS",
-                            "5",
-                        )
-                    ),
-                ),
-            ),
-            relationship_proactive_enabled=env_bool(
-                "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED",
-                True,
-            ),
-            relationship_proactive_idle_seconds=max(
-                300.0,
-                min(
-                    86400.0,
-                    float(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS",
-                            "2700",
-                        )
-                    ),
-                ),
-            ),
-            relationship_proactive_min_interactions=max(
-                1,
-                min(
-                    30,
-                    int(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS",
-                            "3",
-                        )
-                    ),
-                ),
-            ),
-            relationship_proactive_max_per_member_day=max(
-                1,
-                min(
-                    5,
-                    int(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY",
-                            "3",
-                        )
-                    ),
-                ),
-            ),
-            relationship_proactive_max_per_room_day=max(
-                1,
-                min(
-                    10,
-                    int(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY",
-                            "6",
-                        )
-                    ),
-                ),
-            ),
-            relationship_proactive_timeout_seconds=max(
-                1.0,
-                min(
-                    20.0,
-                    float(
-                        os.getenv(
-                            "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS",
-                            "6",
-                        )
-                    ),
-                ),
-            ),
+            # These legacy environment variables are intentionally ignored.
+            # Existing deployment files may still contain them, but a restart
+            # must never re-enable per-member storage or proactive nudges.
+            relationship_memory_enabled=False,
+            relationship_summary_timeout_seconds=5.0,
+            relationship_proactive_enabled=False,
+            relationship_proactive_idle_seconds=2700.0,
+            relationship_proactive_min_interactions=3,
+            relationship_proactive_max_per_member_day=3,
+            relationship_proactive_max_per_room_day=6,
+            relationship_proactive_timeout_seconds=6.0,
             group_listener_enabled=env_bool(
                 "HERMES_WECHAT_GROUP_LISTENER_ENABLED",
                 True,
@@ -479,7 +413,7 @@ class Settings:
                     int(
                         os.getenv(
                             "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES",
-                            "2",
+                            "3",
                         )
                     ),
                 ),

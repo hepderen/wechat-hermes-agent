@@ -16,9 +16,9 @@ CCV3_SPEC_SHA256 = (
 CCV3_LICENSE_SHA256 = (
     "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95"
 )
-XIAOGE_CARD_VERSION = "1.0.0"
+XIAOGE_CARD_VERSION = "1.1.1"
 XIAOGE_CARD_SHA256 = (
-    "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4"
+    "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa"
 )
 XIAOGE_CARD_SOURCES = (
     "https://github.com/kwaroran/character-card-spec-v3/"

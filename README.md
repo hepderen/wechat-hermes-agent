@@ -15,9 +15,9 @@
 - 逐项 Outbox：文字、图片、视频和文件分别持久化状态与幂等键；状态不确定的媒体不会自动重发。
 - 完成门禁：模型结束生成不等于任务成功，Verifier 根据工具退出码、来源和 Artifact 元数据判定结果。
 - Artifact 校验：限制任务目录、路径穿越、软链接、真实 MIME、扩展名、大小和 SHA-256。
-- 记忆治理：按会话隔离稳定偏好和项目事实，支持过期、替换与遗忘。
+- 记忆治理：当前聊天只使用按群隔离的短期时间线和共享摘要；不创建或注入成员级关系档案。
 - 受控工具：生产工具接口仍保留用于后续恢复；纯聊天发布会在 Adapter 路由层和 Hermes 会话层同时关闭这些能力。
-- Character Card V3 人格：固定归档 MIT 许可的 CCV3 规范、`xiaoge.card.json` 与 Sophia 署名。角色卡提供示范对话、群聊 Lorebook 和主动开场节奏；不加载运行时 Humanizer、动态 Skill 或卡片代码。
+- Character Card V3 人格：固定归档 MIT 许可的 CCV3 规范、`xiaoge.card.json` 与 Sophia 署名。角色卡提供示范对话和群聊 Lorebook；不加载运行时 Humanizer、动态 Skill 或卡片代码。
 - 国内外检索：Bing HTML/RSS、Bing News 与搜狗、360、百度结果合并，按意图、主题覆盖、来源质量、时效和区域多样性重排；SearXNG 可选合并。
 - 可观测性：`/health`、`/metrics`、结构化 ID 日志、清理状态和恢复门禁。
 
@@ -74,8 +74,6 @@ py -3.11 -m venv .venv
 | `停止` / `别发了` | 在满足触发条件时停止本群旧任务与旧发送 |
 | `不要图片` / `只要文字` | 只抑制旧媒体，保留允许返回的文字 |
 | `记住 ...` / `忘记 ...` | 当前纯聊天发布不写入持久记忆 |
-| `你记得我什么` / `忘掉我` | 在 `@` 小格或回复小格后查询或清除当前成员的关系档案 |
-| `别撩我` / `可以撩我` | 在 `@` 小格或回复小格后调整当前成员的聊天边界 |
 
 任务编号只能在所属群或私聊会话中访问。同一白名单群内的成员可以管理该群任务。
 纯聊天模式下只有停止、取消和媒体抑制这类控制指令保留；普通执行型话术会作为文字问题交给模型。
@@ -89,22 +87,18 @@ py -3.11 -m venv .venv
 | `web-research/` | Hermes 搜索插件、SearXNG 配置、候选发布与回滚脚本 |
 | `docs/` | 架构、快速开始和生产部署说明 |
 
-生产配置显式禁用 Hermes 的动态 `skills` 工具集。Adapter 原生加载经过哈希锁定的 CCV3 规范和 `xiaoge.card.json` 安全文本子集；Sophia 的 `Persona & Voice` 已带 MIT 署名地整合进卡片，运行时不加载 `humanizer-zh-next`、语音、主动发送、wife mode、todo、Telegram 唤醒或原生 memory。卡片或来源锁校验失败时 Adapter 进入 `degraded`，不会静默切回泛化人格。当前发布使用纯聊天模式，生产工具和任务队列保留在代码中但不会被消息路由触发。旧数据库中的 Skill 注册表和快照字段仅作为升级兼容数据保留，不参与当前聊天会话。
+生产配置显式禁用 Hermes 的动态 `skills` 工具集。Adapter 原生加载经过哈希锁定的 CCV3 规范和 `xiaoge.card.json` 安全文本子集；Sophia 的 `Persona & Voice` 已带 MIT 署名地整合进卡片，运行时不加载 `humanizer-zh-next`、语音、主动发送、wife mode、todo、Telegram 唤醒或原生 memory。卡片或来源锁校验失败时 Adapter 进入 `degraded`，不会静默切回泛化人格。当前发布使用纯聊天模式，生产工具和任务队列保留在代码中但不会被消息路由触发。旧数据库中的 Skill 注册表、成员关系表和快照字段仅作为升级兼容数据保留，不参与当前聊天会话，也不会继续写入新的成员关系记录。
 
 ### 人格模式
 
 | 信号 | 行为 |
 | --- | --- |
 | 默认娱乐陪聊 | 小格按 CCV3 角色卡、示范对话和当前群节奏接话；短话可以一句，正常互动允许 1 至 3 个短段落、最多 420 字，不机械压成一句 |
-| 常态监听 | 忽略纯表情、`哈哈`、`666` 等低信号消息；普通聊天至少间隔 12 秒和 2 个群消息，模型可用 `[[NO_REPLY]]` 保持安静；直接叫“小格”不受该节流限制 |
+| 常态监听 | 忽略纯表情、`哈哈`、`666` 等低信号消息；普通聊天至少间隔 12 秒和 3 个群消息，模型可用 `[[NO_REPLY]]` 保持安静；直接叫“小格”不受该节流限制 |
 | 当前云端模式 | 只根据当前对话回复文字；执行型话题给判断或说明，不创建任务、不调用工具 |
-| `别撩我` / `可以撩我` | 在结构化 `@` 或回复触发后，分别关闭或允许当前成员的轻暧昧语气 |
-| `别主动找我` / `主动找我` | 分别关闭或打开当前成员的主动短消息；不会影响同群其他成员 |
 | 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
 
-人格规则由 [`persona.py`](adapter/app/persona.py) 从固定的 [`xiaoge.card.json`](adapter/personas/xiaoge.card.json) 加载。CCV3 规范锁定到 `f3a86af019fbd99f788f7a1155f399655b34ab35`，规范、许可证、角色卡和来源锁均校验 SHA-256；只支持 `{{char}}`、`{{user}}`、常量 Lorebook 与字面关键词匹配。每个群保存最近 24 小时、最多 120 条原文，并在每轮注入最近 16 条；房间共享状态最长保留 30 天。Adapter 为每个 `(room_id, sender_id)` 保存独立关系档案，最多八条稳定偏好或共同梗，默认 90 天过期。关系足够熟悉时，小格可对对象、前任或别的 AI 话题轻轻打趣一句，随后回到话题，不施压或要求专属。
-
-默认开启的主动文字只会在成员完成至少 3 次有效互动、该成员和整个群随后都静默约 45 分钟后考虑发送。它按成员每天最多 3 次、每个群每天最多 6 次限流，只能发送一条纯文字，并始终通过普通 Outbox、停止栅栏和幂等键。任意新群消息、停止命令、取消、关闭主动聊天或服务恢复中的过期代次都会抑制旧主动消息；模型也可以输出 `[[NO_REPLY]]` 保持安静。`HERMES_WECHAT_RELATIONSHIP_PROACTIVE_*` 环境变量用于调整开关、闲置时间、门槛、频率和模型超时。
+人格规则由 [`persona.py`](adapter/app/persona.py) 从固定的 [`xiaoge.card.json`](adapter/personas/xiaoge.card.json) 加载。CCV3 规范锁定到 `f3a86af019fbd99f788f7a1155f399655b34ab35`，规范、许可证、角色卡和来源锁均校验 SHA-256；只支持 `{{char}}`、`{{user}}`、常量 Lorebook 与字面关键词匹配。每个群保存最近 24 小时、最多 120 条原文，并在每轮注入最近 16 条；房间共享状态最长保留 30 天。当前人格只根据群级时间线、共享梗和眼前对话形成亲近感，不按 `(room_id, sender_id)` 建立关系档案，也不发送成员定向主动消息。旧关系表和兼容命令实现保留在代码中，但生产开关固定关闭。
 
 ## 生产部署
 
@@ -118,9 +112,9 @@ py -3.11 -m venv .venv
 4. `ALLOWED_WECHAT_ROOM_IDS`：只列出明确开放完整 Agent 能力的群。
 5. 独立端口模拟测试、受保护文件基线和不重启微信的回滚步骤。
 
-当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。主动文字由 Adapter 单独调度，可用 `HERMES_WECHAT_RELATIONSHIP_PROACTIVE_*` 控制，既不需要 `@`，也不会绕过 Outbox 和停止栅栏。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
+当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。生产默认关闭成员关系记忆和主动消息，只由群级时间线与共享摘要承接上下文。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
 
-完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。当前 CCV3 发布使用会话 generation `10`；人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `11` 并停止关系档案注入，但保留档案和发送状态。
+完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。当前 CCV3 发布使用会话 generation `11`；人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `12`，并继续只使用群级上下文、保留发送状态。
 
 仓库同时提供可选的 [`sshd-wechat-hermes.conf`](adapter/deploy/sshd-wechat-hermes.conf)。它只保留 `ubuntu` 公钥登录，并收紧未认证连接的占用时间和并发上限；应用前必须先用第二个全新 SSH 会话验证生产密钥，避免把管理入口锁死。
 

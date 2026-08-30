@@ -263,6 +263,10 @@ def make_settings(tmp_path: Path, **changes) -> Settings:
         cleanup_status_path=tmp_path / "cleanup-status.json",
         delivery_reconcile_attempts=2,
         delivery_reconcile_delay_seconds=0.001,
+        # Legacy relationship tests explicitly exercise the compatibility
+        # implementation. Production defaults remain disabled in Settings.
+        relationship_memory_enabled=True,
+        relationship_proactive_enabled=True,
     )
     return replace(settings, **changes)
 
@@ -565,6 +569,33 @@ def test_sync_chat_compacts_machine_wrapping_before_returning(tmp_path):
     assert response.json()["reply"] == (
         "先修消息入口。它决定后面的能力是否可靠。然后再讨论别的。"
     )
+
+
+def test_sync_chat_suppresses_legacy_presence_reply_and_zero_width_chars(tmp_path):
+    runtime = make_runtime(tmp_path, relationship_memory_enabled=False)
+
+    async def legacy_presence_chat(*_args, **_kwargs):
+        return "嗯，来了。\u200b\u2063", {"input_tokens": 1, "output_tokens": 1}
+
+    runtime.hermes.chat = legacy_presence_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "你在吗",
+                "request_id": "legacy-presence-reply",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "source_local_id": 102,
+                "mentions_bot": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == ""
+    assert response.json()["status"] == "ignored"
+    timeline = runtime.store.list_companion_timeline(ROOM_ID)
+    assert not any(item["direction"] == "outgoing" for item in timeline)
 
 
 def test_passive_group_listener_can_join_a_plain_name_chat_without_tasks(tmp_path):

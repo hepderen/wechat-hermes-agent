@@ -43,6 +43,30 @@ COMPANION_TIMELINE_TEXT_CHARS = 4_000
 COMPANION_SYNTHETIC_OUTGOING_PREFIX = "out:"
 COMPANION_SYNTHETIC_OUTGOING_MATCH_SECONDS = 10 * 60
 COMPANION_SYNTHETIC_OUTGOING_MAX_LOCAL_ID_GAP = 64
+INTERNAL_FORMAT_RE = re.compile(
+    r"[\u00ad\u061c\u200b\u200c\u200e\u200f\u202a-\u202e"
+    r"\u2060-\u206f\ufeff]"
+)
+COMPANION_LOW_INFORMATION_KEYS = frozenset(
+    {
+        "嗯来了",
+        "嗯我来了",
+        "我来了",
+        "嗯来啦",
+        "我来啦",
+        "来了",
+        "嗯在",
+        "我在",
+        "在呢",
+        "在的",
+        "到啦",
+        "我到啦",
+    }
+)
+COMPANION_LOW_INFORMATION_RE = re.compile(
+    r"^(?:嗯+)?(?:我)?(?:来啦?|在呢?|在的|到啦?|到了?)(?:呀|啊|呢|哦|喽)?$",
+    re.IGNORECASE,
+)
 OUTBOX_STATES = {
     "prepared",
     "sending",
@@ -3926,8 +3950,24 @@ class AdapterStore:
 
     @staticmethod
     def _companion_text(value: Any) -> str:
-        text = str(value or "").replace("\x00", "").strip()
+        text = INTERNAL_FORMAT_RE.sub(
+            "",
+            str(value or "").replace("\x00", ""),
+        ).strip()
         return text[:COMPANION_TIMELINE_TEXT_CHARS]
+
+    @staticmethod
+    def _companion_is_low_information(text: str) -> bool:
+        """Never persist legacy presence pings as room conversation context."""
+        candidate = re.sub(
+            r"[^\w\u4e00-\u9fff]+",
+            "",
+            str(text or "").casefold(),
+        )
+        return bool(
+            candidate in COMPANION_LOW_INFORMATION_KEYS
+            or COMPANION_LOW_INFORMATION_RE.fullmatch(candidate)
+        )
 
     @staticmethod
     def _companion_name(value: Any) -> str:
@@ -4043,6 +4083,13 @@ class AdapterStore:
         direction_value = str(direction or "incoming").strip().lower()
         if direction_value not in {"incoming", "outgoing", "unknown"}:
             direction_value = "unknown"
+        if direction_value == "outgoing" and self._companion_is_low_information(
+            text_value
+        ):
+            # Older releases could write "嗯，来了" plus a zero-width
+            # correlation marker. Reject it at the storage boundary so a
+            # future prompt can never learn or repeat that boilerplate.
+            return {"inserted": False, "meaningful": False, "message_count": 0}
         try:
             message_timestamp = float(timestamp or current)
         except (TypeError, ValueError):

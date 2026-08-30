@@ -571,9 +571,8 @@ def adapter_environment(
         "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "0",
         "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
         "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
-        # Relationship summaries have their own contract tests. Keeping them
-        # off here makes this end-to-end harness count foreground chats only.
-        "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false",
+        # The production harness uses room-scoped companion context only; the
+        # legacy per-member relationship variables are intentionally absent.
         "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS": "3",
         "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS": "0.02",
     }

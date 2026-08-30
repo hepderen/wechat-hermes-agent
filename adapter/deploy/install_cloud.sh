@@ -108,7 +108,7 @@ CCV3_SOURCE = "https://github.com/kwaroran/character-card-spec-v3"
 CCV3_COMMIT = "f3a86af019fbd99f788f7a1155f399655b34ab35"
 CCV3_SPEC_SHA256 = "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c"
 CCV3_LICENSE_SHA256 = "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95"
-CARD_SHA256 = "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4"
+CARD_SHA256 = "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa"
 SOPHIA_SHA256 = "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301"
 
 
@@ -169,7 +169,7 @@ expected_card_sources = [
 if (
     card_lock.get("schema_version") != 1
     or card_lock.get("name") != "xiaoge-card"
-    or card_lock.get("version") != "1.0.0"
+    or card_lock.get("version") != "1.1.1"
     or card_lock.get("format") != "chara_card_v3/3.0"
     or card_lock.get("source") != expected_card_sources
     or card_lock.get("files", {}).get("xiaoge.card.json") != CARD_SHA256
@@ -184,7 +184,7 @@ if (
     or card.get("spec_version") != "3.0"
     or data.get("name") != "小格"
     or data.get("nickname") != "小格"
-    or data.get("character_version") != "1.0.0"
+    or data.get("character_version") != "1.1.1"
     or data.get("source") != expected_card_sources
 ):
     fail("fixed character card format or source mismatch")
@@ -1113,20 +1113,12 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "10",
+    "HERMES_WECHAT_SESSION_GENERATION": "11",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
-    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "3",
     "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
-    "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS": "5",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6",
     "HERMES_HOME": "/var/lib/wechat-hermes/workspace/home",
     "ALLOW_PRIVATE_WECHAT_CHAT": "false",
     "HERMES_WECHAT_WORKER_POLL_SECONDS": "1",
@@ -1140,6 +1132,10 @@ for environment in (adapter, hermes):
         "HERMES_WECHAT_SKILL_INSTALL_TIMEOUT_SECONDS",
     ):
         environment.pop(obsolete, None)
+for environment in (adapter, hermes, chat_api, bridge):
+    for key in list(environment):
+        if key.startswith("HERMES_WECHAT_RELATIONSHIP_"):
+            environment.pop(key, None)
 for key, value in {
     "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "8",
     "HERMES_WECHAT_MAX_TOOL_CALLS": "80",

@@ -369,7 +369,15 @@ class SenderIdempotencyTests(unittest.TestCase):
                 if int(message["local_id"]) > int(after)
             ][:limit]
 
-        def confirm(self, text="", local_id=11, local_type=1):
+        def confirm(
+            self,
+            text="",
+            local_id=11,
+            local_type=1,
+            timestamp=None,
+        ):
+            if timestamp is None:
+                timestamp = time.time()
             self.messages.append(
                 {
                     "local_id": local_id,
@@ -377,6 +385,7 @@ class SenderIdempotencyTests(unittest.TestCase):
                     "origin_source": 1,
                     "local_type": local_type,
                     "text": text,
+                    "timestamp": timestamp,
                 }
             )
 
@@ -568,11 +577,9 @@ class SenderIdempotencyTests(unittest.TestCase):
         self.assertFalse(first["deduplicated"])
         self.assertTrue(second["deduplicated"])
         self.assertEqual(first["confirmed_local_id"], 11)
-        send_once.assert_called_once_with(
-            chat_api.tracked_message_text("hello", "reply:307")
-        )
+        send_once.assert_called_once_with("hello")
 
-    def test_text_confirmation_uses_an_invisible_request_marker(self):
+    def test_text_delivery_is_plain_and_confirmation_uses_timestamp(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             reader = self.FakeReader()
             sender = chat_api.TextSender(
@@ -596,8 +603,58 @@ class SenderIdempotencyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(len(sent), 1)
-        self.assertNotEqual(sent[0], "hello")
+        self.assertEqual(sent[0], "hello")
         self.assertEqual(chat_api.visible_message_text(sent[0]), "hello")
+
+    def test_internal_format_characters_are_removed_before_paste(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reader = self.FakeReader()
+            sender = chat_api.TextSender(
+                {
+                    "cache_dir": temp_dir,
+                    "send_confirm_timeout_seconds": 0.05,
+                    "send_confirm_poll_seconds": 0.01,
+                },
+                reader=reader,
+            )
+            sent = []
+
+            def send_and_confirm(wire_text):
+                sent.append(wire_text)
+                reader.confirm(wire_text)
+
+            with mock.patch.object(
+                sender, "_send_once", side_effect=send_and_confirm
+            ):
+                result = sender.send("嗯\u061c，来\u00ad了。", "reply:format")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(sent, ["嗯，来了。"])
+
+    def test_composite_emoji_survives_internal_format_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reader = self.FakeReader()
+            sender = chat_api.TextSender(
+                {
+                    "cache_dir": temp_dir,
+                    "send_confirm_timeout_seconds": 0.05,
+                    "send_confirm_poll_seconds": 0.01,
+                },
+                reader=reader,
+            )
+            sent = []
+
+            def send_and_confirm(wire_text):
+                sent.append(wire_text)
+                reader.confirm(wire_text)
+
+            with mock.patch.object(
+                sender, "_send_once", side_effect=send_and_confirm
+            ):
+                result = sender.send("看看\U0001f469\u200d\U0001f4bb\u2063", "reply:emoji")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(sent, ["看看\U0001f469\u200d\U0001f4bb"])
 
     def test_manual_identical_text_does_not_confirm_bot_request(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -612,7 +669,7 @@ class SenderIdempotencyTests(unittest.TestCase):
             )
 
             def send_but_only_manual_copy_appears(_wire_text):
-                reader.confirm("hello")
+                reader.confirm("hello", timestamp=time.time() - 60)
 
             with mock.patch.object(
                 sender,
@@ -642,9 +699,7 @@ class SenderIdempotencyTests(unittest.TestCase):
             state = json.loads(
                 (Path(temp_dir) / "send-state.json").read_text(encoding="utf-8")
             )
-        send_once.assert_called_once_with(
-            chat_api.tracked_message_text("hello", "reply:307")
-        )
+        send_once.assert_called_once_with("hello")
         self.assertEqual(state["requests"]["reply:307"]["status"], "uncertain")
 
     def test_delayed_confirmation_is_accepted(self):
@@ -693,9 +748,7 @@ class SenderIdempotencyTests(unittest.TestCase):
                 result = sender.send("hello", "reply:307")
         self.assertTrue(result["deduplicated"])
         self.assertEqual(result["confirmed_local_id"], 11)
-        send_once.assert_called_once_with(
-            chat_api.tracked_message_text("hello", "reply:307")
-        )
+        send_once.assert_called_once_with("hello")
 
     def test_delivery_status_reconciles_text_by_tracking_marker(self):
         with tempfile.TemporaryDirectory() as temp_dir:

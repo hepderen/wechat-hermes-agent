@@ -481,6 +481,46 @@ class BridgeV2IngressTests(unittest.TestCase):
         self.assertTrue(sent[0].startswith("reply:"))
         self.assertEqual(state["last_local_id"], 99)
 
+    def test_legacy_pending_presence_reply_is_suppressed_and_sanitized(self):
+        state = {
+            "last_local_id": 10,
+            "retry": None,
+            "pending": {
+                "local_id": 11,
+                "result": {
+                    "kind": "text",
+                    "text": "\u55ef\uff0c\u6765\u4e86\u3002"
+                    + "\u2063"
+                    + ("\u200b" * 64)
+                    + "\u2063",
+                    "chunks": ["\u55ef\uff0c\u6765\u4e86\u3002"],
+                },
+            },
+        }
+        message = self.message(11, "\u7ee7\u7eed")
+        sent = []
+        with mock.patch.object(
+            self.bridge,
+            "send_text",
+            side_effect=lambda text, request_id, **metadata: sent.append(
+                (text, request_id)
+            ),
+        ), mock.patch.object(self.bridge, "atomic_save_state"):
+            self.bridge.handle_message(state, message)
+
+        self.assertEqual(sent, [])
+        self.assertEqual(state["last_local_id"], 11)
+        self.assertIsNone(state["pending"])
+
+    def test_prepared_reply_removes_legacy_control_characters(self):
+        prepared = self.bridge.prepare_ai_result(
+            11,
+            "\u8fd9\u53e5\u6709\u5185\u5bb9\u2063\u200b\u200c\ufeff",
+        )
+        self.assertEqual(prepared["text"], "\u8fd9\u53e5\u6709\u5185\u5bb9")
+        self.assertNotIn("\u2063", prepared["text"])
+        self.assertNotIn("\u200b", prepared["text"])
+
     def test_display_text_mention_is_not_trusted_without_native_evidence(self):
         display_only = self.message(11, "@Hermes do work", native_mention=False)
         display_only["mentions_bot"] = True

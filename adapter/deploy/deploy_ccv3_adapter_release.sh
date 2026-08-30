@@ -114,7 +114,7 @@ from app.persona import (
     sophia_source_archive_integrity,
 )
 
-if PERSONA_VERSION != "sophia@1.0.0+ccv3-xiaoge@1.0.0":
+if PERSONA_VERSION != "sophia@1.0.0+ccv3-xiaoge@1.1.1":
     raise SystemExit("unexpected CCV3 persona version")
 if not source_archive_integrity() or not sophia_source_archive_integrity():
     raise SystemExit("pinned persona source archive integrity failed")
@@ -142,13 +142,15 @@ group_listener = payload.get("group_listener") or {}
 relationship_memory = payload.get("relationship_memory") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
-if persona.get("version") != "sophia@1.0.0+ccv3-xiaoge@1.0.0":
+if persona.get("version") != "sophia@1.0.0+ccv3-xiaoge@1.1.1":
     raise SystemExit(1)
 if persona.get("integrity") is not True:
     raise SystemExit(1)
 if group_listener.get("enabled") is not True:
     raise SystemExit(1)
-if relationship_memory.get("enabled") is not True:
+if relationship_memory.get("enabled") is not False:
+    raise SystemExit(1)
+if (relationship_memory.get("proactive") or {}).get("enabled") is not False:
     raise SystemExit(1)
 '
 }
@@ -258,27 +260,23 @@ metadata = path.stat()
 if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
     raise SystemExit("adapter environment must be root-private 0600")
 
+# Legacy relationship environment values are ignored by the production
+# Settings loader and are deliberately removed from the active environment.
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "10",
+    "HERMES_WECHAT_SESSION_GENERATION": "11",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
-    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "3",
     "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
-    "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS": "5",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6",
-    "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6",
 }
 lines = path.read_text(encoding="utf-8").splitlines()
 seen = set()
 rewritten = []
 for line in lines:
     key, separator, _value = line.partition("=")
+    if separator and key.startswith("HERMES_WECHAT_RELATIONSHIP_"):
+        continue
     if separator and key in updates:
         rewritten.append(key + "=" + updates[key])
         seen.add(key)

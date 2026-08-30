@@ -41,7 +41,7 @@ SOPHIA_SKILL_LICENSE_SHA256 = (
     "16052d83fffe65a08a199e3b941a0c28fa8f2440ccf3539e0dd97433479bd5fd"
 )
 
-PERSONA_VERSION = "sophia@1.0.0+ccv3-xiaoge@1.0.0"
+PERSONA_VERSION = "sophia@1.0.0+ccv3-xiaoge@1.1.1"
 PERSONA_SKILL_SOURCE = CCV3_SOURCE
 PERSONA_SKILL_COMMIT = CCV3_COMMIT
 PERSONA_SKILL_VERSION = "3.0"
@@ -82,6 +82,13 @@ _TRAILING_CLICHE_RE = re.compile(
 )
 _MARKDOWN_HEADING_RE = re.compile(
     r"\s*(?:#{1,6}\s+.+|\*\*[^*]{1,24}\*\*[：:]?)\s*"
+)
+_INTERNAL_FORMAT_TRANSLATION = str.maketrans(
+    "",
+    "",
+    "\u00ad\u061c\u200b\u200c\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+    "\u2060\u2061\u2062\u2063\u2064\u2065\u2066\u2067\u2068\u2069"
+    "\u206a\u206b\u206c\u206d\u206e\u206f\ufeff",
 )
 
 
@@ -246,7 +253,7 @@ def character_card_group_greetings_prompt() -> str:
 
 
 def visible_user_request(message: str) -> str:
-    value = str(message or "")
+    value = str(message or "").translate(_INTERNAL_FORMAT_TRANSLATION)
     for marker in _CONTEXT_MARKERS:
         value = value.split(marker, 1)[0]
     return value.strip()
@@ -335,7 +342,9 @@ def _truncate_fragment(value: str, limit: int) -> str:
 
 
 def compact_chat_reply(reply: str, message: str) -> str:
-    original = str(reply or "").strip()
+    # Model output is user-visible content; internal zero-width correlation
+    # characters must never survive this boundary.
+    original = str(reply or "").translate(_INTERNAL_FORMAT_TRANSLATION).strip()
     if original == "[[NO_REPLY]]":
         return original
     expanded = expanded_reply_requested(message)

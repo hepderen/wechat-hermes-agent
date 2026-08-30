@@ -141,17 +141,14 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "10"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "11"' in SCRIPT
     assert '"HERMES_WECHAT_CHAT_ONLY": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
-    assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "true"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS": "3"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6"' in SCRIPT
-    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS": "6"' in SCRIPT
+    assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "3"' in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false"' not in SCRIPT
+    assert '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED": "false"' not in SCRIPT
+    assert 'key.startswith("HERMES_WECHAT_RELATIONSHIP_")' in SCRIPT
     assert '"HERMES_HOME_MODE": "2770"' in SCRIPT
     assert 'config.setdefault("model", {})["context_length"] = 128000' in SCRIPT
     assert 'compression["threshold"] = 0.75' in SCRIPT
@@ -261,22 +258,17 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=10" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=11" in example
         assert "HERMES_WECHAT_CHAT_ONLY=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
-        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=2" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS=5" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS=0.75" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=true" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_SUMMARY_TIMEOUT_SECONDS=5" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED=true" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS=2700" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MIN_INTERACTIONS=3" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY=3" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY=6" in example
-        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_TIMEOUT_SECONDS=6" in example
+        assert "Legacy per-member relationship variables are intentionally omitted" in example
+        assert "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED=" not in example
+        assert "HERMES_WECHAT_RELATIONSHIP_PROACTIVE_ENABLED=" not in example
         assert "HERMES_INPUT_TOKEN_COST_PER_MILLION=3" in example
         assert "HERMES_OUTPUT_TOKEN_COST_PER_MILLION=15" in example
         assert "WECHAT_CHAT_API_TOKEN=" in example
@@ -314,7 +306,7 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
     assert "f3a86af019fbd99f788f7a1155f399655b34ab35" in SCRIPT
     assert "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c" in SCRIPT
     assert "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95" in SCRIPT
-    assert "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4" in SCRIPT
+    assert "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa" in SCRIPT
     assert "https://github.com/sharbelxyz/sophia" in SCRIPT
     assert "f2cd448553d61aa3c2ea774dc7e2296f09d4b584" in SCRIPT
     assert "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301" in SCRIPT
@@ -328,21 +320,10 @@ def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
     assert "EXPECTED_SOURCE_COMMIT" in CCV3_ADAPTER_RELEASE
     assert 'git -C "$SOURCE_ROOT" rev-parse HEAD' in CCV3_ADAPTER_RELEASE
     assert "assert_ccv3_persona_resources" in CCV3_ADAPTER_RELEASE
-    assert "sophia@1.0.0+ccv3-xiaoge@1.0.0" in CCV3_ADAPTER_RELEASE
+    assert "sophia@1.0.0+ccv3-xiaoge@1.1.1" in CCV3_ADAPTER_RELEASE
     assert "skills/humanizer-zh-next" in CCV3_ADAPTER_RELEASE
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "10"' in CCV3_ADAPTER_RELEASE
-    assert (
-        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_IDLE_SECONDS": "2700"'
-        in CCV3_ADAPTER_RELEASE
-    )
-    assert (
-        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_MEMBER_DAY": "3"'
-        in CCV3_ADAPTER_RELEASE
-    )
-    assert (
-        '"HERMES_WECHAT_RELATIONSHIP_PROACTIVE_MAX_PER_ROOM_DAY": "6"'
-        in CCV3_ADAPTER_RELEASE
-    )
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "11"' in CCV3_ADAPTER_RELEASE
+    assert "Legacy relationship environment values are ignored" in CCV3_ADAPTER_RELEASE
     assert "restoring previous Adapter release" in CCV3_ADAPTER_RELEASE
     assert "systemctl restart wechat-hermes-adapter.service" in CCV3_ADAPTER_RELEASE
     assert "systemctl restart hermes-worker.service" not in CCV3_ADAPTER_RELEASE
@@ -358,7 +339,7 @@ def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
 def test_bridge_only_release_requires_a_ready_ccv3_adapter_and_preserves_state():
     assert "EXPECTED_SOURCE_COMMIT" in BRIDGE_RELEASE
     assert '"$SOURCE_ROOT/chat-api/db_bridge.py"' in BRIDGE_RELEASE
-    assert "sophia@1.0.0+ccv3-xiaoge@1.0.0" in BRIDGE_RELEASE
+    assert "sophia@1.0.0+ccv3-xiaoge@1.1.1" in BRIDGE_RELEASE
     assert "Adapter is not CCV3-ready" in BRIDGE_RELEASE
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED"' in BRIDGE_RELEASE
     assert "restoring previous Bridge release" in BRIDGE_RELEASE
@@ -370,15 +351,14 @@ def test_bridge_only_release_requires_a_ready_ccv3_adapter_and_preserves_state()
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
     assert 'PREVIOUS_RELEASE_ID=${1:-}' in PERSONA_ROLLBACK
     assert 'EXPECTED_WECHAT_PID=${EXPECTED_WECHAT_PID:-}' in PERSONA_ROLLBACK
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "11"' in PERSONA_ROLLBACK
-    assert '"HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED": "false"' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in PERSONA_ROLLBACK
     assert "systemctl restart wechat-hermes-adapter.service" in PERSONA_ROLLBACK
     assert "wait_for_adapter_ready" in PERSONA_ROLLBACK
     assert "http://127.0.0.1:8000/health" in PERSONA_ROLLBACK
     assert "restoring prior Adapter after failed rollback" in PERSONA_ROLLBACK
     assert 'mv -f -- "$env_backup" "$ADAPTER_ENV"' in PERSONA_ROLLBACK
     assert "pgrep -x wechat" in PERSONA_ROLLBACK
-    assert "relationship profiles retained but not injected" in PERSONA_ROLLBACK
+    assert "room-scoped context only" in PERSONA_ROLLBACK
     assert "DELETE FROM relationship" not in PERSONA_ROLLBACK
     assert "wechat-hermes-adapter-releases" in PERSONA_ROLLBACK
 

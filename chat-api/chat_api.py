@@ -227,15 +227,17 @@ def parse_quoted_reply(body, bot_wxid):
     if appmsg is None:
         return "", False, reference, False
 
-    title = str(appmsg.findtext("./title") or "").strip()
+    title = strip_internal_format_chars(
+        str(appmsg.findtext("./title") or "").strip()
+    )
     refermsg = appmsg.find("./refermsg")
     if refermsg is not None:
-        reference["sender_wxid"] = str(
-            refermsg.findtext("./chatusr") or ""
-        ).strip()
-        reference["content"] = str(
-            refermsg.findtext("./content") or ""
-        ).strip()
+        reference["sender_wxid"] = strip_internal_format_chars(
+            str(refermsg.findtext("./chatusr") or "").strip()
+        )
+        reference["content"] = strip_internal_format_chars(
+            str(refermsg.findtext("./content") or "").strip()
+        )
     reply_to_bot = bool(
         bot_wxid
         and reference["sender_wxid"]
@@ -257,6 +259,26 @@ TRACKING_BOUNDARY = "\u2063"
 TRACKING_ZERO = "\u200b"
 TRACKING_ONE = "\u200c"
 TRACKING_BITS = 64
+# These characters were used by an older delivery correlator.  They are not
+# part of a user message and must never be pasted into a new WeChat message.
+OUTBOUND_CONTROL_CHARS = (
+    "\u00ad\u061c\u200b\u200c\u200e\u200f"
+    "\u202a\u202b\u202c\u202d\u202e"
+    "\u2060\u2061\u2062\u2063\u2064\u2065\u2066\u2067\u2068\u2069"
+    "\u206a\u206b\u206c\u206d\u206e\u206f\ufeff"
+)
+OUTBOUND_CONTROL_TRANSLATION = str.maketrans(
+    "",
+    "",
+    OUTBOUND_CONTROL_CHARS,
+)
+
+
+def strip_internal_format_chars(value):
+    """Remove delivery markers while retaining normal composite emoji."""
+    return str(value or "").replace("\x00", "").translate(
+        OUTBOUND_CONTROL_TRANSLATION
+    )
 
 
 def request_tracking_marker(request_id):
@@ -286,7 +308,12 @@ def split_tracking_marker(value):
 
 
 def visible_message_text(value):
-    return split_tracking_marker(value)[0]
+    return strip_internal_format_chars(split_tracking_marker(value)[0])
+
+
+def outbound_message_text(value):
+    """Return text safe to paste into WeChat without internal correlation data."""
+    return strip_internal_format_chars(canonical_message_text(value))
 
 
 def tracked_message_text(text, request_id):
@@ -954,6 +981,7 @@ class SnapshotReader:
             body, reply_to_bot, reply_reference, structured_valid = (
                 parse_quoted_reply(body, getattr(self, "bot_wxid", ""))
             )
+        body = strip_internal_format_chars(body)
         visible_mention, prompt = parse_mention(body, self.mention)
         if (native_mentions_bot or reply_to_bot) and not visible_mention:
             prompt = " ".join(body.split())
@@ -2196,7 +2224,9 @@ class TextSender:
 
     @staticmethod
     def _text_hash(text):
-        return hashlib.sha256(canonical_message_text(text).encode("utf-8")).hexdigest()
+        return hashlib.sha256(
+            outbound_message_text(text).encode("utf-8")
+        ).hexdigest()
 
     def _check_request_text(self, request_id, entry, text_hash):
         stored_hash = str(entry.get("text_hash") or "")
@@ -2240,11 +2270,36 @@ class TextSender:
                     "request_id was already used with a different trusted envelope"
                 )
 
-    def _scan_confirmation(self, baseline_local_id, text):
+    @staticmethod
+    def _candidate_is_recent(message, attempted_at):
+        """Reject an unmarked same-text message from before this send attempt."""
+        try:
+            started = float(attempted_at or 0)
+        except (TypeError, ValueError):
+            started = 0.0
+        if started <= 0:
+            return False
+        try:
+            message_time = float(message.get("timestamp"))
+        except (TypeError, ValueError):
+            return False
+        # WeChat stores second-resolution timestamps; allow a small clock and
+        # persistence skew while still excluding an older manual copy.
+        return message_time >= started - 15.0
+
+    def _scan_confirmation(
+        self,
+        baseline_local_id,
+        text,
+        *,
+        request_id="",
+        attempted_at=0,
+    ):
         if self.reader is None:
             raise RuntimeError("database reader is required to confirm message delivery")
         expected_text, expected_marker = split_tracking_marker(text)
-        expected_text = canonical_message_text(expected_text)
+        expected_text = outbound_message_text(expected_text)
+        legacy_marker = request_tracking_marker(request_id)
         cursor = max(0, int(baseline_local_id))
         while True:
             messages = self.reader.messages_after(cursor, limit=500)
@@ -2255,53 +2310,101 @@ class TextSender:
                 candidate_marker = str(
                     message.get("delivery_marker") or embedded_marker
                 )
-                if (
+                if not (
                     message.get("direction") == "outgoing"
                     and int(message.get("origin_source", 0)) == 1
                     and int(message.get("local_type", 0)) == 1
-                    and canonical_message_text(candidate_text) == expected_text
-                    and candidate_marker == expected_marker
+                    and outbound_message_text(candidate_text) == expected_text
                 ):
-                    return message
+                    continue
+                if expected_marker:
+                    # Explicit marker matching is retained solely for messages
+                    # submitted by releases that used the legacy protocol.
+                    if candidate_marker != expected_marker:
+                        continue
+                elif candidate_marker:
+                    # An old marker is acceptable only when it belongs to this
+                    # request; unrelated same-text messages remain ambiguous.
+                    if not legacy_marker or candidate_marker != legacy_marker:
+                        continue
+                elif not self._candidate_is_recent(message, attempted_at):
+                    # New messages are deliberately unmarked.  Without a
+                    # timestamp after the send attempt there is no evidence
+                    # that this row was created by the current UI submission.
+                    continue
+                return message
             if len(messages) < 500:
                 return None
             cursor = int(messages[-1]["local_id"])
 
-    def _scan_request_confirmation(self, baseline_local_id, request_id):
+    def _scan_request_confirmation(
+        self,
+        baseline_local_id,
+        request_id,
+        *,
+        expected_text_hash="",
+        attempted_at=0,
+    ):
         if self.reader is None:
             raise RuntimeError("database reader is required to confirm message delivery")
         expected_marker = request_tracking_marker(request_id)
-        if not expected_marker:
+        expected_hash = str(expected_text_hash or "").strip().lower()
+        if not expected_marker and not expected_hash:
             return None
         cursor = max(0, int(baseline_local_id))
         while True:
             messages = self.reader.messages_after(cursor, limit=500)
             for message in messages:
-                _candidate_text, embedded_marker = split_tracking_marker(
+                candidate_text, embedded_marker = split_tracking_marker(
                     message.get("text")
                 )
                 candidate_marker = str(
                     message.get("delivery_marker") or embedded_marker
                 )
-                if (
+                base_match = (
                     message.get("direction") == "outgoing"
                     and int(message.get("origin_source", 0)) == 1
                     and int(message.get("local_type", 0)) == 1
+                )
+                if not base_match:
+                    continue
+                if expected_marker and candidate_marker and hmac.compare_digest(
+                    candidate_marker.encode("utf-8"),
+                    expected_marker.encode("utf-8"),
+                ):
+                    return message
+                if (
+                    expected_hash
+                    and not candidate_marker
                     and hmac.compare_digest(
-                        candidate_marker.encode("utf-8"),
-                        expected_marker.encode("utf-8"),
+                        self._text_hash(candidate_text).encode("utf-8"),
+                        expected_hash.encode("utf-8"),
                     )
+                    and self._candidate_is_recent(message, attempted_at)
                 ):
                     return message
             if len(messages) < 500:
                 return None
             cursor = int(messages[-1]["local_id"])
 
-    def _wait_for_confirmation(self, baseline_local_id, text, timeout=None):
+    def _wait_for_confirmation(
+        self,
+        baseline_local_id,
+        text,
+        timeout=None,
+        *,
+        request_id="",
+        attempted_at=0,
+    ):
         timeout = self.confirm_timeout if timeout is None else max(0.0, float(timeout))
         deadline = time.monotonic() + timeout
         while True:
-            confirmation = self._scan_confirmation(baseline_local_id, text)
+            confirmation = self._scan_confirmation(
+                baseline_local_id,
+                text,
+                request_id=request_id,
+                attempted_at=attempted_at,
+            )
             if confirmation is not None:
                 return confirmation
             remaining = deadline - time.monotonic()
@@ -2498,6 +2601,8 @@ class TextSender:
                 confirmation = self._scan_request_confirmation(
                     baseline,
                     request_id,
+                    expected_text_hash=entry.get("text_hash"),
+                    attempted_at=entry.get("attempted_at"),
                 )
             else:
                 expected = {
@@ -2577,7 +2682,7 @@ class TextSender:
         task_id="",
         generation=0,
     ):
-        text = canonical_message_text(text)
+        text = outbound_message_text(text)
         if not text:
             raise ValueError("message text is empty")
         if len(text) > self.max_text_chars:
@@ -2599,7 +2704,11 @@ class TextSender:
             task_id = envelope["task_id"]
             generation = envelope["generation"]
         text_hash = self._text_hash(text)
-        wire_text = tracked_message_text(text, request_id)
+        # New deliveries are plain text.  The former zero-width marker made it
+        # into copied WeChat messages on some clients.  _scan_confirmation and
+        # _scan_request_confirmation still understand that marker for legacy
+        # in-flight entries during a rolling deployment.
+        wire_text = text
         with self._lock:
             requests = self._state.setdefault("requests", {})
             entry = dict(requests.get(request_id) or {})
@@ -2636,6 +2745,8 @@ class TextSender:
                     baseline,
                     wire_text,
                     timeout=self.confirm_poll_seconds,
+                    request_id=request_id,
+                    attempted_at=entry.get("attempted_at"),
                 )
                 if confirmation is not None:
                     return self._mark_sent(
@@ -2690,6 +2801,8 @@ class TextSender:
                     baseline_local_id,
                     wire_text,
                     timeout=min(1.0, self.confirm_timeout),
+                    request_id=request_id,
+                    attempted_at=entry.get("attempted_at"),
                 )
                 if confirmation is not None:
                     return self._mark_sent(
@@ -2706,6 +2819,8 @@ class TextSender:
             confirmation = self._wait_for_confirmation(
                 baseline_local_id,
                 wire_text,
+                request_id=request_id,
+                attempted_at=entry.get("attempted_at"),
             )
             if confirmation is None:
                 self._mark_uncertain(

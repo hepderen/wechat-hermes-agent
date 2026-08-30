@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "name": "xiaoge-card",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "format": "chara_card_v3/3.0",
   "source": [
     "https://github.com/kwaroran/character-card-spec-v3/tree/f3a86af019fbd99f788f7a1155f399655b34ab35",
     "https://github.com/sharbelxyz/sophia/tree/f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
   ],
   "files": {
-    "xiaoge.card.json": "0fa23985aa0ace87882d52ba532d868b998c42590b146df88b61ba92ff73fba4"
+    "xiaoge.card.json": "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa"
   }
 }

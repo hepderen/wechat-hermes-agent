@@ -109,6 +109,40 @@ EMPTY_REPLY_FALLBACK = (
     "\u521a\u624dAI\u6ca1\u6709\u751f\u6210\u6709\u6548\u5185\u5bb9\uff0c"
     "\u9ebb\u70e6\u6362\u4e2a\u8bf4\u6cd5\u518d\u8bd5\u4e00\u6b21\u3002"
 )
+# Older Chat API releases embedded request correlation data in zero-width
+# characters.  A rolling deployment can leave that data in a persisted
+# pending result, so the Bridge sanitizes at both recovery and send time.
+INTERNAL_FORMAT_CHARS = (
+    "\u00ad\u061c\u200b\u200c\u200e\u200f"
+    "\u202a\u202b\u202c\u202d\u202e"
+    "\u2060\u2061\u2062\u2063\u2064\u2065\u2066\u2067\u2068\u2069"
+    "\u206a\u206b\u206c\u206d\u206e\u206f\ufeff"
+)
+INTERNAL_FORMAT_TRANSLATION = str.maketrans(
+    "",
+    "",
+    INTERNAL_FORMAT_CHARS,
+)
+LOW_INFORMATION_REPLY_KEYS = frozenset(
+    {
+        "\u55ef\u6765\u4e86",
+        "\u55ef\u6211\u6765\u4e86",
+        "\u6211\u6765\u4e86",
+        "\u55ef\u6765\u5566",
+        "\u6211\u6765\u5566",
+        "\u6765\u4e86",
+        "\u55ef\u5728",
+        "\u6211\u5728",
+        "\u5728\u5462",
+        "\u5728\u7684",
+        "\u5230\u5566",
+        "\u6211\u5230\u5566",
+    }
+)
+LOW_INFORMATION_REPLY_RE = re.compile(
+    r"^(?:\u55ef+)?(?:\u6211)?(?:\u6765(?:\u4e86|\u5566)?|\u5728(?:\u5462|\u7684)?|\u5230(?:\u4e86|\u5566)?)(?:\u5440|\u554a|\u5462|\u54e6|\u5582)?$",
+    re.IGNORECASE,
+)
 CONTROL_COMMAND_RE = re.compile(
     r"^(?:"
     r"\u4efb\u52a1(?:\s+T-[A-Fa-f0-9]{8})?|"
@@ -368,15 +402,17 @@ def get_recent_context(local_id):
         CONTEXT_MESSAGES,
     )
     messages = api_request("GET", path, timeout=15).get("messages", [])
-    candidates = [
-        (
-            item,
-            str(item.get("text") or "").strip(),
-        )
-        for item in messages
-        if int(item.get("local_type", 0)) in {1, 49}
-        and str(item.get("text") or "").strip()
-    ]
+    candidates = []
+    for item in messages:
+        text = strip_internal_format_chars(item.get("text") or "").strip()
+        if int(item.get("local_type", 0)) not in {1, 49} or not text:
+            continue
+        if (
+            str(item.get("direction") or "").strip().lower() == "outgoing"
+            and is_low_information_reply(text)
+        ):
+            continue
+        candidates.append((item, text))
     context = []
     remaining = CONTEXT_TOTAL_CHARS
     for item, text in reversed(candidates):
@@ -624,6 +660,35 @@ def message_server_id(message):
     ).strip()
 
 
+def strip_internal_format_chars(value):
+    """Remove invisible correlation/control characters from user-visible text."""
+    return str(value or "").replace("\x00", "").translate(
+        INTERNAL_FORMAT_TRANSLATION
+    )
+
+
+def sanitize_outbound_text(value):
+    return (
+        unicodedata.normalize("NFC", strip_internal_format_chars(value))
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .strip()
+    )
+
+
+def is_low_information_reply(value):
+    """Recognize stale presence pings that should never fill the group chat."""
+    candidate = re.sub(
+        r"[^\w\u4e00-\u9fff]+",
+        "",
+        sanitize_outbound_text(value).casefold(),
+    )
+    return bool(
+        candidate in LOW_INFORMATION_REPLY_KEYS
+        or LOW_INFORMATION_REPLY_RE.fullmatch(candidate)
+    )
+
+
 def message_type(message):
     value = str(message.get("message_type") or message.get("type") or "").strip()
     if value:
@@ -696,11 +761,22 @@ def ask_ai(message, prompt, *, timeout=None):
     )
     if isinstance(reply, dict):
         reply = reply.get("content") or reply.get("text") or ""
-    reply = str(reply).strip()
+    reply = sanitize_outbound_text(reply)
     status = str(data.get("status") or "").strip()
     task_id = str(data.get("task_id") or "").strip()
     generation = data.get("generation")
     if not reply and status == "ignored":
+        return {
+            "text": "",
+            "status": "ignored",
+            "task_id": task_id,
+            "generation": generation,
+        }
+    if is_low_information_reply(reply):
+        LOG.warning(
+            "suppressed low-information AI reply local_id=%d",
+            local_id,
+        )
         return {
             "text": "",
             "status": "ignored",
@@ -736,6 +812,9 @@ def send_text(
     task_id="",
     generation=0,
 ):
+    text = sanitize_outbound_text(text)
+    if not text:
+        raise ValueError("message text is empty")
     return api_request(
         "POST",
         group_messages_path(),
@@ -870,7 +949,15 @@ def retry_delay(attempts):
 
 
 def prepare_ai_result(local_id, result):
-    reply = str(result.get("text", "") if isinstance(result, dict) else result).strip()
+    if isinstance(result, dict):
+        raw_reply = result.get("text", "")
+        if not raw_reply and result.get("chunks"):
+            raw_reply = "\n".join(
+                str(chunk or "") for chunk in result.get("chunks") or []
+            )
+    else:
+        raw_reply = result
+    reply = sanitize_outbound_text(raw_reply)
     status = str(result.get("status") or "") if isinstance(result, dict) else ""
     task_id = str(result.get("task_id") or "") if isinstance(result, dict) else ""
     generation = result.get("generation") if isinstance(result, dict) else None
@@ -880,6 +967,19 @@ def prepare_ai_result(local_id, result):
             "text": "",
             "chunks": [],
             "status": status,
+            "task_id": task_id,
+            "generation": generation,
+        }
+    if is_low_information_reply(reply):
+        LOG.warning(
+            "suppressed low-information prepared result local_id=%d",
+            int(local_id),
+        )
+        return {
+            "kind": "text",
+            "text": "",
+            "chunks": [],
+            "status": "ignored",
             "task_id": task_id,
             "generation": generation,
         }
@@ -894,22 +994,37 @@ def prepare_ai_result(local_id, result):
 
 
 def normalize_prepared_result(local_id, prepared):
-    if prepared.get("kind") == "text":
-        return prepared
-    LOG.warning(
-        "suppressed legacy pending media local_id=%d kind=%s",
-        int(local_id),
-        str(prepared.get("kind") or "unknown"),
+    if not isinstance(prepared, dict):
+        prepared = {}
+    if prepared.get("kind") != "text":
+        LOG.warning(
+            "suppressed legacy pending media local_id=%d kind=%s",
+            int(local_id),
+            str(prepared.get("kind") or "unknown"),
+        )
+    raw_text = prepared.get("text") or "\n".join(
+        str(chunk or "") for chunk in prepared.get("chunks") or []
     )
-    reply = str(prepared.get("text") or "").strip()
-    return {
-        "kind": "text",
-        "text": reply,
-        "chunks": split_text_chunks(reply),
-        "status": str(prepared.get("status") or ""),
-        "task_id": str(prepared.get("task_id") or ""),
-        "generation": prepared.get("generation"),
-    }
+    if not sanitize_outbound_text(raw_text):
+        # A legacy media-only pending entry has no text fallback.  Clearing it
+        # must remain silent rather than inventing an acknowledgement.
+        return {
+            "kind": "text",
+            "text": "",
+            "chunks": [],
+            "status": str(prepared.get("status") or "ignored"),
+            "task_id": str(prepared.get("task_id") or ""),
+            "generation": prepared.get("generation"),
+        }
+    return prepare_ai_result(
+        local_id,
+        {
+            "text": raw_text,
+            "status": prepared.get("status") or "",
+            "task_id": prepared.get("task_id") or "",
+            "generation": prepared.get("generation"),
+        },
+    )
 
 
 def send_prepared_result(message, prepared):

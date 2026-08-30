@@ -20,7 +20,7 @@ Chat API reads the configured WeChat message database and database-key file. It 
 
 ### Adapter database
 
-Adapter SQLite stores inbound identities, request responses, task prompts and output, plans, events, tool evidence, Outbox content, usage and memory. Relationship profiles additionally retain stable preferences, interaction counts, opt-out choices and room/message ordering timestamps; proactive-message state never retains the source chat text. This content supports deduplication and crash recovery, so the database is sensitive even though application logs redact message bodies.
+Adapter SQLite stores inbound identities, request responses, task prompts and output, plans, events, tool evidence, Outbox content, usage, the room timeline and room-level companion summaries. Production does not create or inject per-member relationship profiles and does not maintain proactive-message state. Legacy relationship tables may remain in an existing database for rollback compatibility, but new production turns do not write them. This content supports deduplication and crash recovery, so the database is sensitive even though application logs redact message bodies.
 
 Default cleanup removes terminal task/audit records after 30 days. Stable memory has its own expiry, typically 90 days for project facts and 180 days for preferences. Operators should adjust retention to their requirements.
 
@@ -44,7 +44,7 @@ Exception paths are security-sensitive. New logging statements must pass content
 
 ## Memory
 
-Room memory is shared only inside the same `room_id`; private memory is isolated by `sender_id`. Memory tools reject credential-like and sensitive personal values. Users can request `记住` and `忘记`; operators can also remove records directly from the private Adapter database during an approved maintenance procedure.
+The companion timeline and summary are shared only inside the same `room_id`; production chat does not build a separate relationship record for each `sender_id`. Private-session memory remains isolated by `sender_id` when private chat is explicitly enabled. Memory tools reject credential-like and sensitive personal values. Operators can remove records directly from the private Adapter database during a maintenance procedure.
 
 ## External services
 

@@ -69,7 +69,7 @@ def test_pinned_ccv3_archive_and_xiaoge_card_are_verified():
     assert hashlib.sha256(XIAOGE_CARD_PATH.read_bytes()).hexdigest() == XIAOGE_CARD_SHA256
     assert tuple(CHARACTER_CARD.source) == XIAOGE_CARD_SOURCES
     assert xiaoge_card_integrity(CHARACTER_CARD)
-    assert PERSONA_VERSION == "sophia@1.0.0+ccv3-xiaoge@1.0.0"
+    assert PERSONA_VERSION == "sophia@1.0.0+ccv3-xiaoge@1.1.1"
 
 
 def test_sophia_is_attributed_but_not_loaded_as_an_executable_runtime_skill():
