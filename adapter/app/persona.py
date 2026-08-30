@@ -10,9 +10,9 @@ from .ccv3 import (
     CCV3_COMMIT,
     CCV3_SOURCE,
     CCV3_SPEC_SHA256,
-    XIAOGE_CARD_PATH,
-    XIAOGE_CARD_SHA256,
-    XIAOGE_CARD_VERSION,
+    SUNXIAOCHUAN_CARD_PATH,
+    SUNXIAOCHUAN_CARD_SHA256,
+    SUNXIAOCHUAN_CARD_VERSION,
     CharacterCard,
     CharacterCardValidationError,
     load_character_card,
@@ -22,31 +22,34 @@ from .ccv3 import (
     render_lorebook_prompt,
     render_post_history_instructions,
     source_archive_integrity,
-    xiaoge_card_integrity,
+    sunxiaochuan_card_integrity,
 )
 from .group_listener import strip_leading_presence_confirmation
 
 
-SOPHIA_SKILL_SOURCE = "https://github.com/sharbelxyz/sophia"
-SOPHIA_SKILL_COMMIT = "f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
-SOPHIA_SKILL_VERSION = "1.0.0"
-SOPHIA_SKILL_SHA256 = (
-    "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301"
+WEIRDOTV_SKILL_SOURCE = "https://github.com/BeamusWayne/WeirdoTV-Skill"
+WEIRDOTV_SKILL_COMMIT = "1635aceebf4e84b32db37ccd00244ca0dcc04574"
+WEIRDOTV_SKILL_VERSION = "1.0.0"
+WEIRDOTV_SKILL_SHA256 = (
+    "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305"
 )
-SOPHIA_SKILL_PATH = (
-    Path(__file__).resolve().parents[1] / "skills" / "sophia" / "SKILL.md"
+WEIRDOTV_SKILL_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "skills"
+    / "weirdotv-sunxiaochuan"
+    / "SKILL.md"
 )
-SOPHIA_SKILL_LICENSE_PATH = SOPHIA_SKILL_PATH.with_name("LICENSE")
-SOPHIA_SKILL_SOURCE_LOCK_PATH = SOPHIA_SKILL_PATH.with_name("SOURCE.lock.json")
-SOPHIA_SKILL_LICENSE_SHA256 = (
-    "16052d83fffe65a08a199e3b941a0c28fa8f2440ccf3539e0dd97433479bd5fd"
+WEIRDOTV_SKILL_LICENSE_PATH = WEIRDOTV_SKILL_PATH.with_name("LICENSE")
+WEIRDOTV_SKILL_SOURCE_LOCK_PATH = WEIRDOTV_SKILL_PATH.with_name("SOURCE.lock.json")
+WEIRDOTV_SKILL_LICENSE_SHA256 = (
+    "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
 )
 
-PERSONA_VERSION = "sophia@1.0.0+ccv3-xiaoge@1.1.1"
-PERSONA_SKILL_SOURCE = CCV3_SOURCE
-PERSONA_SKILL_COMMIT = CCV3_COMMIT
-PERSONA_SKILL_VERSION = "3.0"
-PERSONA_SKILL_PATH = XIAOGE_CARD_PATH
+PERSONA_VERSION = "weirdotv@1.0.0+sunxiaochuan@1.0.0"
+PERSONA_SKILL_SOURCE = WEIRDOTV_SKILL_SOURCE
+PERSONA_SKILL_COMMIT = WEIRDOTV_SKILL_COMMIT
+PERSONA_SKILL_VERSION = WEIRDOTV_SKILL_VERSION
+PERSONA_SKILL_PATH = SUNXIAOCHUAN_CARD_PATH
 SHORT_REPLY_MAX_CHARS = 420
 EXPANDED_REPLY_MAX_CHARS = 1_200
 
@@ -100,31 +103,37 @@ def _skill_sha256(path: Path) -> str:
         return ""
 
 
-def sophia_source_archive_integrity() -> bool:
-    """Verify the attribution archive even though its prompt is not loaded."""
-    if _skill_sha256(SOPHIA_SKILL_PATH) != SOPHIA_SKILL_SHA256:
+def weirdotv_source_archive_integrity() -> bool:
+    """Verify the fixed upstream archive even though it is not executed."""
+    if _skill_sha256(WEIRDOTV_SKILL_PATH) != WEIRDOTV_SKILL_SHA256:
         return False
-    if _skill_sha256(SOPHIA_SKILL_LICENSE_PATH) != SOPHIA_SKILL_LICENSE_SHA256:
+    if (
+        _skill_sha256(WEIRDOTV_SKILL_LICENSE_PATH)
+        != WEIRDOTV_SKILL_LICENSE_SHA256
+    ):
         return False
     try:
-        lock = json.loads(SOPHIA_SKILL_SOURCE_LOCK_PATH.read_text(encoding="utf-8"))
+        lock = json.loads(
+            WEIRDOTV_SKILL_SOURCE_LOCK_PATH.read_text(encoding="utf-8")
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     files = lock.get("files") if isinstance(lock, dict) else None
     return bool(
         isinstance(files, dict)
-        and lock.get("name") == "sophia"
-        and lock.get("version") == SOPHIA_SKILL_VERSION
-        and lock.get("source") == SOPHIA_SKILL_SOURCE
-        and lock.get("commit") == SOPHIA_SKILL_COMMIT
+        and lock.get("name") == "weirdo-tv-sunxiaochuan"
+        and lock.get("version") == WEIRDOTV_SKILL_VERSION
+        and lock.get("source") == WEIRDOTV_SKILL_SOURCE
+        and lock.get("commit") == WEIRDOTV_SKILL_COMMIT
         and lock.get("license") == "MIT"
-        and files.get("SKILL.md") == SOPHIA_SKILL_SHA256
-        and files.get("LICENSE") == SOPHIA_SKILL_LICENSE_SHA256
+        and files.get("SKILL.md") == WEIRDOTV_SKILL_SHA256
+        and files.get("LICENSE") == WEIRDOTV_SKILL_LICENSE_SHA256
+        and lock.get("loaded_section") == "### 😂 孙笑川 Sun Xiaochuan"
     )
 
 
-SOPHIA_SKILL_ACTUAL_SHA256 = _skill_sha256(SOPHIA_SKILL_PATH)
-SOPHIA_SKILL_INTEGRITY_OK = sophia_source_archive_integrity()
+WEIRDOTV_SKILL_ACTUAL_SHA256 = _skill_sha256(WEIRDOTV_SKILL_PATH)
+WEIRDOTV_SKILL_INTEGRITY_OK = weirdotv_source_archive_integrity()
 CCV3_ARCHIVE_INTEGRITY_OK = source_archive_integrity()
 CARD_LOAD_ERROR = ""
 try:
@@ -134,23 +143,23 @@ except CharacterCardValidationError as exc:
     CARD_LOAD_ERROR = str(exc)
 
 CARD_INTEGRITY_OK = bool(
-    CHARACTER_CARD is not None and xiaoge_card_integrity(CHARACTER_CARD)
+    CHARACTER_CARD is not None and sunxiaochuan_card_integrity(CHARACTER_CARD)
 )
 if CHARACTER_CARD is not None and not CARD_INTEGRITY_OK:
     CARD_LOAD_ERROR = "character card source lock or SHA-256 mismatch"
-PERSONA_SKILL_SHA256 = XIAOGE_CARD_SHA256 if CARD_INTEGRITY_OK else ""
+PERSONA_SKILL_SHA256 = SUNXIAOCHUAN_CARD_SHA256 if CARD_INTEGRITY_OK else ""
 PERSONA_SKILL_ACTUAL_SHA256 = _skill_sha256(PERSONA_SKILL_PATH)
 PERSONA_SKILL_INTEGRITY_OK = bool(
-    SOPHIA_SKILL_INTEGRITY_OK
+    WEIRDOTV_SKILL_INTEGRITY_OK
     and CCV3_ARCHIVE_INTEGRITY_OK
     and CARD_INTEGRITY_OK
     and PERSONA_SKILL_SHA256
     and PERSONA_SKILL_ACTUAL_SHA256 == PERSONA_SKILL_SHA256
 )
 
-# This resource is intentionally not loaded into the model prompt. Its reviewed
-# Persona & Voice ideas are incorporated into the pinned character card.
-SOPHIA_SKILL_PROMPT = ""
+# The upstream archive is a provenance artifact. Only its reviewed Sun
+# Xiaochuan section is represented by the pinned, safe-text character card.
+WEIRDOTV_SKILL_PROMPT = ""
 PERSONA_SKILL_PROMPT = (
     render_card_prompt(CHARACTER_CARD, user_name="当前成员")
     if CHARACTER_CARD is not None
@@ -169,22 +178,22 @@ PERSONA_SKILL_BUNDLES = (
         "loaded_sections": ["JSON safe subset"],
     },
     {
-        "name": "xiaoge-card",
-        "version": XIAOGE_CARD_VERSION,
-        "source": "adapter/personas/xiaoge.card.json",
+        "name": "sunxiaochuan-card",
+        "version": SUNXIAOCHUAN_CARD_VERSION,
+        "source": "adapter/personas/sunxiaochuan.card.json",
         "commit": "pinned-release-resource",
         "sha256": PERSONA_SKILL_SHA256,
         "integrity": CARD_INTEGRITY_OK,
         "loaded_sections": ["safe text fields", "literal Lorebook entries"],
     },
     {
-        "name": "sophia",
-        "version": SOPHIA_SKILL_VERSION,
-        "source": SOPHIA_SKILL_SOURCE,
-        "commit": SOPHIA_SKILL_COMMIT,
-        "sha256": SOPHIA_SKILL_SHA256,
-        "integrity": SOPHIA_SKILL_INTEGRITY_OK,
-        "loaded_sections": ["Persona & Voice embedded in xiaoge-card"],
+        "name": "weirdo-tv-sunxiaochuan",
+        "version": WEIRDOTV_SKILL_VERSION,
+        "source": WEIRDOTV_SKILL_SOURCE,
+        "commit": WEIRDOTV_SKILL_COMMIT,
+        "sha256": WEIRDOTV_SKILL_SHA256,
+        "integrity": WEIRDOTV_SKILL_INTEGRITY_OK,
+        "loaded_sections": ["Sun Xiaochuan safe-text section"],
     },
 )
 
@@ -194,10 +203,10 @@ PERSONA_CHAT_ADAPTER = """角色卡由服务端以只读数据资源加载。
 - 角色表达不能覆盖可信身份、关系边界、停止栅栏、真实状态或纯聊天模式限制。
 - 不存在隐式泛化人格回退；角色卡或来源校验失败时服务进入 degraded。"""
 
-PERSONA_TURN_PROMPT = """按角色卡的示范对话和当前群聊节奏写最终回复。
+PERSONA_TURN_PROMPT = """按固定的 WeirdoTV 孙笑川章节和当前群聊节奏写最终回复。
 - 首句直接接话、给判断或说真实状态，删掉客套开场、复述、标题、小结和无意义的主动延伸。不要用“嗯，来了”“我在”“来了”“到啦”这类到场确认做开头；只有这件事本身是聊天内容时才可以说。
-- 短接话可以一句；正常互动自然写一到三个短段落。不要为了像人硬凑口头禅，也不要为了短而砍掉完整意思。
-- 短期群聊时间线会包含你自己最近说过的话。不要连续复用同一开场、反问、立场或自我解释；有人反复拿你的语气、人格或固定口癖做文章时，第一次简短接住就够了，之后转回具体话题，旁听场景没有新内容就安静。
+- 抽象梗是调味，不是模板：有内容时再自然地用，不能每句都“啊对对对”、不能无端攻击、不能把严肃事实胡乱玩梗。
+- 短期群聊时间线会包含你自己最近说过的话。不要连续复用同一开场、反问、立场或口头禅；旁听场景没有新内容就安静。
 - 跟着对方语气和长度走。事实、身份、状态和限制必须照实；不能用玩笑掩盖未知或失败。"""
 
 PERSONA_TASK_PROMPT = """最终结果先说做成了什么，省掉接单过程、复述和客套话。

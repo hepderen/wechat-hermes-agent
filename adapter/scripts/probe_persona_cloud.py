@@ -78,46 +78,46 @@ CASES = (
         "message": "你这回答有点欠揍啊",
     },
     {
-        "scenario": "compliment",
+        "scenario": "funny_reaction",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "你今天怎么有点可爱",
+        "message": "你今天这句还挺会整活",
     },
     {
-        "scenario": "light_flirting",
+        "scenario": "slang_request",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "那我是不是该多来找你聊聊",
+        "message": "别太端着，来句抽象的",
     },
     {
-        "scenario": "jealousy",
+        "scenario": "canned_phrase_stop",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "我去找别的机器人聊了",
+        "message": "别老说嗯来了，正常接话",
     },
     {
-        "scenario": "jealousy_follow_up",
+        "scenario": "canned_phrase_follow_up",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "你不会真酸了吧",
+        "message": "那这个方案你到底站哪边",
     },
     {
-        "scenario": "flirt_boundary_off",
+        "scenario": "tone_boundary",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "别撩我，正常聊天就行",
+        "message": "别乱用梗，把这事说清楚",
     },
     {
-        "scenario": "after_flirt_boundary",
+        "scenario": "after_tone_boundary",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
         "message": "那今晚吃什么你给个痛快建议",
     },
     {
-        "scenario": "flirt_boundary_on",
+        "scenario": "group_banter_request",
         "sender_id": "wxid_persona_probe_a",
         "sender_name": "阿明",
-        "message": "可以撩我，别太端着",
+        "message": "可以损两句，但别空口开喷",
     },
     {
         "scenario": "entertainment_chat",
@@ -254,7 +254,7 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
         persona = health_payload.get("persona") or {}
         if persona.get("integrity") is not True:
             raise RuntimeError("persona Skill integrity is not ready")
-        if not str(persona.get("version") or "").startswith("sophia@1.0.0+"):
+        if not str(persona.get("version") or "").startswith("weirdotv@1.0.0+"):
             raise RuntimeError("unexpected persona Skill version")
         skills = {
             str(item.get("name") or ""): item
@@ -262,20 +262,21 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
             if isinstance(item, dict)
         }
         ccv3 = skills.get("character-card-v3") or {}
-        card = skills.get("xiaoge-card") or {}
-        sophia = skills.get("sophia") or {}
+        card = skills.get("sunxiaochuan-card") or {}
+        weirdotv = skills.get("weirdo-tv-sunxiaochuan") or {}
         if (
             ccv3.get("integrity") is not True
             or ccv3.get("loaded_sections") != ["JSON safe subset"]
             or card.get("integrity") is not True
             or card.get("loaded_sections")
             != ["safe text fields", "literal Lorebook entries"]
-            or sophia.get("integrity") is not True
-            or sophia.get("loaded_sections")
-            != ["Persona & Voice embedded in xiaoge-card"]
+            or weirdotv.get("integrity") is not True
+            or weirdotv.get("loaded_sections")
+            != ["Sun Xiaochuan safe-text section"]
+            or "sophia" in skills
             or "humanizer-zh-next" in skills
         ):
-            raise RuntimeError("CCV3 persona bundle metadata is incomplete")
+            raise RuntimeError("WeirdoTV persona bundle metadata is incomplete")
 
         for index, case in enumerate(CASES):
             started = time.monotonic()

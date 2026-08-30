@@ -147,7 +147,7 @@ def test_production_ports_memory_and_approvals_match_cloud_policy():
     assert 'disabled_toolsets.append("memory")' in SCRIPT
     assert 'disabled_toolsets.append("skills")' in SCRIPT
     assert '"ALLOW_PRIVATE_WECHAT_CHAT": "false"' in SCRIPT
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in SCRIPT
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "13"' in SCRIPT
     assert '"HERMES_WECHAT_CHAT_ONLY": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true"' in SCRIPT
     assert '"HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12"' in SCRIPT
@@ -264,7 +264,7 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=12" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=13" in example
         assert "HERMES_WECHAT_CHAT_ONLY=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
@@ -307,15 +307,15 @@ def test_environment_writer_removes_legacy_skill_runtime_variables():
 def test_persona_bundles_are_pinned_and_checked_before_release_install():
     assert 'local ccv3_root="$SOURCE_ROOT/third_party/character-card-spec-v3"' in SCRIPT
     assert 'local card_root="$SOURCE_ROOT/personas"' in SCRIPT
-    assert 'local sophia_root="$SOURCE_ROOT/skills/sophia"' in SCRIPT
+    assert 'local weirdotv_root="$SOURCE_ROOT/skills/weirdotv-sunxiaochuan"' in SCRIPT
     assert "https://github.com/kwaroran/character-card-spec-v3" in SCRIPT
     assert "f3a86af019fbd99f788f7a1155f399655b34ab35" in SCRIPT
     assert "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c" in SCRIPT
     assert "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95" in SCRIPT
-    assert "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa" in SCRIPT
-    assert "https://github.com/sharbelxyz/sophia" in SCRIPT
-    assert "f2cd448553d61aa3c2ea774dc7e2296f09d4b584" in SCRIPT
-    assert "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301" in SCRIPT
+    assert "e95bb29f4c158c52ea817c04adc1cda7ddd578f1871623bfe050adc41542b0e3" in SCRIPT
+    assert "https://github.com/BeamusWayne/WeirdoTV-Skill" in SCRIPT
+    assert "1635aceebf4e84b32db37ccd00244ca0dcc04574" in SCRIPT
+    assert "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305" in SCRIPT
     assert "assert_persona_skill_bundle" in SCRIPT
     assert "fixed character card source lock mismatch" in SCRIPT
     assert "--exclude 'skills/humanizer-zh-next'" in SCRIPT
@@ -325,10 +325,11 @@ def test_persona_bundles_are_pinned_and_checked_before_release_install():
 def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
     assert "EXPECTED_SOURCE_COMMIT" in CCV3_ADAPTER_RELEASE
     assert 'git -C "$SOURCE_ROOT" rev-parse HEAD' in CCV3_ADAPTER_RELEASE
-    assert "assert_ccv3_persona_resources" in CCV3_ADAPTER_RELEASE
-    assert "sophia@1.0.0+ccv3-xiaoge@1.1.1" in CCV3_ADAPTER_RELEASE
+    assert "assert_weirdotv_persona_resources" in CCV3_ADAPTER_RELEASE
+    assert "weirdotv@1.0.0+sunxiaochuan@1.0.0" in CCV3_ADAPTER_RELEASE
     assert "skills/humanizer-zh-next" in CCV3_ADAPTER_RELEASE
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "12"' in CCV3_ADAPTER_RELEASE
+    assert "skills/sophia" in CCV3_ADAPTER_RELEASE
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "13"' in CCV3_ADAPTER_RELEASE
     assert "Legacy relationship environment values are ignored" in CCV3_ADAPTER_RELEASE
     assert "restoring previous Adapter release" in CCV3_ADAPTER_RELEASE
     assert "systemctl restart wechat-hermes-adapter.service" in CCV3_ADAPTER_RELEASE
@@ -345,8 +346,8 @@ def test_ccv3_adapter_only_release_keeps_the_runtime_pinned_and_reversible():
 def test_bridge_only_release_requires_a_ready_ccv3_adapter_and_preserves_state():
     assert "EXPECTED_SOURCE_COMMIT" in BRIDGE_RELEASE
     assert '"$SOURCE_ROOT/chat-api/db_bridge.py"' in BRIDGE_RELEASE
-    assert "sophia@1.0.0+ccv3-xiaoge@1.1.1" in BRIDGE_RELEASE
-    assert "Adapter is not CCV3-ready" in BRIDGE_RELEASE
+    assert "weirdotv@1.0.0+sunxiaochuan@1.0.0" in BRIDGE_RELEASE
+    assert "Adapter is not WeirdoTV-ready" in BRIDGE_RELEASE
     assert '"HERMES_WECHAT_GROUP_LISTENER_ENABLED"' in BRIDGE_RELEASE
     assert "restoring previous Bridge release" in BRIDGE_RELEASE
     assert "systemctl restart linux-wechat-bridge.service" in BRIDGE_RELEASE
@@ -375,7 +376,7 @@ def test_chat_api_release_is_reversible_and_checks_plain_text_delivery():
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():
     assert 'PREVIOUS_RELEASE_ID=${1:-}' in PERSONA_ROLLBACK
     assert 'EXPECTED_WECHAT_PID=${EXPECTED_WECHAT_PID:-}' in PERSONA_ROLLBACK
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "13"' in PERSONA_ROLLBACK
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "14"' in PERSONA_ROLLBACK
     assert "systemctl restart wechat-hermes-adapter.service" in PERSONA_ROLLBACK
     assert "wait_for_adapter_ready" in PERSONA_ROLLBACK
     assert "http://127.0.0.1:8000/health" in PERSONA_ROLLBACK

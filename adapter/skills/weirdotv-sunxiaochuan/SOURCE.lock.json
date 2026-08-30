@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "weirdo-tv-sunxiaochuan",
+  "version": "1.0.0",
+  "source": "https://github.com/BeamusWayne/WeirdoTV-Skill",
+  "commit": "1635aceebf4e84b32db37ccd00244ca0dcc04574",
+  "license": "MIT",
+  "files": {
+    "SKILL.md": "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305",
+    "LICENSE": "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
+  },
+  "loaded_section": "### 😂 孙笑川 Sun Xiaochuan"
+}

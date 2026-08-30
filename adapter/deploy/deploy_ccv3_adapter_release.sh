@@ -98,34 +98,34 @@ assert_source_tree() {
     fail "source checkout contains symbolic links"
 }
 
-assert_ccv3_persona_resources() {
+assert_weirdotv_persona_resources() {
   local root=$1
   local python_bin=$2
 
   PYTHONPATH="$root" "$python_bin" - <<'PY'
-from app.ccv3 import source_archive_integrity, xiaoge_card_integrity
+from app.ccv3 import source_archive_integrity, sunxiaochuan_card_integrity
 from app.persona import (
     CARD_INTEGRITY_OK,
     CHARACTER_CARD,
     PERSONA_SKILL_BUNDLES,
     PERSONA_SKILL_INTEGRITY_OK,
     PERSONA_VERSION,
-    SOPHIA_SKILL_PROMPT,
-    sophia_source_archive_integrity,
+    WEIRDOTV_SKILL_PROMPT,
+    weirdotv_source_archive_integrity,
 )
 
-if PERSONA_VERSION != "sophia@1.0.0+ccv3-xiaoge@1.1.1":
-    raise SystemExit("unexpected CCV3 persona version")
-if not source_archive_integrity() or not sophia_source_archive_integrity():
+if PERSONA_VERSION != "weirdotv@1.0.0+sunxiaochuan@1.0.0":
+    raise SystemExit("unexpected WeirdoTV persona version")
+if not source_archive_integrity() or not weirdotv_source_archive_integrity():
     raise SystemExit("pinned persona source archive integrity failed")
 if CHARACTER_CARD is None or not CARD_INTEGRITY_OK:
     raise SystemExit("fixed character card integrity failed")
-if not xiaoge_card_integrity(CHARACTER_CARD) or not PERSONA_SKILL_INTEGRITY_OK:
-    raise SystemExit("CCV3 persona integrity failed")
-if SOPHIA_SKILL_PROMPT:
-    raise SystemExit("Sophia archive must not be injected directly")
+if not sunxiaochuan_card_integrity(CHARACTER_CARD) or not PERSONA_SKILL_INTEGRITY_OK:
+    raise SystemExit("WeirdoTV persona integrity failed")
+if WEIRDOTV_SKILL_PROMPT:
+    raise SystemExit("WeirdoTV archive must not be injected directly")
 bundles = {str(item.get("name") or "") for item in PERSONA_SKILL_BUNDLES}
-if bundles != {"character-card-v3", "xiaoge-card", "sophia"}:
+if bundles != {"character-card-v3", "sunxiaochuan-card", "weirdo-tv-sunxiaochuan"}:
     raise SystemExit("unexpected runtime persona bundle set")
 PY
 }
@@ -142,7 +142,7 @@ group_listener = payload.get("group_listener") or {}
 relationship_memory = payload.get("relationship_memory") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
-if persona.get("version") != "sophia@1.0.0+ccv3-xiaoge@1.1.1":
+if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@1.0.0":
     raise SystemExit(1)
 if persona.get("integrity") is not True:
     raise SystemExit(1)
@@ -171,7 +171,7 @@ assert_source_tree
 [[ -f "$SOURCE_ROOT/requirements.txt" ]] || fail "source requirements are missing"
 [[ -f "$SOURCE_ROOT/requirements-mcp.txt" ]] ||
   fail "source MCP requirements are missing"
-assert_ccv3_persona_resources "$SOURCE_ROOT" python3
+assert_weirdotv_persona_resources "$SOURCE_ROOT" python3
 
 release="$ADAPTER_RELEASES_ROOT/$RELEASE_ID"
 [[ ! -e "$release" && ! -L "$release" ]] ||
@@ -184,11 +184,14 @@ rsync -a \
   --exclude '.pytest_cache' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
+  --exclude 'skills/sophia' \
   --exclude 'skills/humanizer-zh-next' \
   "$SOURCE_ROOT/" "$release/"
 
 [[ ! -e "$release/skills/humanizer-zh-next" ]] ||
-  fail "Humanizer must not be present in the CCV3 runtime release"
+  fail "Humanizer must not be present in the WeirdoTV runtime release"
+[[ ! -e "$release/skills/sophia" ]] ||
+  fail "Sophia must not be present in the WeirdoTV runtime release"
 python3 -m venv "$release/.venv"
 "$release/.venv/bin/python" -m pip install \
   --disable-pip-version-check \
@@ -202,7 +205,7 @@ python3 -m venv "$release/.venv"
   "$release/mcp_server.py" \
   "$release/cleanup.py"
 "$release/.venv/bin/uvicorn" --version >/dev/null
-assert_ccv3_persona_resources "$release" "$release/.venv/bin/python"
+assert_weirdotv_persona_resources "$release" "$release/.venv/bin/python"
 
 find "$release" -path "$release/.venv" -prune -o -type d -exec chmod 0755 {} +
 find "$release" -path "$release/.venv" -prune -o -type f -exec chmod 0644 {} +
@@ -263,7 +266,7 @@ if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
 # Legacy relationship environment values are ignored by the production
 # Settings loader and are deliberately removed from the active environment.
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "12",
+    "HERMES_WECHAT_SESSION_GENERATION": "13",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
@@ -304,10 +307,10 @@ mv -Tf -- "$next_link" "$ADAPTER_ROOT"
 systemctl restart wechat-hermes-adapter.service
 systemctl is-active --quiet wechat-hermes-adapter.service ||
   fail "Adapter did not restart"
-wait_for_adapter_ready || fail "Adapter did not become CCV3-ready"
+wait_for_adapter_ready || fail "Adapter did not become WeirdoTV-ready"
 assert_baseline
 
 deployment_succeeded=1
 trap - EXIT
-printf 'CCV3 Adapter release %s is active; previous environment saved at %s\n' \
+printf 'WeirdoTV Adapter release %s is active; previous environment saved at %s\n' \
   "$RELEASE_ID" "$env_backup"

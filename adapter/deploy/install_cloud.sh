@@ -97,8 +97,8 @@ assert_protected_file() {
 assert_persona_skill_bundle() {
   local ccv3_root="$SOURCE_ROOT/third_party/character-card-spec-v3"
   local card_root="$SOURCE_ROOT/personas"
-  local sophia_root="$SOURCE_ROOT/skills/sophia"
-  python3 - "$ccv3_root" "$card_root" "$sophia_root" <<'PY'
+  local weirdotv_root="$SOURCE_ROOT/skills/weirdotv-sunxiaochuan"
+  python3 - "$ccv3_root" "$card_root" "$weirdotv_root" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -108,8 +108,9 @@ CCV3_SOURCE = "https://github.com/kwaroran/character-card-spec-v3"
 CCV3_COMMIT = "f3a86af019fbd99f788f7a1155f399655b34ab35"
 CCV3_SPEC_SHA256 = "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c"
 CCV3_LICENSE_SHA256 = "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95"
-CARD_SHA256 = "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa"
-SOPHIA_SHA256 = "356bd853722504cafec04988555ca36933ef926b2146d0b9df0f72ad48579301"
+CARD_SHA256 = "e95bb29f4c158c52ea817c04adc1cda7ddd578f1871623bfe050adc41542b0e3"
+WEIRDOTV_SHA256 = "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305"
+WEIRDOTV_LICENSE_SHA256 = "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
 
 
 def fail(message):
@@ -143,7 +144,7 @@ def checked_root(raw_root, label):
 
 ccv3_root = checked_root(sys.argv[1], "CCV3 archive")
 card_root = checked_root(sys.argv[2], "character card")
-sophia_root = checked_root(sys.argv[3], "Sophia archive")
+weirdotv_root = checked_root(sys.argv[3], "WeirdoTV archive")
 
 ccv3_lock = read_json(ccv3_root / "SOURCE.lock.json")
 if (
@@ -160,19 +161,19 @@ if sha256(ccv3_root / "SPEC_V3.md") != CCV3_SPEC_SHA256:
 if sha256(ccv3_root / "LICENSE") != CCV3_LICENSE_SHA256:
     fail("CCV3 license SHA-256 mismatch")
 
-card_path = card_root / "xiaoge.card.json"
+card_path = card_root / "sunxiaochuan.card.json"
 card_lock = read_json(card_root / "SOURCE.lock.json")
 expected_card_sources = [
     "https://github.com/kwaroran/character-card-spec-v3/tree/" + CCV3_COMMIT,
-    "https://github.com/sharbelxyz/sophia/tree/f2cd448553d61aa3c2ea774dc7e2296f09d4b584",
+    "https://github.com/BeamusWayne/WeirdoTV-Skill/tree/1635aceebf4e84b32db37ccd00244ca0dcc04574",
 ]
 if (
     card_lock.get("schema_version") != 1
-    or card_lock.get("name") != "xiaoge-card"
-    or card_lock.get("version") != "1.1.1"
+    or card_lock.get("name") != "sunxiaochuan-card"
+    or card_lock.get("version") != "1.0.0"
     or card_lock.get("format") != "chara_card_v3/3.0"
     or card_lock.get("source") != expected_card_sources
-    or card_lock.get("files", {}).get("xiaoge.card.json") != CARD_SHA256
+    or card_lock.get("files", {}).get("sunxiaochuan.card.json") != CARD_SHA256
     or sha256(card_path) != CARD_SHA256
 ):
     fail("fixed character card source lock mismatch")
@@ -184,28 +185,29 @@ if (
     or card.get("spec_version") != "3.0"
     or data.get("name") != "小格"
     or data.get("nickname") != "小格"
-    or data.get("character_version") != "1.1.1"
+    or data.get("character_version") != "1.0.0"
     or data.get("source") != expected_card_sources
 ):
     fail("fixed character card format or source mismatch")
 
-sophia_lock = read_json(sophia_root / "SOURCE.lock.json")
+weirdotv_lock = read_json(weirdotv_root / "SOURCE.lock.json")
 if (
-    sophia_lock.get("name") != "sophia"
-    or sophia_lock.get("version") != "1.0.0"
-    or sophia_lock.get("source") != "https://github.com/sharbelxyz/sophia"
-    or sophia_lock.get("commit") != "f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
-    or sophia_lock.get("license") != "MIT"
-    or sophia_lock.get("audit", {}).get("loaded_sha256") != SOPHIA_SHA256
-    or sha256(sophia_root / "SKILL.md") != SOPHIA_SHA256
+    weirdotv_lock.get("name") != "weirdo-tv-sunxiaochuan"
+    or weirdotv_lock.get("version") != "1.0.0"
+    or weirdotv_lock.get("source") != "https://github.com/BeamusWayne/WeirdoTV-Skill"
+    or weirdotv_lock.get("commit") != "1635aceebf4e84b32db37ccd00244ca0dcc04574"
+    or weirdotv_lock.get("license") != "MIT"
+    or weirdotv_lock.get("loaded_section") != "### 😂 孙笑川 Sun Xiaochuan"
+    or sha256(weirdotv_root / "SKILL.md") != WEIRDOTV_SHA256
+    or sha256(weirdotv_root / "LICENSE") != WEIRDOTV_LICENSE_SHA256
 ):
-    fail("Sophia attribution archive mismatch")
-for relative, digest in sophia_lock.get("files", {}).items():
+    fail("WeirdoTV attribution archive mismatch")
+for relative, digest in weirdotv_lock.get("files", {}).items():
     if not isinstance(relative, str) or not isinstance(digest, str):
-        fail("Sophia source lock file entry is invalid")
-    path = (sophia_root / relative).resolve()
-    if path.parent != sophia_root and sophia_root not in path.parents:
-        fail("Sophia source lock path escapes archive")
+        fail("WeirdoTV source lock file entry is invalid")
+    path = (weirdotv_root / relative).resolve()
+    if path.parent != weirdotv_root and weirdotv_root not in path.parents:
+        fail("WeirdoTV source lock path escapes archive")
     data = path.read_bytes()
     actual = hashlib.sha256(data).hexdigest()
     if actual != digest and relative == "LICENSE":
@@ -213,7 +215,7 @@ for relative, digest in sophia_lock.get("files", {}).items():
             data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         ).hexdigest()
     if actual != digest:
-        fail("Sophia source lock file mismatch: " + relative)
+        fail("WeirdoTV source lock file mismatch: " + relative)
 PY
 }
 
@@ -1113,7 +1115,7 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "12",
+    "HERMES_WECHAT_SESSION_GENERATION": "13",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",

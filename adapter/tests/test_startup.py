@@ -83,7 +83,7 @@ def test_second_adapter_stays_degraded_and_does_not_recover(tmp_path):
         health = first_client.get("/health").json()
         assert health["ready"] is True
         assert health["persona"]["integrity"] is True
-        assert health["persona"]["version"].startswith("sophia@1.0.0+")
+        assert health["persona"]["version"].startswith("weirdotv@1.0.0+")
         assert "wechat_hermes_persona_skill_integrity 1" in (
             first_client.get("/metrics").text
         )

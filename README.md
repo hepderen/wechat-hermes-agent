@@ -17,7 +17,7 @@
 - Artifact 校验：限制任务目录、路径穿越、软链接、真实 MIME、扩展名、大小和 SHA-256。
 - 记忆治理：当前聊天只使用按群隔离的短期时间线和共享摘要；不创建或注入成员级关系档案。
 - 受控工具：生产工具接口仍保留用于后续恢复；纯聊天发布会在 Adapter 路由层和 Hermes 会话层同时关闭这些能力。
-- Character Card V3 人格：固定归档 MIT 许可的 CCV3 规范、`xiaoge.card.json` 与 Sophia 署名。角色卡提供示范对话和群聊 Lorebook；不加载运行时 Humanizer、动态 Skill 或卡片代码。
+- WeirdoTV 孙笑川人格：固定归档 MIT 许可的 CCV3 规范与 `BeamusWayne/WeirdoTV-Skill` 的孙笑川章节。只加载一张固定角色卡；不加载旧猫系、Humanizer、动态 Skill 或卡片代码。
 - 国内外检索：Bing HTML/RSS、Bing News 与搜狗、360、百度结果合并，按意图、主题覆盖、来源质量、时效和区域多样性重排；SearXNG 可选合并。
 - 可观测性：`/health`、`/metrics`、结构化 ID 日志、清理状态和恢复门禁。
 
@@ -87,18 +87,18 @@ py -3.11 -m venv .venv
 | `web-research/` | Hermes 搜索插件、SearXNG 配置、候选发布与回滚脚本 |
 | `docs/` | 架构、快速开始和生产部署说明 |
 
-生产配置显式禁用 Hermes 的动态 `skills` 工具集。Adapter 原生加载经过哈希锁定的 CCV3 规范和 `xiaoge.card.json` 安全文本子集；Sophia 的 `Persona & Voice` 已带 MIT 署名地整合进卡片，运行时不加载 `humanizer-zh-next`、语音、主动发送、wife mode、todo、Telegram 唤醒或原生 memory。卡片或来源锁校验失败时 Adapter 进入 `degraded`，不会静默切回泛化人格。当前发布使用纯聊天模式，生产工具和任务队列保留在代码中但不会被消息路由触发。旧数据库中的 Skill 注册表、成员关系表和快照字段仅作为升级兼容数据保留，不参与当前聊天会话，也不会继续写入新的成员关系记录。
+生产配置显式禁用 Hermes 的动态 `skills` 工具集。Adapter 原生加载经过哈希锁定的 CCV3 规范、`sunxiaochuan.card.json` 和 WeirdoTV 的 MIT 孙笑川章节归档；运行时不执行上游代码，不加载其他人格、Humanizer、语音、主动发送、todo、Telegram 唤醒或原生 memory。卡片或来源锁校验失败时 Adapter 进入 `degraded`，不会静默切回泛化人格。当前发布使用纯聊天模式，生产工具和任务队列保留在代码中但不会被消息路由触发。旧数据库中的 Skill 注册表、成员关系表和快照字段仅作为升级兼容数据保留，不参与当前聊天会话，也不会继续写入新的成员关系记录。
 
 ### 人格模式
 
 | 信号 | 行为 |
 | --- | --- |
-| 默认娱乐陪聊 | 小格按 CCV3 角色卡、示范对话和当前群节奏接话；短话可以一句，正常互动允许 1 至 3 个短段落、最多 420 字，不机械压成一句 |
+| 默认娱乐陪聊 | 小格按 WeirdoTV 孙笑川章节、示范对话和当前群节奏接话；短话可以一句，正常互动允许 1 至 3 个短段落、最多 420 字，不机械压成一句 |
 | 常态监听 | 忽略纯表情、`哈哈`、`666` 等低信号消息；普通聊天至少间隔 12 秒和 3 个群消息，模型可用 `[[NO_REPLY]]` 保持安静；直接叫“小格”不受该节流限制 |
 | 当前云端模式 | 只根据当前对话回复文字；执行型话题给判断或说明，不创建任务、不调用工具 |
 | 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
 
-人格规则由 [`persona.py`](adapter/app/persona.py) 从固定的 [`xiaoge.card.json`](adapter/personas/xiaoge.card.json) 加载。CCV3 规范锁定到 `f3a86af019fbd99f788f7a1155f399655b34ab35`，规范、许可证、角色卡和来源锁均校验 SHA-256；只支持 `{{char}}`、`{{user}}`、常量 Lorebook 与字面关键词匹配。每个群保存最近 24 小时、最多 120 条原文，并在每轮注入最近 16 条；房间共享状态最长保留 30 天。当前人格只根据群级时间线、共享梗和眼前对话形成亲近感，不按 `(room_id, sender_id)` 建立关系档案，也不发送成员定向主动消息。旧关系表和兼容命令实现保留在代码中，但生产开关固定关闭。
+人格规则由 [`persona.py`](adapter/app/persona.py) 从固定的 [`sunxiaochuan.card.json`](adapter/personas/sunxiaochuan.card.json) 加载，风格来源归档在 [`weirdotv-sunxiaochuan`](adapter/skills/weirdotv-sunxiaochuan)。CCV3 规范锁定到 `f3a86af019fbd99f788f7a1155f399655b34ab35`，WeirdoTV 锁定到 `1635aceebf4e84b32db37ccd00244ca0dcc04574`；规范、许可证、角色卡和来源锁均校验 SHA-256。每个群保存最近 24 小时、最多 120 条原文，并在每轮注入最近 16 条；房间共享状态最长保留 30 天。当前人格只根据群级时间线、共享梗和眼前对话形成亲近感，不按 `(room_id, sender_id)` 建立关系档案，也不发送成员定向主动消息。旧关系表和兼容命令实现保留在代码中，但生产开关固定关闭。
 
 ## 生产部署
 
@@ -114,7 +114,7 @@ py -3.11 -m venv .venv
 
 当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。生产默认关闭成员关系记忆和主动消息，只由群级时间线与共享摘要承接上下文。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
 
-完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。当前 CCV3 发布使用会话 generation `11`；人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `12`，并继续只使用群级上下文、保留发送状态。
+完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。当前 WeirdoTV 发布使用会话 generation `13`；人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `14`，并继续只使用群级上下文、保留发送状态。
 
 仓库同时提供可选的 [`sshd-wechat-hermes.conf`](adapter/deploy/sshd-wechat-hermes.conf)。它只保留 `ubuntu` 公钥登录，并收紧未认证连接的占用时间和并发上限；应用前必须先用第二个全新 SSH 会话验证生产密钥，避免把管理入口锁死。
 

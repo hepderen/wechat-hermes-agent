@@ -9,8 +9,9 @@
 *.timer text eol=lf
 *.conf text eol=lf
 *.example text eol=lf
-/adapter/skills/sophia/SKILL.md -text -whitespace
 /adapter/skills/humanizer-zh-next/SKILL.md -text -whitespace
+/adapter/skills/weirdotv-sunxiaochuan/SKILL.md -text -whitespace
+/adapter/skills/weirdotv-sunxiaochuan/LICENSE -text -whitespace
 /adapter/third_party/character-card-spec-v3/SPEC_V3.md -whitespace
 /adapter/third_party/character-card-spec-v3/LICENSE -text -whitespace
 *.png binary

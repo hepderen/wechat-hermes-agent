@@ -11,16 +11,16 @@ from app.ccv3 import (
     CCV3_SPEC_PATH,
     CCV3_SPEC_SHA256,
     CharacterCardValidationError,
-    XIAOGE_CARD_LOCK_PATH,
-    XIAOGE_CARD_PATH,
-    XIAOGE_CARD_SHA256,
-    XIAOGE_CARD_SOURCES,
-    XIAOGE_CARD_VERSION,
+    SUNXIAOCHUAN_CARD_LOCK_PATH,
+    SUNXIAOCHUAN_CARD_PATH,
+    SUNXIAOCHUAN_CARD_SHA256,
+    SUNXIAOCHUAN_CARD_SOURCES,
+    SUNXIAOCHUAN_CARD_VERSION,
     load_character_card,
     matching_lorebook_entries,
     replace_supported_macros,
     source_archive_integrity,
-    xiaoge_card_integrity,
+    sunxiaochuan_card_integrity,
 )
 from app.main import ChatRequest, trusted_system_message
 from app.persona import (
@@ -32,14 +32,14 @@ from app.persona import (
     PERSONA_SYSTEM_PROMPT,
     PERSONA_VERSION,
     SHORT_REPLY_MAX_CHARS,
-    SOPHIA_SKILL_COMMIT,
-    SOPHIA_SKILL_INTEGRITY_OK,
-    SOPHIA_SKILL_LICENSE_PATH,
-    SOPHIA_SKILL_LICENSE_SHA256,
-    SOPHIA_SKILL_PATH,
-    SOPHIA_SKILL_PROMPT,
-    SOPHIA_SKILL_SHA256,
-    SOPHIA_SKILL_SOURCE,
+    WEIRDOTV_SKILL_COMMIT,
+    WEIRDOTV_SKILL_INTEGRITY_OK,
+    WEIRDOTV_SKILL_LICENSE_PATH,
+    WEIRDOTV_SKILL_LICENSE_SHA256,
+    WEIRDOTV_SKILL_PATH,
+    WEIRDOTV_SKILL_PROMPT,
+    WEIRDOTV_SKILL_SHA256,
+    WEIRDOTV_SKILL_SOURCE,
     character_card_lorebook_prompt,
     character_card_group_greetings_prompt,
     character_card_post_history_prompt,
@@ -47,11 +47,11 @@ from app.persona import (
     chat_turn_prompt,
     compact_chat_reply,
     expanded_reply_requested,
-    sophia_source_archive_integrity,
+    weirdotv_source_archive_integrity,
 )
 
 
-def test_pinned_ccv3_archive_and_xiaoge_card_are_verified():
+def test_pinned_ccv3_archive_and_sunxiaochuan_card_are_verified():
     assert CCV3_SOURCE == "https://github.com/kwaroran/character-card-spec-v3"
     assert CCV3_COMMIT == "f3a86af019fbd99f788f7a1155f399655b34ab35"
     assert hashlib.sha256(CCV3_SPEC_PATH.read_bytes()).hexdigest() == CCV3_SPEC_SHA256
@@ -62,47 +62,54 @@ def test_pinned_ccv3_archive_and_xiaoge_card_are_verified():
     assert CHARACTER_CARD is not None
     assert CHARACTER_CARD.name == "小格"
     assert CHARACTER_CARD.nickname == "小格"
-    assert CHARACTER_CARD.character_version == XIAOGE_CARD_VERSION
-    assert len(CHARACTER_CARD.mes_example.split("<START>")) - 1 >= 24
-    assert XIAOGE_CARD_PATH.is_file()
-    assert XIAOGE_CARD_LOCK_PATH.is_file()
-    assert hashlib.sha256(XIAOGE_CARD_PATH.read_bytes()).hexdigest() == XIAOGE_CARD_SHA256
-    assert tuple(CHARACTER_CARD.source) == XIAOGE_CARD_SOURCES
-    assert xiaoge_card_integrity(CHARACTER_CARD)
-    assert PERSONA_VERSION == "sophia@1.0.0+ccv3-xiaoge@1.1.1"
-
-
-def test_sophia_is_attributed_but_not_loaded_as_an_executable_runtime_skill():
-    assert SOPHIA_SKILL_INTEGRITY_OK
-    assert sophia_source_archive_integrity()
-    assert hashlib.sha256(SOPHIA_SKILL_PATH.read_bytes()).hexdigest() == SOPHIA_SKILL_SHA256
+    assert CHARACTER_CARD.character_version == SUNXIAOCHUAN_CARD_VERSION
+    assert len(CHARACTER_CARD.mes_example.split("<START>")) - 1 >= 8
+    assert SUNXIAOCHUAN_CARD_PATH.is_file()
+    assert SUNXIAOCHUAN_CARD_LOCK_PATH.is_file()
     assert (
-        hashlib.sha256(SOPHIA_SKILL_LICENSE_PATH.read_bytes()).hexdigest()
-        == SOPHIA_SKILL_LICENSE_SHA256
+        hashlib.sha256(SUNXIAOCHUAN_CARD_PATH.read_bytes()).hexdigest()
+        == SUNXIAOCHUAN_CARD_SHA256
     )
-    assert SOPHIA_SKILL_SOURCE == "https://github.com/sharbelxyz/sophia"
-    assert SOPHIA_SKILL_COMMIT == "f2cd448553d61aa3c2ea774dc7e2296f09d4b584"
-    assert SOPHIA_SKILL_PROMPT == ""
+    assert tuple(CHARACTER_CARD.source) == SUNXIAOCHUAN_CARD_SOURCES
+    assert sunxiaochuan_card_integrity(CHARACTER_CARD)
+    assert PERSONA_VERSION == "weirdotv@1.0.0+sunxiaochuan@1.0.0"
+
+
+def test_weirdotv_is_attributed_but_not_loaded_as_an_executable_runtime_skill():
+    assert WEIRDOTV_SKILL_INTEGRITY_OK
+    assert weirdotv_source_archive_integrity()
+    assert (
+        hashlib.sha256(WEIRDOTV_SKILL_PATH.read_bytes()).hexdigest()
+        == WEIRDOTV_SKILL_SHA256
+    )
+    assert (
+        hashlib.sha256(WEIRDOTV_SKILL_LICENSE_PATH.read_bytes()).hexdigest()
+        == WEIRDOTV_SKILL_LICENSE_SHA256
+    )
+    assert WEIRDOTV_SKILL_SOURCE == "https://github.com/BeamusWayne/WeirdoTV-Skill"
+    assert WEIRDOTV_SKILL_COMMIT == "1635aceebf4e84b32db37ccd00244ca0dcc04574"
+    assert WEIRDOTV_SKILL_PROMPT == ""
     assert "humanizer-zh-next" not in PERSONA_SYSTEM_PROMPT
-    assert "wife mode" not in PERSONA_SYSTEM_PROMPT.casefold()
+    assert "sophia" not in PERSONA_SYSTEM_PROMPT.casefold()
+    assert "猫系" not in PERSONA_SYSTEM_PROMPT
     assert "text_to_speech" not in PERSONA_SYSTEM_PROMPT.casefold()
     assert "send_message" not in PERSONA_SYSTEM_PROMPT.casefold()
     assert {bundle["name"] for bundle in PERSONA_SKILL_BUNDLES} == {
         "character-card-v3",
-        "xiaoge-card",
-        "sophia",
+        "sunxiaochuan-card",
+        "weirdo-tv-sunxiaochuan",
     }
 
 
 def test_ccv3_loader_rejects_wrong_format_and_ignores_unsupported_features(tmp_path):
-    payload = json.loads(XIAOGE_CARD_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(SUNXIAOCHUAN_CARD_PATH.read_text(encoding="utf-8"))
     payload["spec"] = "wrong"
     path = tmp_path / "bad.card.json"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(CharacterCardValidationError, match="spec"):
         load_character_card(path)
 
-    payload = json.loads(XIAOGE_CARD_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(SUNXIAOCHUAN_CARD_PATH.read_text(encoding="utf-8"))
     payload["data"]["assets"] = [
         {"type": "code", "uri": "https://example.invalid/run.py", "name": "x", "ext": "py"}
     ]
@@ -135,15 +142,15 @@ def test_ccv3_macro_replacement_and_literal_lorebook_matching_are_scoped():
     assert CHARACTER_CARD is not None
     matches = matching_lorebook_entries(
         CHARACTER_CARD,
-        [{"text": "他还在聊前任和别的 AI"}],
+        [{"text": "这群今天又在吵方案"}],
         user_name="阿明",
     )
-    assert any("轻轻酸一句" in entry for entry in matches)
+    assert matches == []
     prompt = character_card_lorebook_prompt(
         [{"text": "今天又加班到很晚"}],
         user_name="阿明",
     )
-    assert "低落情绪" in prompt
+    assert prompt == ""
     assert replace_supported_macros(
         "{{char}} 对 {{unknown}} 说话",
         char_name="小格",
@@ -151,7 +158,7 @@ def test_ccv3_macro_replacement_and_literal_lorebook_matching_are_scoped():
     ) == "小格 对 {{unknown}} 说话"
 
 
-def test_prompt_assembly_keeps_card_lore_state_profile_timeline_order():
+def test_prompt_assembly_keeps_card_state_profile_timeline_order():
     payload = ChatRequest(
         message="我又提到前任了",
         sender_name="阿明",
@@ -195,13 +202,13 @@ def test_prompt_assembly_keeps_card_lore_state_profile_timeline_order():
         ],
     )
     card_index = prompt.index("Character Card V3")
-    lore_index = prompt.index("匹配角色设定")
     state_index = prompt.index("群共享状态")
     profile_index = prompt.index("可信关系档案")
     timeline_index = prompt.index("短期群聊时间线")
-    assert card_index < lore_index < state_index < profile_index < timeline_index
+    assert card_index < state_index < profile_index < timeline_index
+    assert "匹配角色设定" not in prompt
     assert '"sender_name":"阿明"' in prompt
-    assert "Persona & Voice embedded" not in prompt
+    assert "Sun Xiaochuan safe-text section" not in prompt
     assert "角色卡由服务端以只读数据资源加载" in prompt
 
 
@@ -231,13 +238,11 @@ def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
     assert compact_chat_reply("我在想这个问题。", "你怎么看") == "我在想这个问题。"
 
 
-def test_card_group_greetings_are_loaded_only_as_a_bounded_proactive_reference():
-    prompt = character_card_group_greetings_prompt()
-    assert "角色卡群聊主动开场示范" in prompt
-    assert prompt.count("\n-") == 3
-    assert "逐字照抄" in prompt
+def test_card_has_no_proactive_group_greetings():
+    assert character_card_group_greetings_prompt() == ""
 
 
 def test_card_does_not_create_an_implicit_generic_persona_fallback():
     assert "不存在隐式泛化人格回退" in PERSONA_CHAT_ADAPTER
     assert character_card_prompt("阿明").startswith("以下是固定的 Character Card V3")
+    assert "WeirdoTV Skill" in character_card_prompt("阿明")

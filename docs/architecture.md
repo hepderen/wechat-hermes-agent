@@ -41,7 +41,7 @@
 
 - 监听 `127.0.0.1:8642`。
 - 负责对话生成、计划执行、终端、文件、浏览器和联网检索。
-- Hermes 动态 `skills` 工具集在生产配置中禁用。Sophia 的 MIT `Persona & Voice` 原则已署名并整合到固定 CCV3 卡片；`humanizer-zh-next` 不进入运行时提示。卡片不具备工具调用、文件执行或微信发送能力。
+- Hermes 动态 `skills` 工具集在生产配置中禁用。运行时只加载锁定提交的 WeirdoTV 孙笑川章节对应的固定 CCV3 卡片；不加载其他人格或 `humanizer-zh-next`。卡片不具备工具调用、文件执行或微信发送能力。
 - Worker 不持有 Bridge Token 或 Chat API Token，微信发送必须经过 Adapter/Bridge 的受控链路。
 - systemd 将写权限限制到工作区和 Artifact 目录。
 
@@ -158,6 +158,6 @@ Adapter 启动时先获取单进程锁，恢复未完成任务并对账 Outbox�
 - 内部 API 使用独立 Token；Hermes Worker 不获取微信发送凭据。
 - 网络工具阻止回环、私网、链路本地、云元数据和重定向 SSRF。
 - 文件工具限制根目录、软链接、归档条目数和下载字节数。
-- Hermes 的动态 `skills` 工具集被显式禁用，Adapter 只加载锁定的 CCV3 规范、`xiaoge.card.json` 和 Sophia 署名归档，不暴露动态安装或 reload 接口。
+- Hermes 的动态 `skills` 工具集被显式禁用，Adapter 只加载锁定的 CCV3 规范、`sunxiaochuan.card.json` 和 WeirdoTV 孙笑川章节归档，不暴露动态安装或 reload 接口。
 - 角色卡只参与会话表达、Lorebook 和示范对话，不参与可信身份、任务状态、工具证据、停止栅栏或 Outbox 判定；主动开场功能在生产关闭。
 - 升级不会删除旧 SQLite 中的 Skill 历史字段或注册表；这些兼容数据没有运行时读取路径。

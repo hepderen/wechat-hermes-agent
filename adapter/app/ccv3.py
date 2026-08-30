@@ -16,15 +16,15 @@ CCV3_SPEC_SHA256 = (
 CCV3_LICENSE_SHA256 = (
     "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95"
 )
-XIAOGE_CARD_VERSION = "1.1.1"
-XIAOGE_CARD_SHA256 = (
-    "7d55fb9df10760e689346335b64fc0699e2977a83dc2be3ee6a93972cc015ffa"
+SUNXIAOCHUAN_CARD_VERSION = "1.0.0"
+SUNXIAOCHUAN_CARD_SHA256 = (
+    "e95bb29f4c158c52ea817c04adc1cda7ddd578f1871623bfe050adc41542b0e3"
 )
-XIAOGE_CARD_SOURCES = (
+SUNXIAOCHUAN_CARD_SOURCES = (
     "https://github.com/kwaroran/character-card-spec-v3/"
     "tree/f3a86af019fbd99f788f7a1155f399655b34ab35",
-    "https://github.com/sharbelxyz/sophia/"
-    "tree/f2cd448553d61aa3c2ea774dc7e2296f09d4b584",
+    "https://github.com/BeamusWayne/WeirdoTV-Skill/"
+    "tree/1635aceebf4e84b32db37ccd00244ca0dcc04574",
 )
 
 ADAPTER_ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +32,8 @@ CCV3_ARCHIVE_DIR = ADAPTER_ROOT / "third_party" / "character-card-spec-v3"
 CCV3_SPEC_PATH = CCV3_ARCHIVE_DIR / "SPEC_V3.md"
 CCV3_LICENSE_PATH = CCV3_ARCHIVE_DIR / "LICENSE"
 CCV3_SOURCE_LOCK_PATH = CCV3_ARCHIVE_DIR / "SOURCE.lock.json"
-XIAOGE_CARD_PATH = ADAPTER_ROOT / "personas" / "xiaoge.card.json"
-XIAOGE_CARD_LOCK_PATH = ADAPTER_ROOT / "personas" / "SOURCE.lock.json"
+SUNXIAOCHUAN_CARD_PATH = ADAPTER_ROOT / "personas" / "sunxiaochuan.card.json"
+SUNXIAOCHUAN_CARD_LOCK_PATH = ADAPTER_ROOT / "personas" / "SOURCE.lock.json"
 
 MAX_CARD_BYTES = 128 * 1024
 MAX_CARD_TEXT_CHARS = 24_000
@@ -164,7 +164,7 @@ def _load_lore_entries(value: Any) -> tuple[LoreEntry, ...]:
     return tuple(entries)
 
 
-def load_character_card(path: Path = XIAOGE_CARD_PATH) -> CharacterCard:
+def load_character_card(path: Path = SUNXIAOCHUAN_CARD_PATH) -> CharacterCard:
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -248,26 +248,26 @@ def source_archive_integrity() -> bool:
     )
 
 
-def xiaoge_card_integrity(card: CharacterCard | None = None) -> bool:
-    """Verify the local, fixed card separately from the upstream CCV3 archive."""
-    actual_sha256 = _sha256(XIAOGE_CARD_PATH)
-    if actual_sha256 != XIAOGE_CARD_SHA256:
+def sunxiaochuan_card_integrity(card: CharacterCard | None = None) -> bool:
+    """Verify the fixed WeirdoTV-derived card separately from CCV3."""
+    actual_sha256 = _sha256(SUNXIAOCHUAN_CARD_PATH)
+    if actual_sha256 != SUNXIAOCHUAN_CARD_SHA256:
         return False
-    if card is not None and card.card_sha256 != XIAOGE_CARD_SHA256:
+    if card is not None and card.card_sha256 != SUNXIAOCHUAN_CARD_SHA256:
         return False
     try:
-        lock = json.loads(XIAOGE_CARD_LOCK_PATH.read_text(encoding="utf-8"))
+        lock = json.loads(SUNXIAOCHUAN_CARD_LOCK_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     files = lock.get("files") if isinstance(lock, dict) else None
     return bool(
         isinstance(files, dict)
         and lock.get("schema_version") == 1
-        and lock.get("name") == "xiaoge-card"
-        and lock.get("version") == XIAOGE_CARD_VERSION
+        and lock.get("name") == "sunxiaochuan-card"
+        and lock.get("version") == SUNXIAOCHUAN_CARD_VERSION
         and lock.get("format") == "chara_card_v3/3.0"
-        and tuple(lock.get("source") or ()) == XIAOGE_CARD_SOURCES
-        and files.get("xiaoge.card.json") == XIAOGE_CARD_SHA256
+        and tuple(lock.get("source") or ()) == SUNXIAOCHUAN_CARD_SOURCES
+        and files.get("sunxiaochuan.card.json") == SUNXIAOCHUAN_CARD_SHA256
     )
 
 
