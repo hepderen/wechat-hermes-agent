@@ -26,6 +26,12 @@ BRIDGE_RELEASE = (
     / "deploy"
     / "deploy_bridge_release.sh"
 ).read_text(encoding="utf-8")
+CHAT_API_RELEASE = (
+    Path(__file__).resolve().parents[2]
+    / "chat-api"
+    / "deploy"
+    / "deploy_chat_api_release.sh"
+).read_text(encoding="utf-8")
 
 
 def test_sshd_hardening_disables_password_and_root_login():
@@ -346,6 +352,24 @@ def test_bridge_only_release_requires_a_ready_ccv3_adapter_and_preserves_state()
     assert "systemctl restart linux-wechat-bridge.service" in BRIDGE_RELEASE
     assert "systemctl restart wechat-chat-api.service" not in BRIDGE_RELEASE
     assert "systemctl restart hermes-worker.service" not in BRIDGE_RELEASE
+
+
+def test_chat_api_release_is_reversible_and_checks_plain_text_delivery():
+    assert "EXPECTED_SOURCE_COMMIT" in CHAT_API_RELEASE
+    assert '"$SOURCE_ROOT/chat-api/chat_api.py"' in CHAT_API_RELEASE
+    assert "assert_plain_text_protocol" in CHAT_API_RELEASE
+    assert '"wire_text = text"' in CHAT_API_RELEASE
+    assert "restoring previous Chat API source" in CHAT_API_RELEASE
+    assert "systemctl restart wechat-chat-api.service" in CHAT_API_RELEASE
+    assert "systemctl restart linux-wechat-bridge.service" not in CHAT_API_RELEASE
+    assert "systemctl restart wechat-hermes-adapter.service" not in CHAT_API_RELEASE
+    assert "systemctl restart hermes-worker.service" not in CHAT_API_RELEASE
+    for protected in (
+        "/home/ubuntu/linux-wechat-bot/db-state.json",
+        "/home/ubuntu/.cache/wechat-chat-api/send-state.json",
+        "/opt/wechat-ai-bot/data/bot.db",
+    ):
+        assert protected in CHAT_API_RELEASE
 
 
 def test_persona_rollback_rotates_sessions_without_deleting_relationship_data():

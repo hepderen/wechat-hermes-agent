@@ -199,7 +199,7 @@ sudo WECHAT_PID=PID \
 
 ## 已部署服务升级
 
-已运行的实例更新 CCV3 人格时，不运行完整安装器。先将公开仓库固定到待发布提交，记录当下的 PID、哈希和 inode，再使用两个仅替换发布文件的脚本。它们不会重启微信、Chat API 或 Hermes Worker；任一步失败会恢复该服务的前一版本。
+已运行的实例更新 CCV3 人格或发送逻辑时，不运行完整安装器。先将公开仓库固定到待发布提交，记录当下的 PID、哈希和 inode，再使用三个仅替换发布文件的脚本。它们不会重启微信或 Hermes Worker；任一步失败会恢复该服务的前一版本。
 
 ~~~bash
 REPO=/var/lib/wechat-hermes/candidates/ccv3-RELEASE_ID
@@ -236,6 +236,17 @@ sudo env SOURCE_ROOT="${REPO}" RELEASE_ID="${RELEASE_ID}" \
   EXPECTED_SEND_STATE_INODE="${EXPECTED_SEND_STATE_INODE}" \
   EXPECTED_BOT_DB_INODE="${EXPECTED_BOT_DB_INODE}" \
   bash "${REPO}/chat-api/deploy/deploy_bridge_release.sh"
+
+sudo env SOURCE_ROOT="${REPO}" RELEASE_ID="${RELEASE_ID}" \
+  EXPECTED_SOURCE_COMMIT="${COMMIT}" \
+  EXPECTED_WECHAT_PID="${EXPECTED_WECHAT_PID}" \
+  EXPECTED_DB_STATE_SHA256="${EXPECTED_DB_STATE_SHA256}" \
+  EXPECTED_SEND_STATE_SHA256="${EXPECTED_SEND_STATE_SHA256}" \
+  EXPECTED_BOT_DB_SHA256="${EXPECTED_BOT_DB_SHA256}" \
+  EXPECTED_DB_STATE_INODE="${EXPECTED_DB_STATE_INODE}" \
+  EXPECTED_SEND_STATE_INODE="${EXPECTED_SEND_STATE_INODE}" \
+  EXPECTED_BOT_DB_INODE="${EXPECTED_BOT_DB_INODE}" \
+  bash "${REPO}/chat-api/deploy/deploy_chat_api_release.sh"
 ~~~
 
 在两次切换后运行 adapter/scripts/smoke_cloud.py --read-only。该检查只读取健康状态、鉴权和工具目录，不会调用模型或向群发送任何内容。
