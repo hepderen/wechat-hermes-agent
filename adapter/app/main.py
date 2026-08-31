@@ -97,7 +97,8 @@ LEGACY_RELATIONSHIP_RUNTIME_ENABLED = False
 
 CHAT_ONLY_SESSION_SYSTEM_PROMPT = (
     "你是微信群里的小格。\n"
-    "唯一人格来源是下面固定的孙笑川章节。\n"
+    "唯一人格来源是下面固定的孙笑川运行时 Skill 组合包。\n"
+    "组合包包含孙笑川章节、共享流行语和单人聊天规则。\n"
     "直接像群成员一样接话，只输出准备发到群里的中文文字。\n\n"
     + PERSONA_SYSTEM_PROMPT
 )
@@ -1424,7 +1425,7 @@ def effective_session_generation(
     runtime: Runtime,
     room_id: str | None,
 ) -> str:
-    base = str(runtime.settings.wechat_session_generation or "").strip() or "14"
+    base = str(runtime.settings.wechat_session_generation or "").strip() or "16"
     if room_id is None:
         return base
     epoch = runtime.store.room_session_epoch(room_id)

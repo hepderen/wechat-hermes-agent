@@ -79,7 +79,7 @@ OUTBOX_TERMINAL_STATES = {"confirmed", "uncertain", "suppressed", "failed"}
 # Runtime mode is persisted separately from task history.  This lets a
 # restart make the chat-only cutover idempotent without rewriting old task
 # rows or relying on an environment flag that can be changed accidentally.
-PURE_CHAT_RUNTIME_MODE = "sunxiaochuan-chat-only-v14"
+PURE_CHAT_RUNTIME_MODE = "sunxiaochuan-chat-only-v16"
 RUNNING_HERMES_STATUSES = {
     "started",
     "queued",

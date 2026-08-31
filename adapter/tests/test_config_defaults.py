@@ -1,7 +1,10 @@
 from pathlib import Path
 
 from app.config import Settings
-from scripts.live_fake_stack import adapter_environment
+from scripts.live_fake_stack import (
+    adapter_environment,
+    fake_foreground_chat_reply,
+)
 
 
 def test_production_resource_defaults_disable_member_relationships(monkeypatch):
@@ -21,7 +24,7 @@ def test_production_resource_defaults_disable_member_relationships(monkeypatch):
 
     assert settings.max_task_seconds == 1800
     assert settings.daily_cost_limit_usd == 20
-    assert settings.wechat_session_generation == "14"
+    assert settings.wechat_session_generation == "16"
     assert settings.database_path == Path(
         "/var/lib/wechat-hermes/adapter-data/adapter.db"
     )
@@ -135,3 +138,16 @@ def test_fake_stack_uses_platform_absolute_cleanup_status_path(tmp_path):
     assert cleanup_status.is_absolute()
     assert cleanup_status.parent == database.parent
     assert "HERMES_WECHAT_RELATIONSHIP_MEMORY_ENABLED" not in environment
+
+
+def test_fake_stack_foreground_reply_is_anchored_to_the_current_turn():
+    first = fake_foreground_chat_reply(
+        "群聊最近对话（按时间顺序）：\n当前发言 群友：hello mention 101"
+    )
+    second = fake_foreground_chat_reply(
+        "群聊最近对话（按时间顺序）：\n当前发言 群友：hello mention 102"
+    )
+
+    assert first != second
+    assert "当前发言 群友：hello mention 101" in first
+    assert "当前发言 群友：hello mention 102" in second

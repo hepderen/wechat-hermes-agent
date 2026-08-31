@@ -208,6 +208,39 @@ if (
 ):
     fail("Sun Xiaochuan section source lock mismatch")
 PY
+
+  PYTHONPATH="$SOURCE_ROOT" python3 - <<'PY'
+from app.persona import (
+    PERSONA_SKILL_BUNDLES,
+    PERSONA_SKILL_INTEGRITY_OK,
+    PERSONA_SKILL_PATH,
+    PERSONA_SKILL_PROMPT,
+    PERSONA_VERSION,
+    SUNXIAOCHUAN_RUNTIME_SHA256,
+    sunxiaochuan_runtime_integrity,
+)
+
+if PERSONA_VERSION != "weirdotv@1.0.0+sunxiaochuan@3.0.0":
+    raise SystemExit("unexpected Sun Xiaochuan runtime version")
+if not PERSONA_SKILL_INTEGRITY_OK or not sunxiaochuan_runtime_integrity():
+    raise SystemExit("Sun Xiaochuan runtime bundle integrity failed")
+if PERSONA_SKILL_PATH.name != "sunxiaochuan.runtime.md":
+    raise SystemExit("unexpected active persona resource")
+if len(PERSONA_SKILL_PROMPT) < 1200:
+    raise SystemExit("Sun Xiaochuan runtime bundle is unexpectedly thin")
+if len(PERSONA_SKILL_BUNDLES) != 1:
+    raise SystemExit("unexpected runtime persona bundle set")
+bundle = PERSONA_SKILL_BUNDLES[0]
+if bundle.get("runtime_sha256") != SUNXIAOCHUAN_RUNTIME_SHA256:
+    raise SystemExit("runtime bundle hash metadata is inconsistent")
+if bundle.get("loaded_sections") != [
+    "Sun Xiaochuan section",
+    "Slang Corpus",
+    "single-person source rules (adapted)",
+    "Xiaoge group-chat expression rules",
+]:
+    raise SystemExit("runtime bundle component metadata is incomplete")
+PY
 }
 
 assert_baseline() {
@@ -1096,7 +1129,7 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "14",
+    "HERMES_WECHAT_SESSION_GENERATION": "16",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",

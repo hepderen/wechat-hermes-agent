@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -87,6 +88,21 @@ def foreground_hermes_chat_count() -> int:
             and not str(item.get("session_id") or "").startswith(summary_prefixes)
             for item in STATE.events
         )
+
+
+def fake_foreground_chat_reply(message: object) -> str:
+    """Return a deterministic reply tied to the current turn, not its history."""
+    text = str(message or "")
+    current_turn = next(
+        (
+            line.strip()
+            for line in reversed(text.splitlines())
+            if line.strip().startswith("当前发言 ")
+        ),
+        text.strip(),
+    )
+    digest = hashlib.sha256(current_turn.encode("utf-8")).hexdigest()[:12]
+    return "FAKE_SYNC_OK:%s %s" % (digest, current_turn[:160])
 
 
 class JsonHandler(BaseHTTPRequestHandler):
@@ -235,6 +251,7 @@ class HermesHandler(JsonHandler):
                 "hermes.chat",
                 session_id=session_id,
                 message=str(payload.get("message") or ""),
+                disable_tools=bool(payload.get("disable_tools")),
             )
             if session_id.startswith("wechat-companion-summary:"):
                 content = json.dumps(
@@ -248,7 +265,7 @@ class HermesHandler(JsonHandler):
                     separators=(",", ":"),
                 )
             else:
-                content = "FAKE_SYNC_OK:" + str(payload.get("message") or "")[:80]
+                content = fake_foreground_chat_reply(payload.get("message"))
             self.send_json(
                 200,
                 {
@@ -829,163 +846,43 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                         "passive group routing produced an unexpected foreground chat count"
                     )
 
-                success_reply = post_chat(
+                task_like_reply = post_chat(
                     client,
                     adapter_url,
                     message="mcp command evidence-success",
                     local_id=201,
-                    request_id="fake-command-success",
+                    request_id="fake-task-like-chat",
                 )
-                success_id = str(success_reply.get("task_id") or "")
-                if not success_id:
-                    raise AssertionError(
-                        "evidence-success request was not queued as a task"
-                    )
-                success = wait_task(
-                    client,
-                    adapter_url,
-                    success_id,
-                    {"succeeded"},
-                )
-                success_outbox = wait_outbox_terminal(database, success_id)
-                if ("text", "confirmed") not in success_outbox:
-                    raise AssertionError(
-                        "successful evidence task summary was not confirmed"
-                    )
-
-                dropped_reply = post_chat(
-                    client,
-                    adapter_url,
-                    message="mcp command evidence-drop-response",
-                    local_id=203,
-                    request_id="fake-command-drop-response",
-                )
-                dropped_id = str(dropped_reply.get("task_id") or "")
-                if not dropped_id:
-                    raise AssertionError(
-                        "dropped-response request was not queued as a task"
-                    )
-                wait_task(
-                    client,
-                    adapter_url,
-                    dropped_id,
-                    {"succeeded"},
-                )
-                dropped_outbox = wait_outbox_terminal(database, dropped_id)
-                if ("text", "confirmed") not in dropped_outbox:
-                    raise AssertionError(
-                        "dropped HTTP response was not reconciled as confirmed"
-                    )
-                with STATE.lock:
-                    dropped_sends = sum(
-                        item.get("task_id") == dropped_id
-                        for item in STATE.chat_calls
-                    )
-                    dropped_checks = sum(
-                        value.startswith("task:%s:" % dropped_id)
-                        for value in STATE.delivery_checks
-                    )
-                if dropped_sends != 1:
-                    raise AssertionError(
-                        "dropped HTTP response caused a duplicate text send"
-                    )
-                if dropped_checks < 1:
-                    raise AssertionError(
-                        "dropped HTTP response did not trigger status reconciliation"
-                    )
-                reconciliation_metrics = client.get(adapter_url + "/metrics")
-                reconciliation_metrics.raise_for_status()
                 if (
-                    "wechat_hermes_outbox_reconciled_confirmed_total 1"
-                    not in reconciliation_metrics.text
+                    task_like_reply.get("status") != "succeeded"
+                    or task_like_reply.get("task_id")
+                    or task_like_reply.get("media_data")
+                    or task_like_reply.get("media_url")
                 ):
                     raise AssertionError(
-                        "Adapter metrics omitted confirmed reconciliation"
-                    )
-
-                failed_reply = post_chat(
-                    client,
-                    adapter_url,
-                    message="mcp command no-evidence",
-                    local_id=202,
-                    request_id="fake-command-no-evidence",
-                )
-                failed_id = str(failed_reply.get("task_id") or "")
-                if not failed_id:
-                    raise AssertionError(
-                        "no-evidence request was not queued as a task"
-                    )
-                failed = wait_task(
-                    client,
-                    adapter_url,
-                    failed_id,
-                    {"failed"},
-                )
-                if "exit code 0" not in str(failed.get("error") or ""):
-                    raise AssertionError("no-evidence execution did not fail closed")
-                wait_outbox_terminal(database, failed_id)
-
-                held_reply = post_chat(
-                    client,
-                    adapter_url,
-                    message="mcp command hold-stop",
-                    local_id=301,
-                    request_id="fake-hold-stop",
-                )
-                held_id = str(held_reply.get("task_id") or "")
-                if not held_id:
-                    raise AssertionError(
-                        "hold-stop request was not queued as a task"
-                    )
-                wait_task(client, adapter_url, held_id, {"running"})
-                stop_reply = post_chat(
-                    client,
-                    adapter_url,
-                    message="\u505c\u6b62",
-                    local_id=302,
-                    request_id="fake-stop-command",
-                )
-                if stop_reply.get("status") != "canceled":
-                    raise AssertionError("stop command did not cancel active work")
-                wait_task(client, adapter_url, held_id, {"canceled"})
-                stopped_outbox = wait_outbox_terminal(database, held_id)
-                if any(state != "suppressed" for _, state in stopped_outbox):
-                    raise AssertionError(
-                        "old stopped task output escaped the room barrier"
-                    )
-                assert_barrier_precedes_stop()
-
-                media_reply = post_chat(
-                    client,
-                    adapter_url,
-                    message="mcp image media-uncertain",
-                    local_id=401,
-                    request_id="fake-media-uncertain",
-                )
-                media_id = str(media_reply.get("task_id") or "")
-                if not media_id:
-                    raise AssertionError(
-                        "media request was not queued as a task"
-                    )
-                wait_task(client, adapter_url, media_id, {"succeeded"})
-                media_outbox = wait_outbox_terminal(database, media_id)
-                if ("image", "uncertain") not in media_outbox:
-                    raise AssertionError(
-                        "HTTP 409 media delivery was not marked uncertain"
-                    )
-                if ("text", "confirmed") not in media_outbox:
-                    raise AssertionError(
-                        "media terminal summary was not sent exactly once"
+                        "task-like message escaped the pure-chat route"
                     )
                 with STATE.lock:
-                    media_calls_before = len(STATE.media_calls)
-                    summary_calls_before = sum(
-                        item.get("task_id") == media_id
-                        for item in STATE.chat_calls
+                    foreground_chats = [
+                        item
+                        for item in STATE.events
+                        if item["event"] == "hermes.chat"
+                    ]
+                    text_deliveries = len(STATE.chat_calls)
+                    media_deliveries = len(STATE.media_calls)
+                    run_starts = sum(
+                        item["event"] == "hermes.run.started"
+                        for item in STATE.events
                     )
-                if media_calls_before != 1 or summary_calls_before != 1:
+                if len(foreground_chats) != 5:
                     raise AssertionError(
-                        "unexpected pre-restart media or summary delivery count"
+                        "pure-chat routing produced an unexpected foreground chat count"
+                    )
+                if any(not item.get("disable_tools") for item in foreground_chats):
+                    raise AssertionError("a pure-chat Hermes turn enabled tools")
+                if text_deliveries or media_deliveries or run_starts:
+                    raise AssertionError(
+                        "pure-chat stack created an outbound delivery or async run"
                     )
 
                 stop_adapter(adapter_process, adapter_log)
@@ -997,28 +894,40 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                     log_path,
                 )
                 wait_ready(client, adapter_url, adapter_process)
-                time.sleep(1)
+                after_restart = post_chat(
+                    client,
+                    adapter_url,
+                    message="重启完还在不在，接着聊",
+                    local_id=202,
+                    request_id="fake-chat-after-restart",
+                )
+                if (
+                    after_restart.get("status") != "succeeded"
+                    or after_restart.get("task_id")
+                    or after_restart.get("media_data")
+                    or after_restart.get("media_url")
+                ):
+                    raise AssertionError("pure-chat state did not recover after restart")
                 with STATE.lock:
-                    media_calls_after = len(STATE.media_calls)
-                    summary_calls_after = sum(
-                        item.get("task_id") == media_id
-                        for item in STATE.chat_calls
+                    text_deliveries_after = len(STATE.chat_calls)
+                    media_deliveries_after = len(STATE.media_calls)
+                    run_starts_after = sum(
+                        item["event"] == "hermes.run.started"
+                        for item in STATE.events
                     )
-                if media_calls_after != media_calls_before:
+                if (
+                    text_deliveries_after != text_deliveries
+                    or media_deliveries_after != media_deliveries
+                    or run_starts_after != run_starts
+                ):
                     raise AssertionError(
-                        "uncertain media was retried after Adapter restart"
-                    )
-                if summary_calls_after != summary_calls_before:
-                    raise AssertionError(
-                        "terminal summary was duplicated after Adapter restart"
+                        "pure-chat restart created a delivery or async run"
                     )
 
                 metrics = client.get(adapter_url + "/metrics")
                 metrics.raise_for_status()
-                if "wechat_hermes_outbox" not in metrics.text:
-                    raise AssertionError("Adapter metrics omitted Outbox state")
-                if "wechat_hermes_outbox_reconciled_confirmed_total" not in metrics.text:
-                    raise AssertionError("Adapter metrics omitted reconciliation counter")
+                if "wechat_hermes_persona_skill_integrity 1" not in metrics.text:
+                    raise AssertionError("Adapter metrics omitted persona integrity")
 
                 return {
                     "status": "ok",
@@ -1026,17 +935,13 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                         "three_structured_mentions": 3,
                         "passive_plain_name_chat": passive_reply["status"],
                         "passive_low_signal": ignored_passive["status"],
-                        "execution_with_evidence": success["status"],
-                        "dropped_response_outbox": dropped_outbox,
-                        "dropped_response_sends": dropped_sends,
-                        "dropped_response_checks": dropped_checks,
-                        "execution_without_evidence": failed["status"],
-                        "stop_barrier_before_run_stop": True,
-                        "stopped_outbox": stopped_outbox,
-                        "media_outbox": media_outbox,
-                        "media_calls_after_restart": media_calls_after,
-                        "summary_calls_after_restart": summary_calls_after,
-                        "metrics": True,
+                        "task_like_chat": task_like_reply["status"],
+                        "all_foreground_turns_disable_tools": True,
+                        "outbound_text_deliveries": text_deliveries_after,
+                        "outbound_media_deliveries": media_deliveries_after,
+                        "async_run_starts": run_starts_after,
+                        "restart_recovery": after_restart["status"],
+                        "persona_metrics": True,
                     },
                 }
     except Exception:

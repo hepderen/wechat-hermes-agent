@@ -257,7 +257,7 @@ def make_settings(tmp_path: Path, **changes) -> Settings:
         budget_timezone="Asia/Shanghai",
         input_token_cost_per_million=3,
         output_token_cost_per_million=15,
-        wechat_session_generation="14",
+        wechat_session_generation="16",
         allow_private_chat=False,
         worker_poll_seconds=0.2,
         cleanup_status_path=tmp_path / "cleanup-status.json",
@@ -295,7 +295,7 @@ def test_settings_use_production_budget_and_initial_session_defaults(
     monkeypatch.delenv("HERMES_WECHAT_SESSION_GENERATION", raising=False)
     settings = Settings.from_env()
     assert settings.daily_token_limit == 10_000_000
-    assert settings.wechat_session_generation == "14"
+    assert settings.wechat_session_generation == "16"
     assert settings.input_token_cost_per_million == 3
     assert settings.output_token_cost_per_million == 15
 

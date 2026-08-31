@@ -68,7 +68,7 @@ HERMES_WECHAT_GROUP_LISTENER_ENABLED=true
 HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12
 HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3
 HERMES_WECHAT_GROUP_LISTENER_NAMES=小格,Hermes
-HERMES_WECHAT_SESSION_GENERATION=14
+HERMES_WECHAT_SESSION_GENERATION=16
 ```
 
 `ALLOWED_WECHAT_ROOM_IDS` 只填入明确允许常态聊天的群。`bot_wxid`、群 ID、令牌和模型供应商凭据只存放在服务器私有配置中。
@@ -126,9 +126,9 @@ sudo env \
 发布时 Adapter 会：
 
 1. 校验微信 PID、状态文件和候选源码。
-2. 校验固定人格的来源锁、许可证、章节边界与哈希。
+2. 校验固定人格组合包的来源锁、许可证、章节边界、组件范围与哈希。
 3. 安装版本化 Adapter 目录与独立虚拟环境。
-4. 写入 `HERMES_WECHAT_SESSION_GENERATION=14`。
+4. 写入 `HERMES_WECHAT_SESSION_GENERATION=16`。
 5. 隔离旧 SQLite 中未完成的遗留记录。
 6. 仅重启 Adapter 与其依赖的必要 Hermes 组件。
 
@@ -166,7 +166,7 @@ sudo EXPECTED_WECHAT_PID=PID \
   bash adapter/deploy/rollback_persona.sh PREVIOUS_RELEASE_ID
 ```
 
-脚本恢复前一版 Adapter 发布，并将会话代次提升到 `15`，使旧会话与回滚会话分离。SQLite、游标、发送状态、固定来源归档和受保护微信文件都会保留。
+脚本恢复前一版 Adapter 发布，并将会话代次提升到 `17`，使旧会话与回滚会话分离。SQLite、游标、发送状态、固定来源归档和受保护微信文件都会保留。
 
 旧 AI 服务回滚需使用部署前保存的 root 私有环境备份，并按既有运维流程恢复 `:8000` 监听。整个过程中保持微信进程持续运行。
 

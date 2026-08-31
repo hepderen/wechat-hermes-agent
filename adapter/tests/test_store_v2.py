@@ -11,12 +11,17 @@ from app.policy import stable_session_id
 from app.store import (
     AdapterStore,
     MAX_DELIVERY_ATTEMPTS,
+    PURE_CHAT_RUNTIME_MODE,
     PREFERENCE_MEMORY_TTL_SECONDS,
     PROJECT_MEMORY_TTL_SECONDS,
 )
 
 
 ROOM_ID = "v2-room@chatroom"
+
+
+def test_pure_chat_runtime_mode_matches_current_persona_generation():
+    assert PURE_CHAT_RUNTIME_MODE == "sunxiaochuan-chat-only-v16"
 
 
 def queued_task(store: AdapterStore, request_id: str, local_id: int = 1):

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "sunxiaochuan-runtime",
+  "version": "3.0.0",
+  "source": "https://github.com/BeamusWayne/WeirdoTV-Skill",
+  "commit": "1635aceebf4e84b32db37ccd00244ca0dcc04574",
+  "license": "MIT",
+  "runtime_file": "sunxiaochuan.runtime.md",
+  "runtime_sha256": "2b2afb064903f2822ebe179c2f62baccd0a94ea02b895b78208795cc22db13f8",
+  "components": {
+    "sunxiaochuan": {
+      "source_file": "SKILL.md",
+      "line_start": 133,
+      "line_end": 157,
+      "normalized_sha256": "a21e1df8e36ba27f75f6b7d5636d2386d6da566ed510d29a8405fe4cac24019e"
+    },
+    "slang_corpus": {
+      "source_file": "SKILL.md",
+      "line_start": 449,
+      "line_end": 497,
+      "normalized_sha256": "5f8357522e2220472498d36f3a0829ac33b6eaf5065fa531334dcde9f49daa0c"
+    },
+    "single_person_rules": {
+      "source_file": "SKILL.md",
+      "line_start": 501,
+      "line_end": 505,
+      "normalized_sha256": "fa1cfa996ef45e074075f6f158aef4c40de1796b6816c77a4525021d4a943a26",
+      "loaded_lines": [503, 504]
+    }
+  },
+  "files": {
+    "sunxiaochuan.runtime.md": "2b2afb064903f2822ebe179c2f62baccd0a94ea02b895b78208795cc22db13f8",
+    "sunxiaochuan.section.md": "b1fa3a4d08206c0210edd527dd2ef30e5ef36bd4eec7401881de873aa75fa922",
+    "upstream.SKILL.md": "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305",
+    "LICENSE": "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
+  }
+}

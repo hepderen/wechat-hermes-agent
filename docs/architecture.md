@@ -55,17 +55,17 @@ sequenceDiagram
 
 模型可见内容严格固定为：
 
-1. 固定孙笑川章节。
+1. 固定孙笑川运行时组合包（孙笑川章节、共享流行语库和单人聊天规则）。
 2. 最近 16 条自然群聊转录。
 3. 当前可信昵称与当前消息。
 
-会话系统提示不包含房间 ID、发送者 ID、服务状态、权限描述、关系档案、群摘要、角色卡字段、示范对话、动态人格层或内部 JSON。当前人格资源经过提交、章节、许可证和 SHA-256 校验；校验异常会使 Adapter 进入 `degraded`。
+会话系统提示不包含房间 ID、发送者 ID、服务状态、权限描述、关系档案、群摘要、角色卡字段、示范对话、动态人格层、其他人物章节或内部 JSON。当前组合资源经过提交、来源片段、许可证和 SHA-256 校验；校验异常会使 Adapter 进入 `degraded`。
 
 所有请求以 `disable_tools=true` 发给 Hermes。Adapter 在每轮前删除同名 Hermes Session、发送后再次清理，因此 Hermes 的持久会话历史不会绕过 Adapter 的 16 条时间线边界。当前运行模式只生成聊天文字。
 
 ## 会话与恢复
 
-`HERMES_WECHAT_SESSION_GENERATION=14` 是当前人格代次。提升该值会隔离旧的 Session 标识；前台聊天本身是逐轮临时会话，历史只由 Adapter 的受限群时间线提供。
+`HERMES_WECHAT_SESSION_GENERATION=16` 是当前人格代次。提升该值会隔离旧的 Session 标识；前台聊天本身是逐轮临时会话，历史只由 Adapter 的受限群时间线提供。
 
 Adapter 启动时获取单进程锁，初始化 SQLite，隔离上一版未完成记录，校验固定人格资源，然后才将 `/health` 标记为 `ready=true`。`/health` 输出 `live`、`ready`、`degraded`；`/metrics` 只输出计数、状态和耗时。
 

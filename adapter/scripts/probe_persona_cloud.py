@@ -261,22 +261,22 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
             for item in list(persona.get("skills") or [])
             if isinstance(item, dict)
         }
-        ccv3 = skills.get("character-card-v3") or {}
-        card = skills.get("sunxiaochuan-card") or {}
         weirdotv = skills.get("weirdo-tv-sunxiaochuan") or {}
         if (
-            ccv3.get("integrity") is not True
-            or ccv3.get("loaded_sections") != ["JSON safe subset"]
-            or card.get("integrity") is not True
-            or card.get("loaded_sections")
-            != ["safe text fields", "literal Lorebook entries"]
-            or weirdotv.get("integrity") is not True
+            weirdotv.get("integrity") is not True
+            or weirdotv.get("version") != "3.0.0"
+            or weirdotv.get("runtime_file") != "sunxiaochuan.runtime.md"
+            or not weirdotv.get("runtime_sha256")
             or weirdotv.get("loaded_sections")
-            != ["Sun Xiaochuan safe-text section"]
-            or "sophia" in skills
-            or "humanizer-zh-next" in skills
+            != [
+                "Sun Xiaochuan section",
+                "Slang Corpus",
+                "single-person source rules (adapted)",
+                "Xiaoge group-chat expression rules",
+            ]
+            or set(skills) != {"weirdo-tv-sunxiaochuan"}
         ):
-            raise RuntimeError("WeirdoTV persona bundle metadata is incomplete")
+            raise RuntimeError("Sun Xiaochuan runtime bundle metadata is incomplete")
 
         for index, case in enumerate(CASES):
             started = time.monotonic()

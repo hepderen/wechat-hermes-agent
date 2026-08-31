@@ -101,7 +101,7 @@ payload = json.load(sys.stdin)
 persona = payload.get("persona") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
-if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@2.0.0":
+if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@3.0.0":
     raise SystemExit(1)
 if persona.get("integrity") is not True:
     raise SystemExit(1)

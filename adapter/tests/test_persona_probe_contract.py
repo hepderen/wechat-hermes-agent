@@ -19,4 +19,4 @@ def test_persona_probe_uses_at_least_24_non_delivery_weirdotv_scenarios():
     assert "diagnostic-no-delivery" in script.read_text(encoding="utf-8")
     source = script.read_text(encoding="utf-8")
     assert "weirdo-tv-sunxiaochuan" in source
-    assert '"sophia" in skills' in source
+    assert 'set(skills) != {"weirdo-tv-sunxiaochuan"}' in source

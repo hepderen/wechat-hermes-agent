@@ -107,23 +107,32 @@ from app.persona import (
     PERSONA_SKILL_BUNDLES,
     PERSONA_SKILL_INTEGRITY_OK,
     PERSONA_SKILL_PROMPT,
+    PERSONA_SKILL_SHA256,
     PERSONA_VERSION,
-    SUNXIAOCHUAN_SECTION_HEADING,
+    SUNXIAOCHUAN_RUNTIME_PATH,
+    SUNXIAOCHUAN_RUNTIME_SHA256,
+    sunxiaochuan_runtime_integrity,
     SUNXIAOCHUAN_SECTION_PATH,
     sunxiaochuan_section_integrity,
     weirdotv_source_archive_integrity,
 )
 
-if PERSONA_VERSION != "weirdotv@1.0.0+sunxiaochuan@2.0.0":
+if PERSONA_VERSION != "weirdotv@1.0.0+sunxiaochuan@3.0.0":
     raise SystemExit("unexpected WeirdoTV persona version")
-if not weirdotv_source_archive_integrity() or not sunxiaochuan_section_integrity():
+if (
+    not weirdotv_source_archive_integrity()
+    or not sunxiaochuan_section_integrity()
+    or not sunxiaochuan_runtime_integrity()
+):
     raise SystemExit("pinned persona source archive integrity failed")
 if not PERSONA_SKILL_INTEGRITY_OK:
     raise SystemExit("WeirdoTV persona integrity failed")
-if not PERSONA_SKILL_PROMPT.startswith(SUNXIAOCHUAN_SECTION_HEADING):
-    raise SystemExit("Sun Xiaochuan section is not the active prompt")
-if not SUNXIAOCHUAN_SECTION_PATH.is_file():
-    raise SystemExit("Sun Xiaochuan section resource is missing")
+if not SUNXIAOCHUAN_RUNTIME_PATH.is_file():
+    raise SystemExit("Sun Xiaochuan runtime bundle is missing")
+if len(PERSONA_SKILL_PROMPT) < 1200:
+    raise SystemExit("Sun Xiaochuan runtime bundle is unexpectedly thin")
+if PERSONA_SKILL_SHA256 != SUNXIAOCHUAN_RUNTIME_SHA256:
+    raise SystemExit("Sun Xiaochuan runtime hash metadata is inconsistent")
 bundles = {str(item.get("name") or "") for item in PERSONA_SKILL_BUNDLES}
 if bundles != {"weirdo-tv-sunxiaochuan"}:
     raise SystemExit("unexpected runtime persona bundle set")
@@ -141,9 +150,26 @@ persona = payload.get("persona") or {}
 group_listener = payload.get("group_listener") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
-if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@2.0.0":
+if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@3.0.0":
     raise SystemExit(1)
 if persona.get("integrity") is not True:
+    raise SystemExit(1)
+skills = {
+    str(item.get("name") or ""): item
+    for item in list(persona.get("skills") or [])
+    if isinstance(item, dict)
+}
+bundle = skills.get("weirdo-tv-sunxiaochuan") or {}
+if set(skills) != {"weirdo-tv-sunxiaochuan"}:
+    raise SystemExit(1)
+if bundle.get("runtime_file") != "sunxiaochuan.runtime.md":
+    raise SystemExit(1)
+if bundle.get("loaded_sections") != [
+    "Sun Xiaochuan section",
+    "Slang Corpus",
+    "single-person source rules (adapted)",
+    "Xiaoge group-chat expression rules",
+]:
     raise SystemExit(1)
 if group_listener.get("enabled") is not True:
     raise SystemExit(1)
@@ -266,7 +292,7 @@ if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
 # Retired relationship environment values are removed from the active
 # environment. Historical SQLite data remains untouched.
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "14",
+    "HERMES_WECHAT_SESSION_GENERATION": "16",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",

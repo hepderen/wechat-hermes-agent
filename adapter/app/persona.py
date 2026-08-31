@@ -44,15 +44,28 @@ SUNXIAOCHUAN_SECTION_SHA256 = (
 )
 SUNXIAOCHUAN_SECTION_HEADING = "### 😂 孙笑川 Sun Xiaochuan"
 
-# This release deliberately has one source of personality. The display name
-# remains 小格 for WeChat routing, while the words below come only from the
-# pinned upstream section.
-PERSONA_VERSION = "weirdotv@1.0.0+sunxiaochuan@2.0.0"
+SUNXIAOCHUAN_RUNTIME_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "personas"
+    / "sunxiaochuan.runtime.md"
+)
+SUNXIAOCHUAN_RUNTIME_LOCK_PATH = SUNXIAOCHUAN_RUNTIME_PATH.with_name(
+    "RUNTIME.lock.json"
+)
+SUNXIAOCHUAN_RUNTIME_VERSION = "3.0.0"
+SUNXIAOCHUAN_RUNTIME_SHA256 = (
+    "2b2afb064903f2822ebe179c2f62baccd0a94ea02b895b78208795cc22db13f8"
+)
+
+# The complete runtime bundle is still one persona. It includes the pinned
+# Sun Xiaochuan chapter, the shared slang corpus, and only the single-person
+# rules that can be adapted to ordinary WeChat chat.
+PERSONA_VERSION = "weirdotv@1.0.0+sunxiaochuan@3.0.0"
 PERSONA_SKILL_SOURCE = WEIRDOTV_SKILL_SOURCE
 PERSONA_SKILL_COMMIT = WEIRDOTV_SKILL_COMMIT
-PERSONA_SKILL_VERSION = WEIRDOTV_SKILL_VERSION
-PERSONA_SKILL_PATH = SUNXIAOCHUAN_SECTION_PATH
-PERSONA_SKILL_SHA256 = SUNXIAOCHUAN_SECTION_SHA256
+PERSONA_SKILL_VERSION = SUNXIAOCHUAN_RUNTIME_VERSION
+PERSONA_SKILL_PATH = SUNXIAOCHUAN_RUNTIME_PATH
+PERSONA_SKILL_SHA256 = SUNXIAOCHUAN_RUNTIME_SHA256
 
 SHORT_REPLY_MAX_CHARS = 420
 EXPANDED_REPLY_MAX_CHARS = 1_200
@@ -111,21 +124,59 @@ def _normalized_source_text(value: str) -> str:
     return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def _normalized_text_sha256(value: str) -> str:
+    return hashlib.sha256(
+        _normalized_source_text(value).encode("utf-8")
+    ).hexdigest()
+
+
+def _extract_heading_block(
+    source_text: str,
+    heading: str,
+    next_heading_pattern: str,
+) -> str:
+    """Extract one Markdown block while dropping the archive separator."""
+    normalized = _normalized_source_text(source_text)
+    start = normalized.find(heading)
+    if start < 0 or (start > 0 and normalized[start - 1] != "\n"):
+        return ""
+    next_heading = re.search(
+        next_heading_pattern,
+        normalized[start + 1 :],
+        re.MULTILINE,
+    )
+    end = start + 1 + next_heading.start() if next_heading else len(normalized)
+    block = normalized[start:end].strip()
+    return re.sub(r"\n\s*---\s*$", "", block).strip()
+
+
 def extract_sunxiaochuan_section(source_text: str) -> str:
     """Extract one stable section from the pinned upstream Markdown archive."""
-    normalized = _normalized_source_text(source_text)
-    start = normalized.find(SUNXIAOCHUAN_SECTION_HEADING)
-    if start < 0 or (
-        start > 0 and normalized[start - 1] != "\n"
-    ):
-        return ""
-    next_heading = re.search(r"^###\s+", normalized[start + 1 :], re.MULTILINE)
-    end = start + 1 + next_heading.start() if next_heading else len(normalized)
-    section = normalized[start:end].strip()
-    # The upstream file uses a thematic separator between roster entries; it
-    # belongs to the archive layout, not to the persona chapter itself.
-    section = re.sub(r"\n\s*---\s*$", "", section).strip()
-    return section
+    return _extract_heading_block(
+        source_text,
+        SUNXIAOCHUAN_SECTION_HEADING,
+        r"^###\s+",
+    )
+
+
+SLANG_CORPUS_HEADING = "## 互联网流行语库 · Slang Corpus"
+SINGLE_PERSON_RULES_HEADING = "### 单人召唤"
+
+
+def extract_slang_corpus(source_text: str) -> str:
+    return _extract_heading_block(
+        source_text,
+        SLANG_CORPUS_HEADING,
+        r"^##\s+",
+    )
+
+
+def extract_single_person_rules(source_text: str) -> str:
+    return _extract_heading_block(
+        source_text,
+        SINGLE_PERSON_RULES_HEADING,
+        r"^###\s+",
+    )
 
 
 def weirdotv_source_archive_integrity() -> bool:
@@ -191,13 +242,143 @@ def sunxiaochuan_section_integrity() -> bool:
     )
 
 
+def _source_line_slice(source_text: str, start: int, end: int) -> str:
+    lines = _normalized_source_text(source_text).split("\n")
+    if start < 1 or end < start or end > len(lines):
+        return ""
+    value = "\n".join(lines[start - 1 : end]).strip()
+    return re.sub(r"\n\s*---\s*$", "", value).strip()
+
+
+def sunxiaochuan_runtime_integrity() -> bool:
+    """Verify the complete single-person runtime bundle and its provenance."""
+    if _sha256(SUNXIAOCHUAN_RUNTIME_PATH) != SUNXIAOCHUAN_RUNTIME_SHA256:
+        return False
+    try:
+        runtime_text = SUNXIAOCHUAN_RUNTIME_PATH.read_text(encoding="utf-8")
+        source_text = WEIRDOTV_SKILL_PATH.read_text(encoding="utf-8")
+        lock = json.loads(
+            SUNXIAOCHUAN_RUNTIME_LOCK_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+
+    if not isinstance(lock, dict):
+        return False
+    files = lock.get("files")
+    components = lock.get("components")
+    if not isinstance(files, dict) or not isinstance(components, dict):
+        return False
+    if (
+        lock.get("schema_version") != 1
+        or lock.get("name") != "sunxiaochuan-runtime"
+        or lock.get("version") != SUNXIAOCHUAN_RUNTIME_VERSION
+        or lock.get("source") != WEIRDOTV_SKILL_SOURCE
+        or lock.get("commit") != WEIRDOTV_SKILL_COMMIT
+        or lock.get("license") != "MIT"
+        or lock.get("runtime_file") != SUNXIAOCHUAN_RUNTIME_PATH.name
+        or lock.get("runtime_sha256") != SUNXIAOCHUAN_RUNTIME_SHA256
+        or files.get(SUNXIAOCHUAN_RUNTIME_PATH.name)
+        != SUNXIAOCHUAN_RUNTIME_SHA256
+        or files.get("sunxiaochuan.section.md") != SUNXIAOCHUAN_SECTION_SHA256
+        or files.get("upstream.SKILL.md") != WEIRDOTV_SKILL_SHA256
+        or files.get("LICENSE") != WEIRDOTV_SKILL_LICENSE_SHA256
+    ):
+        return False
+
+    expected_components = {
+        "sunxiaochuan": (
+            133,
+            157,
+            "a21e1df8e36ba27f75f6b7d5636d2386d6da566ed510d29a8405fe4cac24019e",
+            extract_sunxiaochuan_section,
+        ),
+        "slang_corpus": (
+            449,
+            497,
+            "5f8357522e2220472498d36f3a0829ac33b6eaf5065fa531334dcde9f49daa0c",
+            extract_slang_corpus,
+        ),
+        "single_person_rules": (
+            501,
+            505,
+            "fa1cfa996ef45e074075f6f158aef4c40de1796b6816c77a4525021d4a943a26",
+            extract_single_person_rules,
+        ),
+    }
+    for name, (start, end, expected_hash, extractor) in expected_components.items():
+        component = components.get(name)
+        if not isinstance(component, dict):
+            return False
+        if (
+            component.get("source_file") != "SKILL.md"
+            or component.get("line_start") != start
+            or component.get("line_end") != end
+            or component.get("normalized_sha256") != expected_hash
+        ):
+            return False
+        line_slice = _source_line_slice(source_text, start, end)
+        extracted = extractor(source_text)
+        if _normalized_text_sha256(line_slice) != expected_hash:
+            return False
+        if _normalized_text_sha256(extracted) != expected_hash:
+            return False
+        if name != "single_person_rules" and extracted not in runtime_text:
+            return False
+
+    loaded_lines = components["single_person_rules"].get("loaded_lines")
+    if loaded_lines != [503, 504]:
+        return False
+    if any(
+        marker not in runtime_text
+        for marker in (
+            "完全进入该角色，语言风格、世界观不走样",
+            "用真实语录和标志性表达回应用户问题",
+            "## 小格群聊表达规则",
+        )
+    ):
+        return False
+
+    roster_start = source_text.find("## 神人图鉴")
+    roster_end = source_text.find(SLANG_CORPUS_HEADING)
+    if roster_start < 0 or roster_end <= roster_start:
+        return False
+    roster_headings = re.findall(
+        r"^###\s+.+$",
+        _normalized_source_text(source_text)[roster_start:roster_end],
+        flags=re.MULTILINE,
+    )
+    if any(
+        heading != SUNXIAOCHUAN_SECTION_HEADING and heading in runtime_text
+        for heading in roster_headings
+    ):
+        return False
+    if any(
+        marker in runtime_text
+        for marker in (
+            "/weirdo-tv",
+            "【神人TV",
+            "神人辩论",
+            "神人点评",
+            "神人会议",
+            "随机召唤",
+        )
+    ):
+        return False
+    return runtime_text.count(SUNXIAOCHUAN_SECTION_HEADING) == 1
+
+
 WEIRDOTV_SKILL_ACTUAL_SHA256 = _sha256(WEIRDOTV_SKILL_PATH)
 SUNXIAOCHUAN_SECTION_ACTUAL_SHA256 = _sha256(SUNXIAOCHUAN_SECTION_PATH)
+SUNXIAOCHUAN_RUNTIME_ACTUAL_SHA256 = _sha256(SUNXIAOCHUAN_RUNTIME_PATH)
 WEIRDOTV_SKILL_INTEGRITY_OK = weirdotv_source_archive_integrity()
 SUNXIAOCHUAN_SECTION_INTEGRITY_OK = sunxiaochuan_section_integrity()
-PERSONA_SKILL_ACTUAL_SHA256 = SUNXIAOCHUAN_SECTION_ACTUAL_SHA256
+SUNXIAOCHUAN_RUNTIME_INTEGRITY_OK = sunxiaochuan_runtime_integrity()
+PERSONA_SKILL_ACTUAL_SHA256 = SUNXIAOCHUAN_RUNTIME_ACTUAL_SHA256
 PERSONA_SKILL_INTEGRITY_OK = bool(
-    WEIRDOTV_SKILL_INTEGRITY_OK and SUNXIAOCHUAN_SECTION_INTEGRITY_OK
+    WEIRDOTV_SKILL_INTEGRITY_OK
+    and SUNXIAOCHUAN_SECTION_INTEGRITY_OK
+    and SUNXIAOCHUAN_RUNTIME_INTEGRITY_OK
 )
 
 CARD_LOAD_ERROR = ""
@@ -205,15 +386,17 @@ if not WEIRDOTV_SKILL_INTEGRITY_OK:
     CARD_LOAD_ERROR = "pinned WeirdoTV source archive integrity failed"
 elif not SUNXIAOCHUAN_SECTION_INTEGRITY_OK:
     CARD_LOAD_ERROR = "Sun Xiaochuan section integrity failed"
+elif not SUNXIAOCHUAN_RUNTIME_INTEGRITY_OK:
+    CARD_LOAD_ERROR = "Sun Xiaochuan runtime bundle integrity failed"
 
 # Compatibility aliases for callers from the previous card release. They do
 # not represent a loaded Character Card and are never added to a model prompt.
 CHARACTER_CARD = None
-CARD_INTEGRITY_OK = SUNXIAOCHUAN_SECTION_INTEGRITY_OK
+CARD_INTEGRITY_OK = PERSONA_SKILL_INTEGRITY_OK
 
 try:
     PERSONA_SKILL_PROMPT = (
-        SUNXIAOCHUAN_SECTION_PATH.read_text(encoding="utf-8").strip()
+        SUNXIAOCHUAN_RUNTIME_PATH.read_text(encoding="utf-8").strip()
         if PERSONA_SKILL_INTEGRITY_OK
         else ""
     )
@@ -235,7 +418,19 @@ PERSONA_SKILL_BUNDLES = (
         "sha256": PERSONA_SKILL_SHA256,
         "archive_sha256": WEIRDOTV_SKILL_SHA256,
         "integrity": PERSONA_SKILL_INTEGRITY_OK,
-        "loaded_sections": ["Sun Xiaochuan section only"],
+        "runtime_file": SUNXIAOCHUAN_RUNTIME_PATH.name,
+        "runtime_sha256": SUNXIAOCHUAN_RUNTIME_SHA256,
+        "loaded_sections": [
+            "Sun Xiaochuan section",
+            "Slang Corpus",
+            "single-person source rules (adapted)",
+            "Xiaoge group-chat expression rules",
+        ],
+        "source_ranges": {
+            "sunxiaochuan": [133, 157],
+            "slang_corpus": [449, 497],
+            "single_person_rules": [501, 505],
+        },
     },
 )
 
@@ -309,6 +504,13 @@ def _remove_embedded_presence_confirmations(value: str) -> str:
         candidate = chunk.strip().strip("，,。！？!?；;:：~～")
         if index > 0 and candidate and is_low_information_reply(candidate):
             continue
+        if index > 0:
+            # A stale arrival prefix may be attached to the following thought
+            # with a comma rather than its own sentence terminator.
+            stripped_chunk = strip_leading_presence_confirmation(chunk)
+            if stripped_chunk != chunk.strip():
+                leading = chunk[: len(chunk) - len(chunk.lstrip())]
+                chunk = leading + stripped_chunk
         kept.append(chunk)
     return "".join(kept).strip()
 
