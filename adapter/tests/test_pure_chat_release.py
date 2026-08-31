@@ -191,6 +191,90 @@ def test_direct_mentions_use_the_same_cross_turn_repeat_filter(tmp_path):
     assert second.json()["reply"] == ""
 
 
+def test_direct_mentions_apply_persona_catchphrase_cooldown(tmp_path):
+    runtime = make_runtime(tmp_path)
+    replies = iter(
+        (
+            "啊对对对，这个事先把关键条件捋清楚。",
+            "啊对对对，第二步再把人和时间定下来。",
+        )
+    )
+
+    async def repetitive_persona_chat(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        return next(replies), {}
+
+    runtime.hermes.chat = repetitive_persona_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        first = post_chat(
+            client,
+            {
+                "message": "小格你说第一步",
+                "request_id": "catchphrase-direct-one",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "sender_name": "阿明",
+                "source_local_id": 61,
+                "msg_svr_id": "server-61",
+                "mentions_bot": True,
+            },
+        )
+        second = post_chat(
+            client,
+            {
+                "message": "小格那第二步呢",
+                "request_id": "catchphrase-direct-two",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_member",
+                "sender_name": "阿明",
+                "source_local_id": 62,
+                "msg_svr_id": "server-62",
+                "mentions_bot": True,
+            },
+        )
+
+    assert first.json()["reply"] == "啊对对对，这个事先把关键条件捋清楚。"
+    assert second.json()["status"] == "succeeded"
+    assert second.json()["reply"] == "第二步再把人和时间定下来。"
+
+
+def test_diagnostic_group_context_applies_persona_catchphrase_cooldown(tmp_path):
+    runtime = make_runtime(tmp_path)
+
+    async def persona_chat(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        return "啊对对对，今晚火锅直接安排。", {}
+
+    runtime.hermes.chat = persona_chat
+    with TestClient(create_app(runtime, start_worker=False)) as client:
+        response = post_chat(
+            client,
+            {
+                "message": "晚饭吃啥",
+                "request_id": "diagnostic-catchphrase",
+                "diagnostic_session_id": "diagnostic-catchphrase",
+                "room_id": ROOM_ID,
+                "sender_id": "wxid_probe",
+                "sender_name": "阿明",
+                "source_local_id": 71,
+                "msg_svr_id": "server-71",
+                "mentions_bot": True,
+                "group_context": [
+                    {
+                        "local_id": 70,
+                        "sender_name": "小格",
+                        "direction": "outgoing",
+                        "text": "啊对对对，刚才那句确实有点东西。",
+                    }
+                ],
+            },
+            internal_token="internal-secret",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "今晚火锅直接安排。"
+
+
 def test_legacy_relationship_flags_cannot_create_runtime_state(tmp_path):
     runtime = make_runtime(
         tmp_path,

@@ -242,6 +242,60 @@ REPLY_ADVICE_RE = re.compile(
     r"如果你想|我可以帮你|给你(?:几|一)个(?:回复|版本)|下面(?:给|是).{0,12}(?:回复|版本))",
     re.IGNORECASE,
 )
+PERSONA_CATCHPHRASE_COOLDOWN_OUTGOING_TURNS = 3
+PERSONA_CATCHPHRASE_PATTERNS = (
+    ("啊对对对", re.compile(r"啊\s*对\s*对\s*对", re.IGNORECASE)),
+    ("他急了", re.compile(r"他\s*急\s*了(?:\s*他\s*急\s*了)?", re.IGNORECASE)),
+    ("急了是吧", re.compile(r"急\s*了\s*是\s*吧", re.IGNORECASE)),
+    ("蚌埠住了", re.compile(r"蚌\s*埠\s*住\s*了", re.IGNORECASE)),
+    ("泰酷辣", re.compile(r"泰\s*酷\s*辣", re.IGNORECASE)),
+    ("退退退", re.compile(r"退\s*[！!]?\s*退\s*[！!]?\s*退", re.IGNORECASE)),
+    ("栓Q", re.compile(r"栓\s*[Qq]", re.IGNORECASE)),
+    ("我真的会谢", re.compile(r"我\s*真的\s*会\s*谢", re.IGNORECASE)),
+    ("拿来吧你", re.compile(r"拿\s*来\s*吧\s*你", re.IGNORECASE)),
+    ("尊嘟假嘟", re.compile(r"尊\s*嘟\s*假\s*嘟", re.IGNORECASE)),
+)
+
+
+def persona_catchphrases(value: object) -> set[str]:
+    text = str(value or "")
+    return {
+        name for name, pattern in PERSONA_CATCHPHRASE_PATTERNS if pattern.search(text)
+    }
+
+
+def recent_persona_catchphrases(
+    timeline: list[dict[str, Any]],
+    *,
+    limit: int = PERSONA_CATCHPHRASE_COOLDOWN_OUTGOING_TURNS,
+) -> set[str]:
+    markers: set[str] = set()
+    checked = 0
+    for item in reversed(timeline):
+        if str(item.get("direction") or "").strip().lower() != "outgoing":
+            continue
+        markers.update(persona_catchphrases(item.get("text")))
+        checked += 1
+        if checked >= max(1, limit):
+            break
+    return markers
+
+
+def diagnostic_group_context(
+    timeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pass a bounded synthetic transcript so the probe exercises turn memory."""
+    return [
+        {
+            "local_id": item["local_id"],
+            "sender_id": item["sender_id"],
+            "sender_name": item["sender_name"],
+            "direction": item["direction"],
+            "timestamp": item["timestamp"],
+            "text": item["text"],
+        }
+        for item in timeline[-16:]
+    ]
 
 
 class TransientPersonaProbeError(RuntimeError):
@@ -304,6 +358,7 @@ async def probe(
     diagnostic_id = "persona-probe-%d" % time.time_ns()
     base_local_id = time.time_ns() // 100
     results: list[dict[str, Any]] = []
+    diagnostic_timeline: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=10)) as client:
         health = await client.get(adapter_url + "/health")
@@ -338,6 +393,7 @@ async def probe(
 
         for index, case in enumerate(CASES):
             started = time.monotonic()
+            context = diagnostic_group_context(diagnostic_timeline)
 
             async def request_case(attempt: int) -> dict[str, Any]:
                 request_suffix = "%s:%d:%d" % (diagnostic_id, index, attempt)
@@ -362,6 +418,7 @@ async def probe(
                             "mentions_bot": True,
                             "reply_to_bot": False,
                             "message_type": "text",
+                            "group_context": context,
                         },
                     )
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -421,6 +478,14 @@ async def probe(
                 raise RuntimeError(
                     "diagnostic response gave reply advice instead of speaking as 小格"
                 )
+            repeated_catchphrases = (
+                persona_catchphrases(reply)
+                & recent_persona_catchphrases(diagnostic_timeline)
+            )
+            if repeated_catchphrases:
+                raise RuntimeError(
+                    "diagnostic response repeated persona catchphrases inside cooldown"
+                )
             results.append(
                 {
                     "scenario": case["scenario"],
@@ -432,6 +497,27 @@ async def probe(
                     "elapsed_ms": int((time.monotonic() - started) * 1000),
                     "attempt": used_attempt,
                 }
+            )
+            current_local_id = base_local_id + (index * 10) + used_attempt
+            diagnostic_timeline.extend(
+                (
+                    {
+                        "local_id": current_local_id - 1,
+                        "sender_id": case["sender_id"],
+                        "sender_name": case["sender_name"],
+                        "direction": "incoming",
+                        "timestamp": int(time.time()),
+                        "text": case["message"],
+                    },
+                    {
+                        "local_id": current_local_id,
+                        "sender_id": "",
+                        "sender_name": "小格",
+                        "direction": "outgoing",
+                        "timestamp": int(time.time()),
+                        "text": reply,
+                    },
+                )
             )
             if index + 1 < len(CASES) and inter_case_delay_seconds:
                 await asyncio.sleep(inter_case_delay_seconds)

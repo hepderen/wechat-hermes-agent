@@ -47,6 +47,7 @@ from app.persona import (
     extract_single_person_rules,
     extract_slang_corpus,
     extract_sunxiaochuan_section,
+    suppress_repeated_persona_catchphrases,
     sunxiaochuan_section_integrity,
     sunxiaochuan_runtime_integrity,
     weirdotv_source_archive_integrity,
@@ -178,6 +179,7 @@ def test_chat_only_session_contains_name_protocol_and_complete_bundle():
 def test_chat_only_turn_protocol_repeats_the_complete_persona_and_blocks_reply_advice():
     assert PERSONA_SYSTEM_PROMPT in CHAT_ONLY_TURN_SYSTEM_PROMPT
     assert "不是替别人拟回复的助手" in CHAT_ONLY_TURN_SYSTEM_PROMPT
+    assert "固定前缀" in CHAT_ONLY_TURN_SYSTEM_PROMPT
     for marker in ("room_id", "sender_id", "Adapter", "Bridge", "关系档案", "服务端"):
         assert marker not in CHAT_ONLY_TURN_SYSTEM_PROMPT
 
@@ -254,3 +256,37 @@ def test_compactor_removes_embedded_arrival_pings_but_keeps_normal_wording():
         "这句我接住了。这句我接住了。\n\n别再熬了。\n\n别再熬了。",
         "随便聊",
     ) == "这句我接住了。\n\n别再熬了。"
+
+
+def test_catchphrase_cooldown_removes_only_the_recently_repeated_marker():
+    timeline = [
+        {"direction": "outgoing", "text": "啊对对对，刚才那句确实有点东西。"},
+        {"direction": "incoming", "text": "你又开始了。"},
+        {"direction": "outgoing", "text": "蚌埠住了，这也太典了。"},
+    ]
+
+    reply, removed = suppress_repeated_persona_catchphrases(
+        "啊对对对，方案没问题，今晚就这么定。",
+        timeline,
+    )
+    assert reply == "方案没问题，今晚就这么定。"
+    assert removed == ("啊对对对",)
+
+    preserved, preserved_removed = suppress_repeated_persona_catchphrases(
+        "泰酷辣，这次确实整到点子上了。",
+        timeline,
+    )
+    assert preserved == "泰酷辣，这次确实整到点子上了。"
+    assert preserved_removed == ()
+
+
+def test_catchphrase_cooldown_uses_only_recent_outgoing_messages():
+    reply, removed = suppress_repeated_persona_catchphrases(
+        "啊对对对，这回我站你。",
+        [
+            {"direction": "incoming", "text": "啊对对对"},
+            {"direction": "incoming", "text": "再说一次"},
+        ],
+    )
+    assert reply == "啊对对对，这回我站你。"
+    assert removed == ()

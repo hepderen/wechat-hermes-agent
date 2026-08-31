@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from .group_listener import (
     is_low_information_reply,
@@ -104,6 +104,23 @@ _TRAILING_CLICHE_RE = re.compile(
 _MARKDOWN_HEADING_RE = re.compile(
     r"\s*(?:#{1,6}\s+.+|\*\*[^*]{1,24}\*\*[：:]?)\s*"
 )
+# These are the highly recognizable pieces of the fixed persona source.  They
+# make the voice useful in moderation, but quickly become mechanical when a
+# model reaches for the same one every turn.  Keep the list deliberately
+# narrow: ordinary Chinese phrasing must never be removed by this guard.
+_PERSONA_CATCHPHRASE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("啊对对对", re.compile(r"啊\s*对\s*对\s*对", re.IGNORECASE)),
+    ("他急了", re.compile(r"他\s*急\s*了(?:\s*他\s*急\s*了)?", re.IGNORECASE)),
+    ("急了是吧", re.compile(r"急\s*了\s*是\s*吧", re.IGNORECASE)),
+    ("蚌埠住了", re.compile(r"蚌\s*埠\s*住\s*了", re.IGNORECASE)),
+    ("泰酷辣", re.compile(r"泰\s*酷\s*辣", re.IGNORECASE)),
+    ("退退退", re.compile(r"退\s*[！!]?\s*退\s*[！!]?\s*退", re.IGNORECASE)),
+    ("栓Q", re.compile(r"栓\s*[Qq]", re.IGNORECASE)),
+    ("我真的会谢", re.compile(r"我\s*真的\s*会\s*谢", re.IGNORECASE)),
+    ("拿来吧你", re.compile(r"拿\s*来\s*吧\s*你", re.IGNORECASE)),
+    ("尊嘟假嘟", re.compile(r"尊\s*嘟\s*假\s*嘟", re.IGNORECASE)),
+)
+_CATCHPHRASE_COOLDOWN_OUTGOING_TURNS = 3
 _INTERNAL_FORMAT_TRANSLATION = str.maketrans(
     "",
     "",
@@ -551,6 +568,71 @@ def _deduplicate_repeated_reply_segments(value: str) -> str:
             seen_paragraphs.add(marker)
         unique_paragraphs.append(compact_paragraph)
     return "\n\n".join(unique_paragraphs).strip()
+
+
+def _persona_catchphrases(value: object) -> set[str]:
+    text = strip_internal_format_chars(value).strip()
+    if not text:
+        return set()
+    return {
+        name
+        for name, pattern in _PERSONA_CATCHPHRASE_PATTERNS
+        if pattern.search(text)
+    }
+
+
+def suppress_repeated_persona_catchphrases(
+    reply: str,
+    timeline: Iterable[Mapping[str, object]] | None,
+    *,
+    cooldown_outgoing_turns: int = _CATCHPHRASE_COOLDOWN_OUTGOING_TURNS,
+) -> tuple[str, tuple[str, ...]]:
+    """Remove persona catchphrases repeated in the recent bot-turn cooldown.
+
+    The model still chooses its wording.  This only removes a distinctive
+    catchphrase when 小格 used that same one in one of the preceding accepted
+    outgoing turns, leaving the surrounding substantive response intact.
+    """
+    if cooldown_outgoing_turns < 1:
+        return str(reply or "").strip(), ()
+
+    blocked: set[str] = set()
+    checked = 0
+    for item in reversed(list(timeline or ())):
+        if str(item.get("direction") or "").strip().lower() != "outgoing":
+            continue
+        text = strip_internal_format_chars(item.get("text")).strip()
+        if not text:
+            continue
+        blocked.update(_persona_catchphrases(text))
+        checked += 1
+        if checked >= cooldown_outgoing_turns:
+            break
+    if not blocked:
+        return str(reply or "").strip(), ()
+
+    value = str(reply or "").strip()
+    removed: list[str] = []
+    for name, pattern in _PERSONA_CATCHPHRASE_PATTERNS:
+        if name not in blocked:
+            continue
+        value, count = pattern.subn("", value)
+        if count:
+            removed.append(name)
+
+    if not removed:
+        return value, ()
+
+    # Removing a leading or trailing interjection can leave doubled Chinese
+    # punctuation behind. Normalize only those seams, without rewriting the
+    # actual response wording.
+    value = re.sub(r"^[\s，,、；;:：~～。！？!?]+", "", value)
+    value = re.sub(r"[，,、；;:：~～]+(?=[。！？!?])", "", value)
+    value = re.sub(r"([，,、])\s*(?:[，,、]\s*)+", r"\1", value)
+    value = re.sub(r"[ \t]{2,}", " ", value).strip()
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", value):
+        value = ""
+    return value, tuple(removed)
 
 
 def _truncate_fragment(value: str, limit: int) -> str:
