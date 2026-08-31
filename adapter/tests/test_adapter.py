@@ -15,6 +15,7 @@ from app import clients
 from app.clients import HermesClient, RemoteAPIError
 from app.config import Settings
 from app.main import (
+    CHAT_ONLY_TURN_SYSTEM_PROMPT,
     SESSION_SYSTEM_PROMPT,
     Runtime,
     create_app,
@@ -525,7 +526,7 @@ def test_sync_chat_is_idempotent_and_uses_trusted_metadata(tmp_path):
             runtime.hermes.chat_calls[0]
         )
         assert session_id == stable_session_id(ROOM_ID, "someone-else")
-        assert system_message == ""
+        assert system_message == CHAT_ONLY_TURN_SYSTEM_PROMPT
         assert "wxid_real" not in user_text
         assert "wxid_fake" not in system_message
         assert "wxid_fake" in user_text
@@ -621,7 +622,7 @@ def test_passive_group_listener_can_join_a_plain_name_chat_without_tasks(tmp_pat
     assert len(runtime.hermes.chat_calls) == 1
     _, _, system_message, disable_tools = runtime.hermes.chat_calls[0]
     assert disable_tools is True
-    assert system_message == ""
+    assert system_message == CHAT_ONLY_TURN_SYSTEM_PROMPT
     state = runtime.store.get_group_listener_state(ROOM_ID)
     assert state is not None
     assert state["last_reply_local_id"] == 201
@@ -938,7 +939,7 @@ def test_chat_only_diagnostic_execution_language_stays_in_chat(tmp_path):
     assert runtime.store.list_tasks(ROOM_ID) == []
     assert len(runtime.hermes.chat_calls) == 1
     assert runtime.hermes.chat_calls[0][3] is True
-    assert runtime.hermes.chat_calls[0][2] == ""
+    assert runtime.hermes.chat_calls[0][2] == CHAT_ONLY_TURN_SYSTEM_PROMPT
 
 
 def test_diagnostic_sessions_are_isolated_and_do_not_pollute_room_session(tmp_path):
@@ -1190,7 +1191,7 @@ def test_api_bounds_untrusted_group_context_before_calling_hermes(tmp_path):
     assert response.status_code == 200
     user_text = runtime.hermes.chat_calls[0][1]
     system_message = runtime.hermes.chat_calls[0][2]
-    assert system_message == ""
+    assert system_message == CHAT_ONLY_TURN_SYSTEM_PROMPT
     assert "marker-04:" not in user_text
     assert "marker-05:" in user_text
     assert "marker-20:" in user_text
@@ -1348,7 +1349,7 @@ def test_legacy_three_field_chat_is_compatible_and_forces_zero_tools(tmp_path):
     )
     assert session_id.startswith("wechat:")
     assert "legacy-client-session" not in session_id
-    assert system_message == ""
+    assert system_message == CHAT_ONLY_TURN_SYSTEM_PROMPT
     assert disable_tools is True
     assert runtime.hermes.ensure_calls[0][2] == SESSION_SYSTEM_PROMPT
 

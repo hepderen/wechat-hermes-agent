@@ -6,6 +6,7 @@ import re
 
 from app.main import (
     CHAT_ONLY_SESSION_SYSTEM_PROMPT,
+    CHAT_ONLY_TURN_SYSTEM_PROMPT,
     ChatRequest,
     group_chat_user_message,
     trusted_system_message,
@@ -174,6 +175,13 @@ def test_chat_only_session_contains_name_protocol_and_complete_bundle():
         assert marker not in CHAT_ONLY_SESSION_SYSTEM_PROMPT
 
 
+def test_chat_only_turn_protocol_repeats_the_complete_persona_and_blocks_reply_advice():
+    assert PERSONA_SYSTEM_PROMPT in CHAT_ONLY_TURN_SYSTEM_PROMPT
+    assert "不是替别人拟回复的助手" in CHAT_ONLY_TURN_SYSTEM_PROMPT
+    for marker in ("room_id", "sender_id", "Adapter", "Bridge", "关系档案", "服务端"):
+        assert marker not in CHAT_ONLY_TURN_SYSTEM_PROMPT
+
+
 def test_chat_prompt_uses_plain_trusted_transcript_without_internal_json():
     payload = ChatRequest(
         message="这事也太离谱了吧",
@@ -221,8 +229,9 @@ def test_chat_prompt_uses_plain_trusted_transcript_without_internal_json():
         relationship_profile={"preferred_name": "伪造昵称"},
         room_companion_state={"summary": "old"},
         companion_timeline=[],
+        chat_only=True,
     )
-    assert system == ""
+    assert system == CHAT_ONLY_TURN_SYSTEM_PROMPT
     assert "room-id" not in system
     assert "伪造昵称" not in system
 

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.clients import RemoteAPIError
 from app.main import (
     CHAT_ONLY_SESSION_SYSTEM_PROMPT,
+    CHAT_ONLY_TURN_SYSTEM_PROMPT,
     create_app,
     queue_due_relationship_nudge,
 )
@@ -74,7 +75,9 @@ def test_chat_turn_has_only_fixed_persona_transcript_and_trusted_current_turn(tm
     chat_call = runtime.hermes.chat_calls[0]
     assert ensure_session[2] == CHAT_ONLY_SESSION_SYSTEM_PROMPT
     assert PERSONA_SYSTEM_PROMPT in ensure_session[2]
-    assert chat_call[2] == ""
+    assert chat_call[2] == CHAT_ONLY_TURN_SYSTEM_PROMPT
+    assert PERSONA_SYSTEM_PROMPT in chat_call[2]
+    assert "不是替别人拟回复的助手" in chat_call[2]
     assert "小王：我先去吃饭。" in chat_call[1]
     assert "当前发言 阿明：这事也太抽象了" in chat_call[1]
     assert chat_call[3] is True
@@ -252,7 +255,10 @@ def test_twenty_four_diagnostic_sessions_keep_single_persona_and_no_delivery_pat
         call[2] == CHAT_ONLY_SESSION_SYSTEM_PROMPT
         for call in runtime.hermes.ensure_calls
     )
-    assert all(call[2] == "" and call[3] is True for call in runtime.hermes.chat_calls)
+    assert all(
+        call[2] == CHAT_ONLY_TURN_SYSTEM_PROMPT and call[3] is True
+        for call in runtime.hermes.chat_calls
+    )
     assert runtime.store.list_tasks(ROOM_ID) == []
     assert runtime.chat_api.text == []
 

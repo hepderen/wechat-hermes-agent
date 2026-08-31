@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 from app import main as main_module
 from app.clients import RemoteAPIError
 from app.evidence import build_execution_plan
-from app.main import create_app, execute_task, terminal_delivery_text
+from app.main import (
+    CHAT_ONLY_TURN_SYSTEM_PROMPT,
+    create_app,
+    execute_task,
+    terminal_delivery_text,
+)
 from app.policy import stable_session_id
 from tests.test_adapter import (
     ROOM_ID,
@@ -353,7 +358,7 @@ def test_chat_only_execution_intent_stays_as_short_sync_chat(tmp_path):
     assert runtime.store.list_tasks(ROOM_ID) == []
     assert len(runtime.hermes.chat_calls) == 1
     assert runtime.hermes.chat_calls[0][3] is True
-    assert runtime.hermes.chat_calls[0][2] == ""
+    assert runtime.hermes.chat_calls[0][2] == CHAT_ONLY_TURN_SYSTEM_PROMPT
 
 
 def test_chat_only_timeout_does_not_fall_back_to_a_task(tmp_path):

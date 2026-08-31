@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -236,6 +237,12 @@ FORBIDDEN_ASSISTANT_PHRASES = (
     "作为 ai",
 )
 
+REPLY_ADVICE_RE = re.compile(
+    r"^\s*(?:你可以(?:这样)?(?:回|说|接)|可以(?:这样)?(?:回|说|接)|"
+    r"如果你想|我可以帮你|给你(?:几|一)个(?:回复|版本)|下面(?:给|是).{0,12}(?:回复|版本))",
+    re.IGNORECASE,
+)
+
 
 class TransientPersonaProbeError(RuntimeError):
     """A model-side failure that merits a bounded diagnostic retry."""
@@ -409,6 +416,10 @@ async def probe(
             ):
                 raise RuntimeError(
                     "diagnostic response used an assistant-service phrase"
+                )
+            if REPLY_ADVICE_RE.search(reply):
+                raise RuntimeError(
+                    "diagnostic response gave reply advice instead of speaking as 小格"
                 )
             results.append(
                 {

@@ -251,6 +251,7 @@ class HermesHandler(JsonHandler):
                 "hermes.chat",
                 session_id=session_id,
                 message=str(payload.get("message") or ""),
+                system_message=str(payload.get("system_message") or ""),
                 disable_tools=bool(payload.get("disable_tools")),
             )
             if session_id.startswith("wechat-companion-summary:"):
@@ -880,6 +881,16 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                     )
                 if any(not item.get("disable_tools") for item in foreground_chats):
                     raise AssertionError("a pure-chat Hermes turn enabled tools")
+                if any(
+                    "不是替别人拟回复的助手"
+                    not in str(item.get("system_message") or "")
+                    or "### 😂 孙笑川 Sun Xiaochuan"
+                    not in str(item.get("system_message") or "")
+                    for item in foreground_chats
+                ):
+                    raise AssertionError(
+                        "a pure-chat Hermes turn omitted the direct persona protocol"
+                    )
                 if text_deliveries or media_deliveries or run_starts:
                     raise AssertionError(
                         "pure-chat stack created an outbound delivery or async run"
@@ -937,6 +948,7 @@ def run_live_stack(root: Path) -> dict[str, Any]:
                         "passive_low_signal": ignored_passive["status"],
                         "task_like_chat": task_like_reply["status"],
                         "all_foreground_turns_disable_tools": True,
+                        "all_foreground_turns_direct_persona": True,
                         "outbound_text_deliveries": text_deliveries_after,
                         "outbound_media_deliveries": media_deliveries_after,
                         "async_run_starts": run_starts_after,

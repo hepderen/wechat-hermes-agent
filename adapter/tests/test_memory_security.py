@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import create_app, execute_task
+from app.main import CHAT_ONLY_TURN_SYSTEM_PROMPT, create_app, execute_task
 from app.policy import stable_session_id
 from app.security import (
     contains_memory_prompt_injection,
@@ -232,9 +232,13 @@ def test_runtime_never_injects_retained_scope_memory(tmp_path):
                 "sender_id": "wxid_other",
                 "mentions_bot": True,
             },
-        )
+    )
     assert response.status_code == 200
-    assert runtime.hermes.chat_calls[-1][2] == ""
+    assert runtime.hermes.chat_calls[-1][2] == CHAT_ONLY_TURN_SYSTEM_PROMPT
+    assert (
+        "Cloud-only Hermes deployment"
+        not in runtime.hermes.chat_calls[-1][2]
+    )
     assert (
         "Cloud-only Hermes deployment"
         not in runtime.hermes.ensure_calls[-1][2]

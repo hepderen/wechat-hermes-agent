@@ -22,6 +22,11 @@ def test_persona_probe_uses_at_least_24_non_delivery_weirdotv_scenarios():
     source = script.read_text(encoding="utf-8")
     assert "weirdo-tv-sunxiaochuan" in source
     assert 'set(skills) != {"weirdo-tv-sunxiaochuan"}' in source
+    assert "diagnostic response gave reply advice" in source
+    advice = values["REPLY_ADVICE_RE"]
+    assert advice.search("你可以这样回一句")
+    assert advice.search("可以接：这局我站你")
+    assert not advice.search("都在潜水呢，等你先冒个泡。")
 
 
 def test_persona_probe_retries_only_transient_model_failures():
