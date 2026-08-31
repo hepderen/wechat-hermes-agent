@@ -97,10 +97,10 @@ def should_run_async(
 def stable_session_id(
     room_id: str | None,
     sender_id: str,
-    generation: str = "1",
+    generation: str = "14",
 ) -> str:
     scope = "room:" + room_id if room_id else "private:" + sender_id
-    version = str(generation or "").strip() or "1"
+    version = str(generation or "").strip() or "14"
     value = "generation:%s\n%s" % (version, scope)
     return "wechat:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
 

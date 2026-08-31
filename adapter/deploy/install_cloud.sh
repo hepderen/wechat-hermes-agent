@@ -94,27 +94,27 @@ assert_protected_file() {
   fi
 }
 
-assert_persona_skill_bundle() {
-  local ccv3_root="$SOURCE_ROOT/third_party/character-card-spec-v3"
-  local card_root="$SOURCE_ROOT/personas"
+assert_sunxiaochuan_persona_resources() {
   local weirdotv_root="$SOURCE_ROOT/skills/weirdotv-sunxiaochuan"
-  python3 - "$ccv3_root" "$card_root" "$weirdotv_root" <<'PY'
+  local section_path="$SOURCE_ROOT/personas/sunxiaochuan.section.md"
+  local section_lock="$SOURCE_ROOT/personas/SOURCE.lock.json"
+  python3 - "$weirdotv_root" "$section_path" "$section_lock" <<'PY'
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 
-CCV3_SOURCE = "https://github.com/kwaroran/character-card-spec-v3"
-CCV3_COMMIT = "f3a86af019fbd99f788f7a1155f399655b34ab35"
-CCV3_SPEC_SHA256 = "3c472a16eeda5d018837e90d30fce2816b0982f07f4dba14c8fcc89aa11fe76c"
-CCV3_LICENSE_SHA256 = "9805dc6bf59dcf8d9eaedc8987f2798dc434bc3c8e6dafbbf23eb2147d74db95"
-CARD_SHA256 = "e95bb29f4c158c52ea817c04adc1cda7ddd578f1871623bfe050adc41542b0e3"
+SOURCE = "https://github.com/BeamusWayne/WeirdoTV-Skill"
+COMMIT = "1635aceebf4e84b32db37ccd00244ca0dcc04574"
+HEADING = "### 😂 孙笑川 Sun Xiaochuan"
+SECTION_SHA256 = "b1fa3a4d08206c0210edd527dd2ef30e5ef36bd4eec7401881de873aa75fa922"
 WEIRDOTV_SHA256 = "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305"
 WEIRDOTV_LICENSE_SHA256 = "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
 
 
 def fail(message):
-    raise SystemExit("CCV3 persona resource validation failed: " + message)
+    raise SystemExit("Sun Xiaochuan persona resource validation failed: " + message)
 
 
 def read_json(path):
@@ -142,80 +142,71 @@ def checked_root(raw_root, label):
     return root
 
 
-ccv3_root = checked_root(sys.argv[1], "CCV3 archive")
-card_root = checked_root(sys.argv[2], "character card")
-weirdotv_root = checked_root(sys.argv[3], "WeirdoTV archive")
-
-ccv3_lock = read_json(ccv3_root / "SOURCE.lock.json")
-if (
-    ccv3_lock.get("name") != "character-card-spec-v3"
-    or ccv3_lock.get("source") != CCV3_SOURCE
-    or ccv3_lock.get("commit") != CCV3_COMMIT
-    or ccv3_lock.get("license") != "MIT"
-    or ccv3_lock.get("files", {}).get("SPEC_V3.md") != CCV3_SPEC_SHA256
-    or ccv3_lock.get("files", {}).get("LICENSE") != CCV3_LICENSE_SHA256
-):
-    fail("CCV3 source lock metadata mismatch")
-if sha256(ccv3_root / "SPEC_V3.md") != CCV3_SPEC_SHA256:
-    fail("CCV3 specification SHA-256 mismatch")
-if sha256(ccv3_root / "LICENSE") != CCV3_LICENSE_SHA256:
-    fail("CCV3 license SHA-256 mismatch")
-
-card_path = card_root / "sunxiaochuan.card.json"
-card_lock = read_json(card_root / "SOURCE.lock.json")
-expected_card_sources = [
-    "https://github.com/kwaroran/character-card-spec-v3/tree/" + CCV3_COMMIT,
-    "https://github.com/BeamusWayne/WeirdoTV-Skill/tree/1635aceebf4e84b32db37ccd00244ca0dcc04574",
-]
-if (
-    card_lock.get("schema_version") != 1
-    or card_lock.get("name") != "sunxiaochuan-card"
-    or card_lock.get("version") != "1.0.0"
-    or card_lock.get("format") != "chara_card_v3/3.0"
-    or card_lock.get("source") != expected_card_sources
-    or card_lock.get("files", {}).get("sunxiaochuan.card.json") != CARD_SHA256
-    or sha256(card_path) != CARD_SHA256
-):
-    fail("fixed character card source lock mismatch")
-card = read_json(card_path)
-data = card.get("data") if isinstance(card, dict) else None
-if (
-    not isinstance(data, dict)
-    or card.get("spec") != "chara_card_v3"
-    or card.get("spec_version") != "3.0"
-    or data.get("name") != "小格"
-    or data.get("nickname") != "小格"
-    or data.get("character_version") != "1.0.0"
-    or data.get("source") != expected_card_sources
-):
-    fail("fixed character card format or source mismatch")
+weirdotv_root = checked_root(sys.argv[1], "WeirdoTV archive")
+section_path = Path(sys.argv[2])
+section_lock_path = Path(sys.argv[3])
+if section_path.is_symlink() or section_lock_path.is_symlink():
+    fail("section resources must not be symbolic links")
 
 weirdotv_lock = read_json(weirdotv_root / "SOURCE.lock.json")
 if (
     weirdotv_lock.get("name") != "weirdo-tv-sunxiaochuan"
     or weirdotv_lock.get("version") != "1.0.0"
-    or weirdotv_lock.get("source") != "https://github.com/BeamusWayne/WeirdoTV-Skill"
-    or weirdotv_lock.get("commit") != "1635aceebf4e84b32db37ccd00244ca0dcc04574"
+    or weirdotv_lock.get("source") != SOURCE
+    or weirdotv_lock.get("commit") != COMMIT
     or weirdotv_lock.get("license") != "MIT"
-    or weirdotv_lock.get("loaded_section") != "### 😂 孙笑川 Sun Xiaochuan"
+    or weirdotv_lock.get("loaded_section") != HEADING
     or sha256(weirdotv_root / "SKILL.md") != WEIRDOTV_SHA256
     or sha256(weirdotv_root / "LICENSE") != WEIRDOTV_LICENSE_SHA256
 ):
     fail("WeirdoTV attribution archive mismatch")
-for relative, digest in weirdotv_lock.get("files", {}).items():
-    if not isinstance(relative, str) or not isinstance(digest, str):
-        fail("WeirdoTV source lock file entry is invalid")
-    path = (weirdotv_root / relative).resolve()
-    if path.parent != weirdotv_root and weirdotv_root not in path.parents:
-        fail("WeirdoTV source lock path escapes archive")
-    data = path.read_bytes()
-    actual = hashlib.sha256(data).hexdigest()
-    if actual != digest and relative == "LICENSE":
-        actual = hashlib.sha256(
-            data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        ).hexdigest()
-    if actual != digest:
-        fail("WeirdoTV source lock file mismatch: " + relative)
+if weirdotv_lock.get("files", {}).get("SKILL.md") != WEIRDOTV_SHA256:
+    fail("WeirdoTV SKILL.md source lock mismatch")
+if weirdotv_lock.get("files", {}).get("LICENSE") != WEIRDOTV_LICENSE_SHA256:
+    fail("WeirdoTV license source lock mismatch")
+
+
+def normalize(value):
+    return str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def extract(source):
+    source = normalize(source)
+    start = source.find(HEADING)
+    if start < 0 or (start and source[start - 1] != "\n"):
+        return ""
+    match = re.search(r"^###\s+", source[start + 1 :], re.MULTILINE)
+    end = start + 1 + match.start() if match else len(source)
+    section = source[start:end].strip()
+    return re.sub(r"\n\s*---\s*$", "", section).strip()
+
+
+try:
+    source_text = (weirdotv_root / "SKILL.md").read_text(encoding="utf-8")
+    section_text = section_path.read_text(encoding="utf-8")
+except (OSError, UnicodeDecodeError) as exc:
+    fail("section resource is unavailable: " + type(exc).__name__)
+if sha256(section_path) != SECTION_SHA256:
+    fail("section SHA-256 mismatch")
+if normalize(section_text) != extract(source_text):
+    fail("section does not exactly match the pinned upstream chapter")
+if len(re.findall(r"^###\s+.+$", normalize(section_text), re.MULTILINE)) != 1:
+    fail("section contains unexpected headings")
+
+section_lock = read_json(section_lock_path)
+if (
+    section_lock.get("schema_version") != 2
+    or section_lock.get("name") != "sunxiaochuan"
+    or section_lock.get("version") != "2.0.0"
+    or section_lock.get("source") != SOURCE
+    or section_lock.get("commit") != COMMIT
+    or section_lock.get("license") != "MIT"
+    or section_lock.get("section") != HEADING
+    or section_lock.get("files", {}).get("sunxiaochuan.section.md") != SECTION_SHA256
+    or section_lock.get("files", {}).get("upstream.SKILL.md") != WEIRDOTV_SHA256
+    or section_lock.get("files", {}).get("LICENSE") != WEIRDOTV_LICENSE_SHA256
+):
+    fail("Sun Xiaochuan section source lock mismatch")
 PY
 }
 
@@ -260,7 +251,7 @@ assert_baseline() {
     fail "release source is missing at $SOURCE_ROOT"
   [[ -f "$CHAT_API_SOURCE_ROOT/chat_api.py" ]] ||
     fail "Chat API release source is missing at $CHAT_API_SOURCE_ROOT"
-  assert_persona_skill_bundle
+  assert_sunxiaochuan_persona_resources
   [[ -d "$HERMES_SOURCE/.git" && -x "$HERMES_SOURCE/venv/bin/hermes" ]] ||
     fail "Hermes source runtime is incomplete"
 }
@@ -386,20 +377,33 @@ install_adapter() {
     --exclude '.pytest_cache' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
+    --exclude 'app/ccv3.py' \
+    --exclude 'personas/sunxiaochuan.card.json' \
+    --exclude 'third_party/character-card-spec-v3' \
+    --exclude 'skills/sophia' \
     --exclude 'skills/humanizer-zh-next' \
     "$SOURCE_ROOT/" "$release_root/"
+
+  [[ ! -e "$release_root/app/ccv3.py" ]] ||
+    fail "legacy Character Card loader must not be installed"
+  [[ ! -e "$release_root/personas/sunxiaochuan.card.json" ]] ||
+    fail "legacy character card must not be installed"
+  [[ ! -e "$release_root/third_party/character-card-spec-v3" ]] ||
+    fail "Character Card specification archive must not be installed"
+  [[ ! -e "$release_root/skills/sophia" ]] ||
+    fail "Sophia skill must not be installed"
+  [[ ! -e "$release_root/skills/humanizer-zh-next" ]] ||
+    fail "Humanizer skill must not be installed"
 
   python3 -m venv "$release_root/.venv"
   "$release_root/.venv/bin/python" -m pip install \
     --disable-pip-version-check \
     --index-url "$PIP_INDEX_URL" \
     --trusted-host "$PIP_TRUSTED_HOST" \
-    -r "$release_root/requirements.txt" \
-    -r "$release_root/requirements-mcp.txt"
+    -r "$release_root/requirements.txt"
 
   "$release_root/.venv/bin/python" -m compileall -q \
     "$release_root/app" \
-    "$release_root/mcp_server.py" \
     "$release_root/cleanup.py"
 
   find "$release_root" -path "$release_root/.venv" -prune -o \
@@ -711,32 +715,9 @@ skills["external_dirs"] = []
 config.setdefault("gateway", {}).setdefault("api_server", {})[
     "max_concurrent_runs"
 ] = 1
-config.setdefault("mcp_servers", {})["wechat-production"] = {
-    "command": "/opt/wechat-hermes-adapter/.venv/bin/python",
-    "args": ["/opt/wechat-hermes-adapter/mcp_server.py"],
-    "env": {
-        "HERMES_WECHAT_INTERNAL_TOKEN": "${HERMES_WECHAT_INTERNAL_TOKEN}",
-        "HERMES_WECHAT_ADAPTER_URL": "${HERMES_WECHAT_ADAPTER_URL}",
-        "HERMES_WECHAT_ARTIFACT_ROOT": "${HERMES_WECHAT_ARTIFACT_ROOT}",
-        "HERMES_WECHAT_MAX_ARTIFACT_BYTES": (
-            "${HERMES_WECHAT_MAX_ARTIFACT_BYTES}"
-        ),
-        "HERMES_WECHAT_MAX_IMAGE_BYTES": "${HERMES_WECHAT_MAX_IMAGE_BYTES}",
-        "HERMES_WECHAT_MAX_HTTP_FETCH_BYTES": (
-            "${HERMES_WECHAT_MAX_HTTP_FETCH_BYTES}"
-        ),
-        "HERMES_WECHAT_MAX_TEXT_ARTIFACT_BYTES": (
-            "${HERMES_WECHAT_MAX_TEXT_ARTIFACT_BYTES}"
-        ),
-        "HERMES_WECHAT_MAX_ARCHIVE_FILES": (
-            "${HERMES_WECHAT_MAX_ARCHIVE_FILES}"
-        ),
-        "HERMES_WECHAT_MAX_ARCHIVE_SOURCE_BYTES": (
-            "${HERMES_WECHAT_MAX_ARCHIVE_SOURCE_BYTES}"
-        ),
-    },
-    "enabled": True,
-}
+# The public release is conversational only. Drop historical MCP entries so
+# Hermes has no registered route to the retired Adapter execution interfaces.
+config.pop("mcp_servers", None)
 target.write_text(
     yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
     encoding="utf-8",
@@ -1115,7 +1096,7 @@ adapter.update({
     "HERMES_WECHAT_BUDGET_TIMEZONE": "Asia/Shanghai",
     "HERMES_INPUT_TOKEN_COST_PER_MILLION": "3",
     "HERMES_OUTPUT_TOKEN_COST_PER_MILLION": "15",
-    "HERMES_WECHAT_SESSION_GENERATION": "13",
+    "HERMES_WECHAT_SESSION_GENERATION": "14",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",

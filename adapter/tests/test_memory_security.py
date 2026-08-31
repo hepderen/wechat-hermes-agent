@@ -204,7 +204,7 @@ def test_memory_write_requires_a_running_trusted_task(tmp_path):
         store.memory_for_task("T-00000000")
 
 
-def test_sync_and_async_prompts_receive_only_their_scope_memory(tmp_path):
+def test_runtime_never_injects_retained_scope_memory(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
     task = claim_task(
@@ -234,7 +234,11 @@ def test_sync_and_async_prompts_receive_only_their_scope_memory(tmp_path):
             },
         )
     assert response.status_code == 200
-    assert "Cloud-only Hermes deployment" in runtime.hermes.chat_calls[-1][2]
+    assert runtime.hermes.chat_calls[-1][2] == ""
+    assert (
+        "Cloud-only Hermes deployment"
+        not in runtime.hermes.ensure_calls[-1][2]
+    )
 
     async_task = claim_task(
         runtime.store,
@@ -243,11 +247,13 @@ def test_sync_and_async_prompts_receive_only_their_scope_memory(tmp_path):
         sender_id="wxid_other",
         kind="chat",
     )
+    previous_calls = list(runtime.hermes.chat_calls)
     asyncio.run(execute_task(runtime, async_task))
-    assert "Cloud-only Hermes deployment" in runtime.hermes.chat_calls[-1][2]
+    assert runtime.hermes.chat_calls == previous_calls
+    assert runtime.store.get_task(async_task["id"])["status"] == "canceled"
 
 
-def test_memory_internal_api_derives_scope_from_task(tmp_path):
+def test_memory_internal_api_is_retired_before_task_scope_lookup(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
     task = claim_task(
@@ -268,10 +274,8 @@ def test_memory_internal_api_derives_scope_from_task(tmp_path):
             "/internal/memory/" + task["id"],
             headers=headers,
         )
-    assert updated.status_code == 200
-    assert listed.status_code == 200
-    assert listed.json()["scope_type"] == "room"
-    assert listed.json()["memory"][0]["value"] == "direct"
+    assert updated.status_code == 410
+    assert listed.status_code == 410
 
 
 def test_usage_fallback_and_token_limit_are_enforced(tmp_path):

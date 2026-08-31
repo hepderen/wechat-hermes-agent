@@ -61,6 +61,40 @@ def test_delete_session_uses_the_scoped_hermes_endpoint(monkeypatch):
     ]
 
 
+def test_delete_session_waits_for_an_async_delete_to_finish(monkeypatch):
+    calls = []
+    probes = [Response(200, {}), Response(404, {})]
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def delete(self, url, *, headers):
+            calls.append(("delete", url, headers))
+            return Response(202, {})
+
+        async def get(self, url, *, headers):
+            calls.append(("get", url, headers))
+            return probes.pop(0)
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(clients.asyncio, "sleep", no_wait)
+    hermes = HermesClient("http://127.0.0.1:8642", "secret")
+    asyncio.run(hermes.delete_session("session-a"))
+
+    assert [item[0] for item in calls] == ["delete", "get", "get"]
+    assert all(
+        item[1] == "http://127.0.0.1:8642/api/sessions/session-a"
+        for item in calls
+    )
+
+
 @pytest.mark.parametrize(
     "message",
     (

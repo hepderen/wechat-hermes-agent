@@ -6,9 +6,11 @@ import sqlite3
 import threading
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import (
+    LEGACY_RELATIONSHIP_RUNTIME_ENABLED,
     _parse_relationship_summary,
     create_app,
     deliver_outbox_item,
@@ -28,6 +30,12 @@ from app.relationship import (
 )
 from app.store import AdapterStore
 from tests.test_adapter import ROOM_ID, make_runtime, post_chat
+
+
+legacy_relationship_runtime = pytest.mark.skipif(
+    not LEGACY_RELATIONSHIP_RUNTIME_ENABLED,
+    reason="per-member relationship, summary, and proactive runtime are retired",
+)
 
 
 def chat_payload(
@@ -136,6 +144,7 @@ def test_relationship_ttl_and_note_limit_are_enforced(tmp_path):
     ) is None
 
 
+@legacy_relationship_runtime
 def test_relationship_commands_require_a_real_address_and_rotate_room_session(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
@@ -211,6 +220,7 @@ def test_retired_style_switch_words_route_to_the_persona(tmp_path):
     assert len(runtime.hermes.chat_calls) == 1
 
 
+@legacy_relationship_runtime
 def test_relationship_identity_cannot_be_overridden_by_message_text(tmp_path):
     runtime = make_runtime(tmp_path)
     message = (
@@ -232,6 +242,7 @@ def test_relationship_identity_cannot_be_overridden_by_message_text(tmp_path):
     assert runtime.store.get_relationship_profile(ROOM_ID, "wxid_other") is None
 
 
+@legacy_relationship_runtime
 def test_current_member_profile_is_the_only_profile_injected_into_chat(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.record_relationship_interaction(
@@ -295,6 +306,7 @@ def test_relationship_memory_can_be_disabled_without_changing_chat_routing(tmp_p
     assert "当前成员没有关系档案" not in runtime.hermes.chat_calls[0][2]
 
 
+@legacy_relationship_runtime
 def test_forget_rotates_the_real_room_session_for_later_messages(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
@@ -333,6 +345,7 @@ def test_forget_rotates_the_real_room_session_for_later_messages(tmp_path):
     ]
 
 
+@legacy_relationship_runtime
 def test_relationship_summary_is_scheduled_on_every_third_effective_turn(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
@@ -440,6 +453,7 @@ def test_relationship_summary_index_migrates_legacy_active_constraint(tmp_path):
     assert restarted.relationship_summary_counts()["queued"] == 1
 
 
+@legacy_relationship_runtime
 def test_relationship_summary_coalesces_recent_turns_before_model_call(tmp_path):
     runtime = make_runtime(tmp_path)
     schedule_relationship_summary(
@@ -502,6 +516,7 @@ def test_relationship_summary_requires_one_strict_json_object():
     assert _parse_relationship_summary("[]") is None
 
 
+@legacy_relationship_runtime
 def test_valid_relationship_summary_updates_only_the_target_profile(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.record_relationship_interaction(
@@ -550,6 +565,7 @@ def test_valid_relationship_summary_updates_only_the_target_profile(tmp_path):
     assert runtime.store.relationship_summary_counts()["succeeded"] == 1
 
 
+@legacy_relationship_runtime
 def test_relationship_summary_timeout_becomes_a_failed_terminal_job(tmp_path):
     runtime = make_runtime(tmp_path, relationship_summary_timeout_seconds=0.01)
     runtime.store.record_relationship_interaction(
@@ -589,6 +605,7 @@ def test_relationship_summary_timeout_becomes_a_failed_terminal_job(tmp_path):
     assert runtime.counters["relationship_summary_failed_total"] == 1
 
 
+@legacy_relationship_runtime
 def test_invalid_summary_fails_and_restart_drops_unreplayable_payload(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.record_relationship_interaction(
@@ -634,6 +651,7 @@ def test_invalid_summary_fails_and_restart_drops_unreplayable_payload(tmp_path):
     assert runtime.store.relationship_summary_counts()["dropped"] == 1
 
 
+@legacy_relationship_runtime
 def test_foreground_chat_cancels_idle_summary_without_waiting_for_it(tmp_path):
     runtime = make_runtime(tmp_path, worker_poll_seconds=0.02)
     summary_started = threading.Event()
@@ -683,6 +701,7 @@ def test_foreground_chat_cancels_idle_summary_without_waiting_for_it(tmp_path):
     assert runtime.store.relationship_summary_counts()["dropped"] == 1
 
 
+@legacy_relationship_runtime
 def test_relationship_metrics_expose_queue_and_feature_state(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
@@ -764,6 +783,7 @@ def _queue_proactive_nudge(runtime):
     return task
 
 
+@legacy_relationship_runtime
 def test_proactive_commands_control_only_the_current_member(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
@@ -908,6 +928,7 @@ def test_proactive_claim_respects_idle_and_daily_member_room_limits(tmp_path):
     assert source_c == 3
 
 
+@legacy_relationship_runtime
 def test_proactive_jealous_mood_requires_existing_reciprocity(tmp_path):
     casual_runtime = make_runtime(
         tmp_path / "casual",
@@ -932,6 +953,7 @@ def test_proactive_jealous_mood_requires_existing_reciprocity(tmp_path):
     assert warm_task["plan"]["nudge_jealousy"] is True
 
 
+@legacy_relationship_runtime
 def test_new_member_message_suppresses_a_pending_proactive_nudge(tmp_path):
     runtime = make_runtime(
         tmp_path,
@@ -955,6 +977,7 @@ def test_new_member_message_suppresses_a_pending_proactive_nudge(tmp_path):
     assert runtime.store.relationship_proactive_counts()["active"] == 0
 
 
+@legacy_relationship_runtime
 def test_new_room_activity_blocks_and_supersedes_a_proactive_nudge(tmp_path):
     runtime = make_runtime(
         tmp_path,
@@ -989,6 +1012,7 @@ def test_new_room_activity_blocks_and_supersedes_a_proactive_nudge(tmp_path):
     assert runtime.store.next_outbox() is None
 
 
+@legacy_relationship_runtime
 def test_any_real_group_ingress_invalidates_a_queued_proactive_nudge(tmp_path):
     runtime = make_runtime(
         tmp_path,
@@ -1015,6 +1039,7 @@ def test_any_real_group_ingress_invalidates_a_queued_proactive_nudge(tmp_path):
     assert not relationship_nudge_is_current(runtime, task)
 
 
+@legacy_relationship_runtime
 def test_proactive_nudge_delivers_one_plain_text_item_and_resets_passive_pacing(
     tmp_path,
 ):
@@ -1044,6 +1069,7 @@ def test_proactive_nudge_delivers_one_plain_text_item_and_resets_passive_pacing(
     assert listener_state["last_reply_local_id"] == 3
 
 
+@legacy_relationship_runtime
 def test_proactive_nudge_barrier_suppression_closes_the_generation(tmp_path):
     runtime = make_runtime(
         tmp_path,
@@ -1067,6 +1093,7 @@ def test_proactive_nudge_barrier_suppression_closes_the_generation(tmp_path):
     assert runtime.store.relationship_proactive_counts()["active"] == 0
 
 
+@legacy_relationship_runtime
 def test_proactive_nudge_rechecks_room_activity_after_barrier_lookup(tmp_path):
     runtime = make_runtime(
         tmp_path,
@@ -1094,6 +1121,7 @@ def test_proactive_nudge_rechecks_room_activity_after_barrier_lookup(tmp_path):
     assert runtime.store.relationship_proactive_counts()["active"] == 0
 
 
+@legacy_relationship_runtime
 def test_proactive_recovery_reattaches_durable_task_and_clears_cancellation(tmp_path):
     runtime = make_runtime(
         tmp_path,

@@ -21,6 +21,7 @@ def test_production_resource_defaults_disable_member_relationships(monkeypatch):
 
     assert settings.max_task_seconds == 1800
     assert settings.daily_cost_limit_usd == 20
+    assert settings.wechat_session_generation == "14"
     assert settings.database_path == Path(
         "/var/lib/wechat-hermes/adapter-data/adapter.db"
     )

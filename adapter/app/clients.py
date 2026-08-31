@@ -293,6 +293,28 @@ class HermesClient:
                     + urllib.parse.quote(session_id, safe=""),
                     headers=self.headers(),
                 )
+                if response.status_code == 202:
+                    # Hermes may accept a deletion asynchronously. A caller
+                    # that immediately recreates the same ID must wait until
+                    # the old history is actually gone.
+                    for _ in range(20):
+                        await asyncio.sleep(0.05)
+                        probe = await client.get(
+                            self.base_url
+                            + "/api/sessions/"
+                            + urllib.parse.quote(session_id, safe=""),
+                            headers=self.headers(),
+                        )
+                        if probe.status_code == 404:
+                            return
+                        if probe.status_code != 200:
+                            raise response_error(probe)
+                    raise RemoteAPIError(
+                        "Hermes session deletion did not complete",
+                        error_type="session_delete_pending",
+                        retryable=True,
+                        pre_submission=True,
+                    )
         except httpx.HTTPError as exc:
             raise RemoteAPIError("Hermes session deletion failed") from exc
         if response.status_code not in {200, 202, 204, 404}:

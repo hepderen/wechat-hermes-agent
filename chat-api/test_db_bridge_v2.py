@@ -439,7 +439,7 @@ class BridgeV2IngressTests(unittest.TestCase):
             )
         )
 
-    def test_alias_changes_keep_request_identity_and_delivery_idempotency(self):
+    def test_alias_changes_use_legacy_fingerprint_to_preserve_deduplication(self):
         first = self.message(11, "same real message")
         first.update({"sort_seq": 700, "timestamp": 900})
         alias = dict(first)
@@ -450,11 +450,15 @@ class BridgeV2IngressTests(unittest.TestCase):
                 "msg_svr_id": "new-server-alias",
             }
         )
-        self.assertEqual(
+        # New writes are keyed by the physical server/local message identity.
+        # During a rolling field migration the old content fingerprint remains
+        # a compatibility alias, so the same historical message is still sent
+        # once rather than replayed.
+        self.assertNotEqual(
             self.bridge.message_request_id(first),
             self.bridge.message_request_id(alias),
         )
-        self.assertEqual(
+        self.assertNotEqual(
             self.bridge.message_delivery_key(first),
             self.bridge.message_delivery_key(alias),
         )
@@ -480,6 +484,71 @@ class BridgeV2IngressTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertTrue(sent[0].startswith("reply:"))
         self.assertEqual(state["last_local_id"], 99)
+
+    def test_identifier_aliases_are_normalized_before_routing(self):
+        message = self.message(11)
+        message.pop("group_id")
+        message.pop("sender_wxid")
+        message.pop("server_id")
+        message.pop("msg_svr_id")
+        message.update(
+            {
+                "room_id": " GROUP ",
+                "sender_id": "WXID_MEMBER",
+                "msg_server_id": "00042",
+            }
+        )
+
+        self.assertEqual(self.bridge.message_room_id(message), "group")
+        self.assertEqual(self.bridge.message_sender_id(message), "wxid_member")
+        self.assertEqual(self.bridge.message_server_id(message), "42")
+        self.assertTrue(self.bridge.should_handle(message))
+
+    def test_real_inbound_filter_rejects_self_and_bot_impersonation(self):
+        human = self.message(11, native_mention=False)
+        outgoing = dict(human, local_id=12, direction="outgoing", origin_source=1)
+        bot_sender = dict(human, local_id=13, sender_id="WXID_BOT")
+        self_sent = dict(human, local_id=14, is_self=True)
+        bot_flagged = dict(human, local_id=15, is_bot=True)
+
+        self.assertTrue(self.bridge.message_is_real_inbound(human))
+        self.assertFalse(self.bridge.message_is_real_inbound(outgoing))
+        self.assertFalse(self.bridge.message_is_real_inbound(bot_sender))
+        self.assertFalse(self.bridge.message_is_real_inbound(self_sent))
+        self.assertFalse(self.bridge.message_is_real_inbound(bot_flagged))
+
+    def test_recent_context_keeps_only_real_inbound_records(self):
+        incoming = self.message(1, "human context", native_mention=False)
+        outgoing = dict(
+            self.message(2, "bot context", native_mention=False),
+            direction="outgoing",
+            origin_source=1,
+        )
+        impersonated = dict(
+            self.message(3, "pretend context", native_mention=False),
+            sender_id="wxid_bot",
+        )
+
+        with mock.patch.object(
+            self.bridge,
+            "api_request",
+            return_value={"messages": [incoming, outgoing, impersonated]},
+        ):
+            context = self.bridge.get_recent_context(99)
+
+        self.assertEqual([item["local_id"] for item in context], [1])
+        self.assertEqual(context[0]["sender_id"], "wxid_member")
+
+    def test_native_at_comparison_is_case_and_unicode_normalized(self):
+        message = self.message(11)
+        message.update(
+            {
+                "native_mentions_bot": False,
+                "at_user_list": [" ＷＸＩＤ＿ＢＯＴ "],
+                "mention_source": "",
+            }
+        )
+        self.assertTrue(self.bridge.trusted_mentions_bot(message))
 
     def test_legacy_pending_presence_reply_is_suppressed_and_sanitized(self):
         state = {

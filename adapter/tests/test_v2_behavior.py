@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
@@ -15,6 +16,12 @@ from tests.test_adapter import (
     create_task,
     make_runtime,
     post_chat,
+)
+
+
+legacy_task_runtime = pytest.mark.skipif(
+    main_module.PURE_CHAT_RELEASE,
+    reason="task execution, research, artifacts, and Outbox delivery are retired",
 )
 
 
@@ -79,6 +86,7 @@ def install_completed_run(runtime, *, output: str, tool_event: dict | None = Non
     runtime.hermes.wait_run = wait_run
 
 
+@legacy_task_runtime
 def test_room_stop_commits_barrier_before_store_cancel_and_run_stop(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -122,6 +130,7 @@ def test_room_stop_commits_barrier_before_store_cancel_and_run_stop(tmp_path):
     ]
 
 
+@legacy_task_runtime
 def test_rejected_stop_barrier_leaves_task_and_run_untouched(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -294,7 +303,7 @@ def test_changed_server_alias_with_same_local_id_replays_once(tmp_path):
     assert len(runtime.hermes.chat_calls) == 1
 
 
-def test_sync_chat_timeout_is_queued_with_trusted_cursor(tmp_path):
+def test_sync_chat_timeout_fails_without_creating_a_task(tmp_path):
     runtime = make_runtime(tmp_path, sync_chat_timeout_seconds=0.01)
 
     async def slow_chat(*args, **kwargs):
@@ -316,11 +325,10 @@ def test_sync_chat_timeout_is_queued_with_trusted_cursor(tmp_path):
         )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "queued"
+    assert response.json()["status"] == "failed"
+    assert response.json()["task_id"] is None
     tasks = runtime.store.list_tasks(ROOM_ID)
-    assert len(tasks) == 1
-    assert tasks[0]["kind"] == "chat"
-    assert tasks[0]["source_local_id"] == 33
+    assert tasks == []
 
 
 def test_chat_only_execution_intent_stays_as_short_sync_chat(tmp_path):
@@ -345,7 +353,7 @@ def test_chat_only_execution_intent_stays_as_short_sync_chat(tmp_path):
     assert runtime.store.list_tasks(ROOM_ID) == []
     assert len(runtime.hermes.chat_calls) == 1
     assert runtime.hermes.chat_calls[0][3] is True
-    assert "纯聊天模式" in runtime.hermes.chat_calls[0][2]
+    assert runtime.hermes.chat_calls[0][2] == ""
 
 
 def test_chat_only_timeout_does_not_fall_back_to_a_task(tmp_path):
@@ -391,8 +399,7 @@ def test_chat_only_quarantines_queued_production_task_without_delivery(tmp_path)
     stored = runtime.store.get_task(task["id"])
     assert stored["status"] == "canceled"
     outbox = runtime.store.list_outbox(task["id"], stored["generation"])
-    assert outbox
-    assert all(item["state"] == "suppressed" for item in outbox)
+    assert outbox == []
     assert runtime.hermes.chat_calls == []
 
 
@@ -420,12 +427,13 @@ def test_queued_chat_disables_tools_and_rejects_execution_plan_without_evidence(
 
     asyncio.run(execute_task(runtime, claimed))
 
-    assert runtime.hermes.chat_calls[0][3] is True
+    assert runtime.hermes.chat_calls == []
     stored = runtime.store.get_task(task["id"])
-    assert stored["status"] == "failed"
-    assert "exit code 0" in stored["error"]
+    assert stored["status"] == "canceled"
+    assert runtime.store.list_outbox(task["id"], stored["generation"]) == []
 
 
+@legacy_task_runtime
 def test_queued_chat_keeps_a_natural_multi_sentence_model_output(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -462,6 +470,7 @@ def test_queued_chat_keeps_a_natural_multi_sentence_model_output(tmp_path):
     )
 
 
+@legacy_task_runtime
 def test_run_completed_without_execution_evidence_fails_task(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -480,6 +489,7 @@ def test_run_completed_without_execution_evidence_fails_task(tmp_path):
     ] == "text"
 
 
+@legacy_task_runtime
 def test_successful_tool_evidence_allows_command_completion(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -508,6 +518,7 @@ def test_successful_tool_evidence_allows_command_completion(tmp_path):
     )
 
 
+@legacy_task_runtime
 def test_blocked_task_supplement_rotates_generation_and_suppresses_question(
     tmp_path,
 ):
@@ -553,6 +564,7 @@ def test_blocked_task_supplement_rotates_generation_and_suppresses_question(
     assert runtime.chat_api.barriers[0]["generation"] == old_generation
 
 
+@legacy_task_runtime
 def test_duplicate_tool_events_do_not_inflate_tool_call_limit(tmp_path):
     runtime = make_runtime(tmp_path, max_tool_calls=1)
     runtime.store.initialize()
@@ -605,6 +617,7 @@ def test_duplicate_tool_events_do_not_inflate_tool_call_limit(tmp_path):
     assert runtime.hermes.stop_calls == []
 
 
+@legacy_task_runtime
 def test_tool_call_resource_limit_stops_run_and_finishes_failed(tmp_path):
     runtime = make_runtime(tmp_path, max_tool_calls=1)
     runtime.store.initialize()
@@ -656,6 +669,7 @@ def test_tool_call_resource_limit_stops_run_and_finishes_failed(tmp_path):
     assert runtime.hermes.stop_calls == ["run-tool-limit"]
 
 
+@legacy_task_runtime
 def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     tmp_path,
 ):
@@ -723,6 +737,7 @@ def test_research_plan_limit_and_search_guidance_override_larger_global_limit(
     assert captured_toolsets == [["web"]]
 
 
+@legacy_task_runtime
 def test_research_repairs_unextracted_citations_with_tools_disabled(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -806,6 +821,7 @@ def test_research_repairs_unextracted_citations_with_tools_disabled(tmp_path):
     assert "research_citation_repair_succeeded" in event_types
 
 
+@legacy_task_runtime
 def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(
     tmp_path,
 ):
@@ -887,6 +903,7 @@ def test_failed_hermes_run_retries_with_a_new_execution_idempotency_key(
     ]
 
 
+@legacy_task_runtime
 def test_transient_failed_run_waits_before_requeue(tmp_path, monkeypatch):
     runtime = make_runtime(tmp_path, max_task_attempts=3)
     runtime.store.initialize()
@@ -928,6 +945,7 @@ def test_transient_failed_run_waits_before_requeue(tmp_path, monkeypatch):
     assert delays == [20]
 
 
+@legacy_task_runtime
 def test_failed_run_with_tool_activity_is_not_automatically_replayed(tmp_path):
     runtime = make_runtime(tmp_path, max_task_attempts=3)
     runtime.store.initialize()
@@ -980,6 +998,7 @@ def test_failed_run_with_tool_activity_is_not_automatically_replayed(tmp_path):
     assert len(start_calls) == 1
 
 
+@legacy_task_runtime
 def test_stop_during_run_creation_stops_late_run_and_finishes_canceled(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -1013,6 +1032,7 @@ def test_stop_during_run_creation_stops_late_run_and_finishes_canceled(tmp_path)
     ]
 
 
+@legacy_task_runtime
 def test_terminal_model_failure_preserves_redacted_reason_and_actionable_retry(
     tmp_path,
 ):
@@ -1052,6 +1072,7 @@ def test_terminal_model_failure_preserves_redacted_reason_and_actionable_retry(
     assert "重试 %s" % task["id"] in text
 
 
+@legacy_task_runtime
 def test_running_modification_does_not_rotate_generation_when_stop_fails(
     tmp_path,
 ):

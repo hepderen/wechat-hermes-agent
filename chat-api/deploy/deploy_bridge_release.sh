@@ -101,7 +101,7 @@ payload = json.load(sys.stdin)
 persona = payload.get("persona") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
-if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@1.0.0":
+if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@2.0.0":
     raise SystemExit(1)
 if persona.get("integrity") is not True:
     raise SystemExit(1)
@@ -110,7 +110,7 @@ if persona.get("integrity") is not True:
 
 assert_baseline
 assert_source_tree
-adapter_health_is_ready || fail "Adapter is not WeirdoTV-ready"
+adapter_health_is_ready || fail "Adapter is not Sun Xiaochuan-ready"
 
 source_file="$SOURCE_ROOT/chat-api/db_bridge.py"
 install -d -o root -g root -m 0700 "$CACHE_ROOT"

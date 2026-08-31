@@ -89,6 +89,87 @@ class MessageParsingTests(unittest.TestCase):
         self.assertEqual(sender, "wxid_example")
         self.assertEqual(body, "@Hermes\u2005test")
 
+    def test_group_sender_prefix_accepts_plain_and_numeric_identifiers(self):
+        self.assertEqual(
+            chat_api.split_group_content("member-42:\nhello"),
+            ("member-42", "hello"),
+        )
+        self.assertEqual(
+            chat_api.split_group_content("000123:\nhello"),
+            ("000123", "hello"),
+        )
+        self.assertEqual(
+            chat_api.split_group_content("ordinary prose:\nhello"),
+            ("", "ordinary prose:\nhello"),
+        )
+
+    def test_serializer_emits_normalized_trusted_identity_aliases(self):
+        row = {
+            "local_id": 21,
+            "msg_svr_id": "00042",
+            "local_type": 1,
+            "sort_seq": 20,
+            "real_sender_id": 0,
+            "create_time": 101,
+            "status": 3,
+            "origin_source": 2,
+            "message_content": "000123:\nhello",
+            "WCDB_CT_message_content": 0,
+            "source": "",
+            "WCDB_CT_source": 0,
+        }
+
+        class FakeReader:
+            group_id = " GROUP "
+            mention = "@Hermes"
+            bot_wxid = "WXID_BOT"
+            _decompressor = None
+
+        reader = FakeReader()
+        reader._serialize_row = chat_api.SnapshotReader._serialize_row.__get__(
+            reader, FakeReader
+        )
+        message = reader._serialize_row(row)
+        self.assertEqual(message["room_id"], "group")
+        self.assertEqual(message["group_id"], "group")
+        self.assertEqual(message["source_local_id"], 21)
+        self.assertEqual(message["msg_svr_id"], "42")
+        self.assertEqual(message["sender_id"], "123")
+        self.assertEqual(message["sender_wxid"], "123")
+        self.assertFalse(message["is_self"])
+        self.assertFalse(message["is_bot"])
+
+    def test_serializer_marks_outgoing_bot_rows_as_self(self):
+        row = {
+            "local_id": 22,
+            "server_id": 43,
+            "local_type": 1,
+            "sort_seq": 21,
+            "real_sender_id": 0,
+            "create_time": 102,
+            "status": 2,
+            "origin_source": 1,
+            "message_content": "outgoing text",
+            "WCDB_CT_message_content": 0,
+            "source": "",
+            "WCDB_CT_source": 0,
+        }
+
+        class FakeReader:
+            group_id = "group"
+            mention = "@Hermes"
+            bot_wxid = "WXID_BOT"
+            _decompressor = None
+
+        reader = FakeReader()
+        reader._serialize_row = chat_api.SnapshotReader._serialize_row.__get__(
+            reader, FakeReader
+        )
+        message = reader._serialize_row(row)
+        self.assertEqual(message["sender_id"], "wxid_bot")
+        self.assertTrue(message["is_self"])
+        self.assertTrue(message["is_bot"])
+
     def test_identical_messages_keep_distinct_local_ids(self):
         base = {
             "server_id": 1,
@@ -3571,7 +3652,13 @@ class BridgeWorkflowTests(unittest.TestCase):
             side_effect=lambda text, request_id, **metadata: sent.append(request_id),
         ), mock.patch.object(bridge, "atomic_save_state"):
             bridge.run_once(state)
-        self.assertEqual(sent, ["reply:11", "reply:12", "reply:13"])
+        self.assertEqual(
+            sent,
+            [
+                "reply:%s" % bridge.message_delivery_key(message)
+                for message in messages
+            ],
+        )
         self.assertEqual(state["last_local_id"], 13)
 
     def test_priority_stop_preempts_blocked_ai_and_old_reply_is_suppressed(self):
@@ -3605,7 +3692,7 @@ class BridgeWorkflowTests(unittest.TestCase):
 
         def send_text(text, request_id, **metadata):
             sent.append((text, request_id, metadata))
-            if request_id == "reply:11":
+            if request_id == "reply:%s" % bridge.message_delivery_key(slow):
                 raise bridge.RemoteAPIError("chat API", status=423)
 
         with mock.patch.object(
@@ -3623,7 +3710,10 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertEqual([call[1] for call in ai_calls], [None, bridge.CONTROL_API_TIMEOUT])
         self.assertEqual(
             [request_id for _, request_id, _ in sent],
-            ["reply:12", "reply:11"],
+            [
+                "reply:%s" % bridge.message_delivery_key(stop),
+                "reply:%s" % bridge.message_delivery_key(slow),
+            ],
         )
         self.assertEqual(state["last_local_id"], 12)
         self.assertIsNone(state["retry"])
@@ -3744,7 +3834,9 @@ class BridgeWorkflowTests(unittest.TestCase):
         ):
             bridge.run_once(state)
 
-        self.assertEqual(sent[0][1], "reply:11")
+        self.assertEqual(
+            sent[0][1], "reply:%s" % bridge.message_delivery_key(message)
+        )
         self.assertEqual(sent[0][2]["source_local_id"], 11)
         self.assertEqual(sent[0][2]["task_id"], "T-ABCDEF12")
         self.assertEqual(sent[0][2]["generation"], 2)
@@ -3797,7 +3889,10 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["msg_svr_id"], "svr-11")
         self.assertEqual(captured["payload"]["sender_id"], "wxid_test")
         self.assertEqual(captured["payload"]["sender_wxid"], "wxid_test")
-        self.assertEqual(captured["payload"]["request_id"], "wechat:group:11")
+        self.assertEqual(
+            captured["payload"]["request_id"],
+            bridge.message_request_id(message),
+        )
         self.assertTrue(captured["payload"]["mentions_bot"])
         self.assertFalse(captured["payload"]["reply_to_bot"])
         self.assertEqual(captured["payload"]["message_type"], "text")
@@ -3998,8 +4093,14 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("stable answer", "reply:11"),
-                ("stable answer", "reply:11"),
+                (
+                    "stable answer",
+                    "reply:%s" % bridge.message_delivery_key(message),
+                ),
+                (
+                    "stable answer",
+                    "reply:%s" % bridge.message_delivery_key(message),
+                ),
             ],
         )
         self.assertEqual(state["last_local_id"], 11)
@@ -4026,7 +4127,15 @@ class BridgeWorkflowTests(unittest.TestCase):
             bridge, "atomic_save_state"
         ):
             bridge.run_once(state)
-        self.assertEqual(sent, [(bridge.EMPTY_REPLY_FALLBACK, "reply:11")])
+        self.assertEqual(
+            sent,
+            [
+                (
+                    bridge.EMPTY_REPLY_FALLBACK,
+                    "reply:%s" % bridge.message_delivery_key(message),
+                )
+            ],
+        )
         self.assertEqual(state["last_local_id"], 11)
 
     def test_adapter_media_fields_never_trigger_bridge_media_delivery(self):
@@ -4056,7 +4165,9 @@ class BridgeWorkflowTests(unittest.TestCase):
             bridge.run_once(state)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], "artifact registered")
-        self.assertEqual(sent[0][1], "reply:11")
+        self.assertEqual(
+            sent[0][1], "reply:%s" % bridge.message_delivery_key(message)
+        )
         self.assertEqual(sent[0][2]["source_local_id"], 11)
         self.assertEqual(state["last_local_id"], 11)
         self.assertIsNone(state["pending"])
@@ -4237,6 +4348,7 @@ class BridgeWorkflowTests(unittest.TestCase):
 
     def test_restart_reuses_persisted_pending_answer(self):
         bridge = self.load_bridge()
+        message = self.message(11)
         state = {
             "last_local_id": 10,
             "retry": {
@@ -4256,7 +4368,7 @@ class BridgeWorkflowTests(unittest.TestCase):
         }
         sent = []
         with mock.patch.object(
-            bridge, "get_messages", return_value=[self.message(11)]
+            bridge, "get_messages", return_value=[message]
         ), mock.patch.object(
             bridge, "ask_ai"
         ) as ask, mock.patch.object(
@@ -4270,7 +4382,15 @@ class BridgeWorkflowTests(unittest.TestCase):
         ):
             bridge.run_once(state)
         ask.assert_not_called()
-        self.assertEqual(sent, [("persisted answer", "reply:11")])
+        self.assertEqual(
+            sent,
+            [
+                (
+                    "persisted answer",
+                    "reply:%s" % bridge.message_delivery_key(message),
+                )
+            ],
+        )
         self.assertEqual(state["last_local_id"], 11)
         self.assertIsNone(state["pending"])
 
@@ -4285,7 +4405,11 @@ class BridgeWorkflowTests(unittest.TestCase):
 
         def send(text, request_id, **metadata):
             calls.append(request_id)
-            if request_id == "reply:11:part:2" and not failed["done"]:
+            if (
+                request_id
+                == "reply:%s:part:2" % bridge.message_delivery_key(message)
+                and not failed["done"]
+            ):
                 failed["done"] = True
                 raise RuntimeError("delivery stopped midway")
 
@@ -4309,10 +4433,10 @@ class BridgeWorkflowTests(unittest.TestCase):
         self.assertEqual(
             calls[:4],
             [
-                "reply:11:part:1",
-                "reply:11:part:2",
-                "reply:11:part:1",
-                "reply:11:part:2",
+                "reply:%s:part:1" % bridge.message_delivery_key(message),
+                "reply:%s:part:2" % bridge.message_delivery_key(message),
+                "reply:%s:part:1" % bridge.message_delivery_key(message),
+                "reply:%s:part:2" % bridge.message_delivery_key(message),
             ],
         )
         self.assertEqual(state["last_local_id"], 11)
@@ -4394,8 +4518,12 @@ class BridgeWorkflowTests(unittest.TestCase):
             bridge.run_once(state)
 
         self.assertEqual(len(sent), 450)
-        self.assertEqual(sent[0], "reply:11")
-        self.assertEqual(sent[-1], "reply:460")
+        self.assertEqual(
+            sent[0], "reply:%s" % bridge.message_delivery_key(messages[0])
+        )
+        self.assertEqual(
+            sent[-1], "reply:%s" % bridge.message_delivery_key(messages[-1])
+        )
         self.assertEqual(state["last_local_id"], 460)
 
     def test_outgoing_reply_never_triggers(self):

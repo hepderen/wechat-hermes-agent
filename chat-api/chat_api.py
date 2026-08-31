@@ -141,9 +141,57 @@ def split_group_content(content):
     if ":\n" not in content:
         return "", content
     sender, body = content.split(":\n", 1)
-    if sender.startswith("wxid_") or sender.endswith("@openim"):
+    sender = unicodedata.normalize("NFKC", str(sender or "")).strip()
+    # WeChat stores a structured ``sender:\nbody`` prefix for group traffic.
+    # Older accounts use wxid/openim values, while newer rows can use numeric
+    # IDs or plain account identifiers. Keep the grammar deliberately narrow
+    # so ordinary prose such as "note:\n..." is not promoted to metadata.
+    if (
+        re.fullmatch(r"[0-9]{1,20}", sender)
+        or sender.startswith("wxid_")
+        or sender.endswith("@openim")
+        or sender.endswith("@chatroom")
+        or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.@-]{2,255}", sender)
+    ):
         return sender, body
     return "", content
+
+
+def normalize_structured_identifier(value):
+    """Normalize IDs emitted to the Bridge without touching display names."""
+    if value is None or isinstance(value, bool):
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value)).replace("\x00", "")
+    normalized = normalized.strip().casefold()
+    if normalized in {"", "0", "unknown", "none", "null", "nil", "n/a"}:
+        return ""
+    if re.fullmatch(r"[+-]?\d+", normalized):
+        try:
+            numeric = int(normalized, 10)
+        except ValueError:
+            return ""
+        return str(numeric) if numeric > 0 else ""
+    return normalized
+
+
+def row_first_identifier(row_value, *names):
+    for name in names:
+        value = normalize_structured_identifier(row_value(name))
+        if value:
+            return value
+    return ""
+
+
+def row_integer(row_value, *names):
+    for name in names:
+        raw = row_value(name)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            return int(str(raw).strip(), 10)
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def normalize_member_names(value):
@@ -937,8 +985,8 @@ class SnapshotReader:
                 return default
 
         content = decode_message_content(
-            row["message_content"],
-            row["WCDB_CT_message_content"],
+            row_value("message_content"),
+            row_value("WCDB_CT_message_content", 0),
             decompressor,
         )
         message_source = decode_message_content(
@@ -947,23 +995,51 @@ class SnapshotReader:
             decompressor,
         )
         native_at_user_list = parse_native_at_user_list(message_source)
-        bot_wxid = str(getattr(self, "bot_wxid", "") or "").strip()
+        bot_wxid = normalize_structured_identifier(
+            getattr(self, "bot_wxid", "")
+        )
         native_mentions_bot = bool(
             bot_wxid
             and any(
-                hmac.compare_digest(value, bot_wxid)
+                hmac.compare_digest(normalize_structured_identifier(value), bot_wxid)
                 for value in native_at_user_list
             )
         )
-        sender_wxid, body = split_group_content(content)
-        source = int(row["origin_source"] or 0)
+        sender_prefix, body = split_group_content(content)
+        sender_wxid = normalize_structured_identifier(sender_prefix)
+        if not sender_wxid:
+            sender_wxid = row_first_identifier(
+                row_value,
+                "sender_id",
+                "sender_wxid",
+                "sender_numeric_id",
+                "real_sender_id",
+                "from_user_id",
+            )
+        source = row_integer(row_value, "origin_source", "origin", "source_type")
         if source == 1:
             direction = "outgoing"
         elif source == 2:
             direction = "incoming"
         else:
             direction = "unknown"
-        local_type = int(row["local_type"] or 0)
+        local_type = row_integer(row_value, "local_type", "message_type_code")
+        local_id = row_integer(row_value, "local_id", "msg_local_id", "message_local_id")
+        server_id = row_first_identifier(
+            row_value,
+            "msg_svr_id",
+            "server_id",
+            "msg_server_id",
+            "msgsvrid",
+            "svr_id",
+        )
+        sender_numeric_id = row_integer(
+            row_value,
+            "sender_numeric_id",
+            "real_sender_id",
+        )
+        if direction == "outgoing" and not sender_wxid:
+            sender_wxid = bot_wxid
         delivery_marker = ""
         reply_to_bot = False
         reply_reference = {
@@ -979,37 +1055,55 @@ class SnapshotReader:
         elif local_type == 49:
             message_type = "quoted_reply"
             body, reply_to_bot, reply_reference, structured_valid = (
-                parse_quoted_reply(body, getattr(self, "bot_wxid", ""))
+                parse_quoted_reply(body, bot_wxid)
             )
         body = strip_internal_format_chars(body)
         visible_mention, prompt = parse_mention(body, self.mention)
         if (native_mentions_bot or reply_to_bot) and not visible_mention:
             prompt = " ".join(body.split())
-        sender_name = (
-            str(getattr(self, "bot_name", "小格") or "小格")
-            if direction == "outgoing"
-            else dict(getattr(self, "member_names", {}) or {}).get(
-                sender_wxid,
-                "",
+        is_self = bool(direction == "outgoing" or source == 1)
+        is_bot = bool(
+            is_self
+            or (
+                bot_wxid
+                and sender_wxid
+                and hmac.compare_digest(sender_wxid, bot_wxid)
             )
         )
+        member_names = dict(getattr(self, "member_names", {}) or {})
+        sender_name = (
+            str(getattr(self, "bot_name", "小格") or "小格")
+            if is_bot
+            else member_names.get(sender_prefix, member_names.get(sender_wxid, ""))
+        )
+        if not sender_name and sender_wxid:
+            for member_id, member_name in member_names.items():
+                if normalize_structured_identifier(member_id) == sender_wxid:
+                    sender_name = str(member_name or "")
+                    break
+        room_id = normalize_structured_identifier(getattr(self, "group_id", ""))
         return {
-            "id": "%s:%s" % (self.group_id, row["local_id"]),
-            "group_id": self.group_id,
-            "local_id": int(row["local_id"]),
-            "server_id": str(row["server_id"] or ""),
-            "msg_svr_id": str(row["server_id"] or ""),
+            "id": "%s:%s" % (room_id, local_id),
+            "group_id": room_id,
+            "room_id": room_id,
+            "local_id": local_id,
+            "source_local_id": local_id,
+            "server_id": server_id,
+            "msg_svr_id": server_id,
             "local_type": local_type,
             "type": message_type,
             "message_type": message_type,
-            "sort_seq": int(row["sort_seq"] or 0),
-            "sender_numeric_id": int(row["real_sender_id"] or 0),
+            "sort_seq": row_integer(row_value, "sort_seq", "sequence"),
+            "sender_numeric_id": sender_numeric_id,
             "sender_wxid": sender_wxid,
+            "sender_id": sender_wxid,
             "sender_name": sender_name,
-            "timestamp": int(row["create_time"] or 0),
-            "status": int(row["status"] or 0),
+            "timestamp": row_integer(row_value, "timestamp", "create_time"),
+            "status": row_integer(row_value, "status"),
             "origin_source": source,
             "direction": direction,
+            "is_bot": is_bot,
+            "is_self": is_self,
             "text": body,
             "delivery_marker": delivery_marker,
             "mentions_bot": native_mentions_bot,

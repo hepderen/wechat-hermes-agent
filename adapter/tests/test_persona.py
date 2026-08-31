@@ -1,248 +1,185 @@
+from __future__ import annotations
+
 import hashlib
 import json
 
-import pytest
-
-from app.ccv3 import (
-    CCV3_COMMIT,
-    CCV3_LICENSE_PATH,
-    CCV3_LICENSE_SHA256,
-    CCV3_SOURCE,
-    CCV3_SPEC_PATH,
-    CCV3_SPEC_SHA256,
-    CharacterCardValidationError,
-    SUNXIAOCHUAN_CARD_LOCK_PATH,
-    SUNXIAOCHUAN_CARD_PATH,
-    SUNXIAOCHUAN_CARD_SHA256,
-    SUNXIAOCHUAN_CARD_SOURCES,
-    SUNXIAOCHUAN_CARD_VERSION,
-    load_character_card,
-    matching_lorebook_entries,
-    replace_supported_macros,
-    source_archive_integrity,
-    sunxiaochuan_card_integrity,
+from app.main import (
+    CHAT_ONLY_SESSION_SYSTEM_PROMPT,
+    ChatRequest,
+    group_chat_user_message,
+    trusted_system_message,
 )
-from app.main import ChatRequest, trusted_system_message
 from app.persona import (
     CARD_INTEGRITY_OK,
     CHARACTER_CARD,
-    PERSONA_CHAT_ADAPTER,
     PERSONA_SKILL_BUNDLES,
+    PERSONA_SKILL_COMMIT,
     PERSONA_SKILL_INTEGRITY_OK,
+    PERSONA_SKILL_PATH,
+    PERSONA_SKILL_PROMPT,
+    PERSONA_SKILL_SHA256,
+    PERSONA_SKILL_SOURCE,
     PERSONA_SYSTEM_PROMPT,
     PERSONA_VERSION,
-    SHORT_REPLY_MAX_CHARS,
+    SUNXIAOCHUAN_SECTION_HEADING,
+    SUNXIAOCHUAN_SECTION_LOCK_PATH,
+    SUNXIAOCHUAN_SECTION_PATH,
+    SUNXIAOCHUAN_SECTION_SHA256,
     WEIRDOTV_SKILL_COMMIT,
     WEIRDOTV_SKILL_INTEGRITY_OK,
     WEIRDOTV_SKILL_LICENSE_PATH,
     WEIRDOTV_SKILL_LICENSE_SHA256,
     WEIRDOTV_SKILL_PATH,
-    WEIRDOTV_SKILL_PROMPT,
     WEIRDOTV_SKILL_SHA256,
     WEIRDOTV_SKILL_SOURCE,
-    character_card_lorebook_prompt,
+    WEIRDOTV_SKILL_PROMPT,
     character_card_group_greetings_prompt,
+    character_card_lorebook_prompt,
     character_card_post_history_prompt,
     character_card_prompt,
     chat_turn_prompt,
     compact_chat_reply,
-    expanded_reply_requested,
+    sunxiaochuan_section_integrity,
     weirdotv_source_archive_integrity,
 )
 
 
-def test_pinned_ccv3_archive_and_sunxiaochuan_card_are_verified():
-    assert CCV3_SOURCE == "https://github.com/kwaroran/character-card-spec-v3"
-    assert CCV3_COMMIT == "f3a86af019fbd99f788f7a1155f399655b34ab35"
-    assert hashlib.sha256(CCV3_SPEC_PATH.read_bytes()).hexdigest() == CCV3_SPEC_SHA256
-    assert hashlib.sha256(CCV3_LICENSE_PATH.read_bytes()).hexdigest() == CCV3_LICENSE_SHA256
-    assert source_archive_integrity()
-    assert CARD_INTEGRITY_OK
-    assert PERSONA_SKILL_INTEGRITY_OK
-    assert CHARACTER_CARD is not None
-    assert CHARACTER_CARD.name == "小格"
-    assert CHARACTER_CARD.nickname == "小格"
-    assert CHARACTER_CARD.character_version == SUNXIAOCHUAN_CARD_VERSION
-    assert len(CHARACTER_CARD.mes_example.split("<START>")) - 1 >= 8
-    assert SUNXIAOCHUAN_CARD_PATH.is_file()
-    assert SUNXIAOCHUAN_CARD_LOCK_PATH.is_file()
-    assert (
-        hashlib.sha256(SUNXIAOCHUAN_CARD_PATH.read_bytes()).hexdigest()
-        == SUNXIAOCHUAN_CARD_SHA256
-    )
-    assert tuple(CHARACTER_CARD.source) == SUNXIAOCHUAN_CARD_SOURCES
-    assert sunxiaochuan_card_integrity(CHARACTER_CARD)
-    assert PERSONA_VERSION == "weirdotv@1.0.0+sunxiaochuan@1.0.0"
-
-
-def test_weirdotv_is_attributed_but_not_loaded_as_an_executable_runtime_skill():
-    assert WEIRDOTV_SKILL_INTEGRITY_OK
-    assert weirdotv_source_archive_integrity()
-    assert (
-        hashlib.sha256(WEIRDOTV_SKILL_PATH.read_bytes()).hexdigest()
-        == WEIRDOTV_SKILL_SHA256
-    )
-    assert (
-        hashlib.sha256(WEIRDOTV_SKILL_LICENSE_PATH.read_bytes()).hexdigest()
-        == WEIRDOTV_SKILL_LICENSE_SHA256
-    )
+def test_only_pinned_sunxiaochuan_section_is_a_runtime_persona():
     assert WEIRDOTV_SKILL_SOURCE == "https://github.com/BeamusWayne/WeirdoTV-Skill"
     assert WEIRDOTV_SKILL_COMMIT == "1635aceebf4e84b32db37ccd00244ca0dcc04574"
-    assert WEIRDOTV_SKILL_PROMPT == ""
-    assert "humanizer-zh-next" not in PERSONA_SYSTEM_PROMPT
-    assert "sophia" not in PERSONA_SYSTEM_PROMPT.casefold()
-    assert "猫系" not in PERSONA_SYSTEM_PROMPT
-    assert "text_to_speech" not in PERSONA_SYSTEM_PROMPT.casefold()
-    assert "send_message" not in PERSONA_SYSTEM_PROMPT.casefold()
-    assert {bundle["name"] for bundle in PERSONA_SKILL_BUNDLES} == {
-        "character-card-v3",
-        "sunxiaochuan-card",
-        "weirdo-tv-sunxiaochuan",
+    assert WEIRDOTV_SKILL_PATH.is_file()
+    assert WEIRDOTV_SKILL_LICENSE_PATH.is_file()
+    assert hashlib.sha256(WEIRDOTV_SKILL_PATH.read_bytes()).hexdigest() == WEIRDOTV_SKILL_SHA256
+    assert hashlib.sha256(WEIRDOTV_SKILL_LICENSE_PATH.read_bytes()).hexdigest() == WEIRDOTV_SKILL_LICENSE_SHA256
+    assert weirdotv_source_archive_integrity()
+
+    assert SUNXIAOCHUAN_SECTION_PATH.is_file()
+    assert SUNXIAOCHUAN_SECTION_LOCK_PATH.is_file()
+    assert hashlib.sha256(SUNXIAOCHUAN_SECTION_PATH.read_bytes()).hexdigest() == SUNXIAOCHUAN_SECTION_SHA256
+    assert sunxiaochuan_section_integrity()
+    assert PERSONA_SKILL_PATH == SUNXIAOCHUAN_SECTION_PATH
+    assert PERSONA_SKILL_SHA256 == SUNXIAOCHUAN_SECTION_SHA256
+    assert PERSONA_SKILL_INTEGRITY_OK
+    assert WEIRDOTV_SKILL_INTEGRITY_OK
+    assert CARD_INTEGRITY_OK
+
+    assert CHARACTER_CARD is None
+    assert PERSONA_VERSION == "weirdotv@1.0.0+sunxiaochuan@2.0.0"
+    assert PERSONA_SKILL_SOURCE == WEIRDOTV_SKILL_SOURCE
+    assert PERSONA_SKILL_COMMIT == WEIRDOTV_SKILL_COMMIT
+    assert PERSONA_SYSTEM_PROMPT == PERSONA_SKILL_PROMPT
+    assert WEIRDOTV_SKILL_PROMPT == PERSONA_SYSTEM_PROMPT
+    assert PERSONA_SYSTEM_PROMPT.startswith(SUNXIAOCHUAN_SECTION_HEADING)
+    assert PERSONA_SYSTEM_PROMPT.count("### ") == 1
+    assert all(
+        marker not in PERSONA_SYSTEM_PROMPT.casefold()
+        for marker in ("sophia", "humanizer", "character card", "ccv3")
+    )
+
+    lock = json.loads(SUNXIAOCHUAN_SECTION_LOCK_PATH.read_text(encoding="utf-8"))
+    assert lock["section"] == SUNXIAOCHUAN_SECTION_HEADING
+    assert lock["files"]["sunxiaochuan.section.md"] == SUNXIAOCHUAN_SECTION_SHA256
+    assert {item["name"] for item in PERSONA_SKILL_BUNDLES} == {
+        "weirdo-tv-sunxiaochuan"
     }
-
-
-def test_ccv3_loader_rejects_wrong_format_and_ignores_unsupported_features(tmp_path):
-    payload = json.loads(SUNXIAOCHUAN_CARD_PATH.read_text(encoding="utf-8"))
-    payload["spec"] = "wrong"
-    path = tmp_path / "bad.card.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    with pytest.raises(CharacterCardValidationError, match="spec"):
-        load_character_card(path)
-
-    payload = json.loads(SUNXIAOCHUAN_CARD_PATH.read_text(encoding="utf-8"))
-    payload["data"]["assets"] = [
-        {"type": "code", "uri": "https://example.invalid/run.py", "name": "x", "ext": "py"}
+    assert PERSONA_SKILL_BUNDLES[0]["loaded_sections"] == [
+        "Sun Xiaochuan section only"
     ]
-    payload["data"]["unknown_future_field"] = {"run": "ignored"}
-    payload["data"]["character_book"]["entries"].append(
-        {
-            "keys": [".*"],
-            "content": "this regex must not load",
-            "enabled": True,
-            "use_regex": True,
-        }
+
+
+def test_archived_upstream_skill_is_provenance_only_and_section_is_loaded():
+    assert PERSONA_SYSTEM_PROMPT
+    assert PERSONA_SYSTEM_PROMPT == SUNXIAOCHUAN_SECTION_PATH.read_text(
+        encoding="utf-8"
+    ).strip()
+    assert "### 🏀 科比" not in PERSONA_SYSTEM_PROMPT
+    assert "### 😂 孙笑川 Sun Xiaochuan" in PERSONA_SYSTEM_PROMPT
+    assert all(
+        marker not in PERSONA_SYSTEM_PROMPT.casefold()
+        for marker in ("text_to_speech", "send_message", "wife mode", "telegram")
     )
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    card = load_character_card(path)
-    assert all("regex must not load" not in entry.content for entry in card.lore_entries)
-    assert card.name == "小格"
-
-    payload["data"].pop("character_version")
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    with pytest.raises(CharacterCardValidationError, match="character_version"):
-        load_character_card(path)
 
 
-def test_ccv3_macro_replacement_and_literal_lorebook_matching_are_scoped():
-    assert replace_supported_macros(
-        "{{char}} 在等 {{user}}",
-        char_name="小格",
-        user_name="阿明",
-    ) == "小格 在等 阿明"
-    assert CHARACTER_CARD is not None
-    matches = matching_lorebook_entries(
-        CHARACTER_CARD,
-        [{"text": "这群今天又在吵方案"}],
-        user_name="阿明",
-    )
-    assert matches == []
-    prompt = character_card_lorebook_prompt(
-        [{"text": "今天又加班到很晚"}],
-        user_name="阿明",
-    )
-    assert prompt == ""
-    assert replace_supported_macros(
-        "{{char}} 对 {{unknown}} 说话",
-        char_name="小格",
-        user_name="阿明",
-    ) == "小格 对 {{unknown}} 说话"
+def test_legacy_card_entrypoints_are_empty_or_point_to_the_single_section():
+    assert character_card_prompt("阿明") == ""
+    assert character_card_lorebook_prompt([], user_name="阿明") == ""
+    assert character_card_post_history_prompt("阿明") == ""
+    assert character_card_group_greetings_prompt() == ""
+    assert chat_turn_prompt("随便聊两句") == ""
 
 
-def test_prompt_assembly_keeps_card_state_profile_timeline_order():
+def test_chat_only_session_is_short_and_contains_only_name_protocol_and_section():
+    assert CHAT_ONLY_SESSION_SYSTEM_PROMPT.startswith("你是微信群里的小格。")
+    assert PERSONA_SYSTEM_PROMPT in CHAT_ONLY_SESSION_SYSTEM_PROMPT
+    assert len(CHAT_ONLY_SESSION_SYSTEM_PROMPT) < 600
+    for marker in ("room_id", "sender_id", "Adapter", "Bridge", "关系档案", "服务端"):
+        assert marker not in CHAT_ONLY_SESSION_SYSTEM_PROMPT
+
+
+def test_chat_prompt_uses_plain_trusted_transcript_without_internal_json():
     payload = ChatRequest(
-        message="我又提到前任了",
+        message="这事也太离谱了吧",
         sender_name="阿明",
         timestamp=123,
         direction="incoming",
-        source_local_id=8,
+        source_local_id=42,
+        reply_to_bot=True,
     )
-    prompt = trusted_system_message(
-        "room",
-        "wxid_a",
+    prompt = group_chat_user_message(
         payload,
-        [],
-        relationship_memory_enabled=True,
-        relationship_profile={
-            "preferred_name": "阿明",
-            "interaction_count": 9,
-            "familiarity": 2,
-            "reciprocity": 1,
-            "intimacy_stage": "familiar",
-            "current_beat": "chatting",
-            "banter_style": "playful",
-            "flirt_opt_out": False,
-            "proactive_opt_out": False,
-            "notes": [],
-        },
-        room_companion_state={
-            "mood": "warm",
-            "shared_jokes": ["夜猫子"],
-            "open_loops": ["周末开黑"],
-            "summary": "大家在聊周末安排",
-        },
-        companion_timeline=[
+        [
             {
-                "local_id": 7,
+                "local_id": 41,
                 "sender_id": "wxid_b",
                 "sender_name": "小王",
                 "direction": "incoming",
                 "message_timestamp": 122,
-                "text": "周末开黑吗",
-            }
+                "text": "这方案能落地吗",
+            },
+            {
+                "local_id": 40,
+                "sender_id": "",
+                "sender_name": "小格",
+                "direction": "outgoing",
+                "message_timestamp": 121,
+                "text": "上一句回复",
+            },
         ],
     )
-    card_index = prompt.index("Character Card V3")
-    state_index = prompt.index("群共享状态")
-    profile_index = prompt.index("可信关系档案")
-    timeline_index = prompt.index("短期群聊时间线")
-    assert card_index < state_index < profile_index < timeline_index
-    assert "匹配角色设定" not in prompt
-    assert '"sender_name":"阿明"' in prompt
-    assert "Sun Xiaochuan safe-text section" not in prompt
-    assert "角色卡由服务端以只读数据资源加载" in prompt
+    assert "小王：这方案能落地吗" in prompt
+    assert "小格：上一句回复" in prompt
+    assert "当前发言 阿明：这事也太离谱了吧" in prompt
+    assert "正在回复小格" in prompt
+    assert "wxid_b" not in prompt
+    assert '"sender_id"' not in prompt
+    assert "群共享状态" not in prompt
+
+    system = trusted_system_message(
+        "room-id",
+        "wxid_a",
+        payload,
+        [{"key": "old", "value": "old"}],
+        relationship_memory_enabled=True,
+        relationship_profile={"preferred_name": "伪造昵称"},
+        room_companion_state={"summary": "old"},
+        companion_timeline=[],
+    )
+    assert system == ""
+    assert "room-id" not in system
+    assert "伪造昵称" not in system
 
 
-def test_card_post_history_and_compactor_allow_natural_short_paragraphs():
-    post_history = character_card_post_history_prompt("阿明")
-    assert "[[NO_REPLY]]" in post_history
-    assert not expanded_reply_requested("你怎么看")
-    assert expanded_reply_requested("详细分析一下，再列三点")
-    assert "一到三个短段落、最多 %d 字" % SHORT_REPLY_MAX_CHARS in chat_turn_prompt("你怎么看")
-    assert "不要用“嗯，来了”" in chat_turn_prompt("你怎么看")
-
-    reply = "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。\n\n第四段不该保留。"
-    assert compact_chat_reply(reply, "你怎么看") == "第一段先接话。\n\n第二段补点判断。\n\n第三段收住。"
-    assert len(compact_chat_reply("x" * 900, "随便聊")) <= SHORT_REPLY_MAX_CHARS + 1
+def test_compactor_removes_embedded_arrival_pings_but_keeps_normal_wording():
+    assert compact_chat_reply(
+        "第一句先说重点。嗯，来了。第二句继续。",
+        "随便聊",
+    ) == "第一句先说重点。第二句继续。"
+    assert compact_chat_reply(
+        "嗯，来了。这个方案先把入口捋顺。",
+        "随便聊",
+    ) == "这个方案先把入口捋顺。"
+    assert compact_chat_reply("我在想这个问题。", "随便聊") == "我在想这个问题。"
     assert compact_chat_reply(
         "这句我接住了。这句我接住了。\n\n别再熬了。\n\n别再熬了。",
         "随便聊",
     ) == "这句我接住了。\n\n别再熬了。"
-    assert compact_chat_reply(
-        "Same thought. Same thought. New point.",
-        "Keep it short",
-    ) == "Same thought. New point."
-    assert compact_chat_reply(
-        "嗯，来了。这个方案先把入口捋顺。",
-        "你怎么看",
-    ) == "这个方案先把入口捋顺。"
-    assert compact_chat_reply("我在想这个问题。", "你怎么看") == "我在想这个问题。"
-
-
-def test_card_has_no_proactive_group_greetings():
-    assert character_card_group_greetings_prompt() == ""
-
-
-def test_card_does_not_create_an_implicit_generic_persona_fallback():
-    assert "不存在隐式泛化人格回退" in PERSONA_CHAT_ADAPTER
-    assert character_card_prompt("阿明").startswith("以下是固定的 Character Card V3")
-    assert "WeirdoTV Skill" in character_card_prompt("阿明")

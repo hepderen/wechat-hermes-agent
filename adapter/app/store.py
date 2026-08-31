@@ -76,6 +76,10 @@ OUTBOX_STATES = {
     "failed",
 }
 OUTBOX_TERMINAL_STATES = {"confirmed", "uncertain", "suppressed", "failed"}
+# Runtime mode is persisted separately from task history.  This lets a
+# restart make the chat-only cutover idempotent without rewriting old task
+# rows or relying on an environment flag that can be changed accidentally.
+PURE_CHAT_RUNTIME_MODE = "sunxiaochuan-chat-only-v14"
 RUNNING_HERMES_STATUSES = {
     "started",
     "queued",
@@ -192,6 +196,12 @@ class AdapterStore:
                     ON tasks(final_sent, status, completed_at);
                     CREATE INDEX IF NOT EXISTS idx_tasks_room
                     ON tasks(room_id, created_at);
+
+                    CREATE TABLE IF NOT EXISTS runtime_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
 
                     CREATE TABLE IF NOT EXISTS task_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -712,6 +722,166 @@ class AdapterStore:
                 )
                 connection.commit()
             self._initialized = True
+
+    def _runtime_state_value(
+        self,
+        connection: sqlite3.Connection,
+        key: str,
+    ) -> str:
+        row = connection.execute(
+            "SELECT value FROM runtime_state WHERE key=?",
+            (str(key),),
+        ).fetchone()
+        return str(row["value"] or "") if row is not None else ""
+
+    def runtime_mode(self) -> str:
+        """Return the persisted release mode, if the database has one."""
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            return self._runtime_state_value(connection, "release_mode")
+
+    def pure_chat_release_active(self) -> bool:
+        return self.runtime_mode() == PURE_CHAT_RUNTIME_MODE
+
+    def quarantine_legacy_runtime(
+        self,
+        *,
+        release: str = PURE_CHAT_RUNTIME_MODE,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically stop legacy execution and isolate pending delivery.
+
+        The operation is deliberately repeatable.  It preserves every task,
+        artifact, event and message row for diagnostics while making the old
+        worker state inert for the single-persona chat release.
+        """
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        mode = str(release or PURE_CHAT_RUNTIME_MODE).strip() or PURE_CHAT_RUNTIME_MODE
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous_mode = self._runtime_state_value(connection, "release_mode")
+            active_rows = connection.execute(
+                """
+                SELECT id, hermes_run_id, generation, status
+                FROM tasks
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+            active_ids = [str(row["id"]) for row in active_rows]
+            run_ids = [
+                str(row["hermes_run_id"])
+                for row in active_rows
+                if str(row["hermes_run_id"] or "").strip()
+            ]
+            if active_ids:
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status='canceled',
+                        cancel_requested=1,
+                        delivery_suppressed=1,
+                        error=COALESCE(error, 'legacy runtime quarantined by chat-only release'),
+                        completed_at=COALESCE(completed_at, ?),
+                        updated_at=?
+                    WHERE status IN ('queued', 'running')
+                    """,
+                    (current, current),
+                )
+                for row in active_rows:
+                    connection.execute(
+                        """
+                        INSERT INTO task_events(task_id, event_type, detail, created_at)
+                        VALUES (?, 'chat_only_quarantined', ?, ?)
+                        """,
+                        (
+                            row["id"],
+                            "previous_status=%s; release=%s"
+                            % (row["status"], mode),
+                            current,
+                        ),
+                    )
+
+            # Terminal tasks can predate the outbox migration and therefore
+            # have no row to suppress yet. Mark their compatibility delivery
+            # state directly so next_delivery() can never materialize a fresh
+            # result after the chat-only cutover.
+            terminal = connection.execute(
+                """
+                UPDATE tasks
+                SET delivery_suppressed=1,
+                    delivery_error=COALESCE(
+                        delivery_error,
+                        'legacy terminal delivery quarantined by chat-only release'
+                    ),
+                    updated_at=?
+                WHERE status IN ('succeeded', 'failed', 'canceled')
+                  AND final_sent=0
+                  AND delivery_suppressed=0
+                """,
+                (current,),
+            )
+
+            prepared = connection.execute(
+                """
+                UPDATE outbox_items
+                SET state='suppressed',
+                    error='legacy prepared delivery quarantined by chat-only release',
+                    updated_at=?
+                WHERE state='prepared'
+                """,
+                (current,),
+            )
+            sending = connection.execute(
+                """
+                UPDATE outbox_items
+                SET state='uncertain',
+                    error='legacy delivery was in-flight at chat-only cutover',
+                    updated_at=?
+                WHERE state='sending'
+                """,
+                (current,),
+            )
+
+            # Keep compatibility columns in sync without changing the
+            # historical payloads themselves.
+            affected_generations = connection.execute(
+                """
+                SELECT DISTINCT task_id, generation
+                FROM outbox_items
+                WHERE updated_at=?
+                """,
+                (current,),
+            ).fetchall()
+            for row in affected_generations:
+                self._sync_delivery_compat(
+                    connection,
+                    row["task_id"],
+                    int(row["generation"]),
+                )
+
+            connection.execute(
+                """
+                INSERT INTO runtime_state(key, value, updated_at)
+                VALUES ('release_mode', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (mode, current),
+            )
+            connection.commit()
+        return {
+            "release": mode,
+            "previous_release": previous_mode,
+            "active_tasks": len(active_ids),
+            "task_ids": active_ids,
+            "hermes_run_ids": run_ids,
+            "terminal_tasks": int(terminal.rowcount),
+            "prepared_outbox": int(prepared.rowcount),
+            "sending_outbox": int(sending.rowcount),
+        }
 
     @staticmethod
     def _task(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1662,6 +1832,86 @@ class AdapterStore:
             self._sync_delivery_compat(connection, task_id, int(generation))
             connection.commit()
         return int(cursor.rowcount)
+
+    def quarantine_task_generation(
+        self,
+        task_id: str,
+        generation: int,
+        reason: str,
+    ) -> dict[str, int | str]:
+        """Close a legacy task without creating a new delivery attempt.
+
+        Prepared items are suppressed. Items already marked sending become
+        uncertain because their remote submission may have reached WeChat;
+        they are never replayed automatically after this boundary.
+        """
+        self.initialize()
+        now = time.time()
+        safe_reason = redact_sensitive_text(reason, limit=300)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM tasks WHERE id=? AND generation=?",
+                (str(task_id).upper(), int(generation)),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return {"task_id": str(task_id), "prepared": 0, "sending": 0}
+            task_status = str(row["status"] or "")
+            task_update = connection.execute(
+                """
+                UPDATE tasks
+                SET status=CASE WHEN status IN ('queued','running')
+                                THEN 'canceled' ELSE status END,
+                    cancel_requested=CASE WHEN status IN ('queued','running')
+                                           THEN 1 ELSE cancel_requested END,
+                    delivery_suppressed=1,
+                    completed_at=CASE WHEN status IN ('queued','running')
+                                      THEN COALESCE(completed_at, ?) ELSE completed_at END,
+                    updated_at=?
+                WHERE id=? AND generation=?
+                """,
+                (now, now, str(task_id).upper(), int(generation)),
+            )
+            prepared = connection.execute(
+                """
+                UPDATE outbox_items
+                SET state='suppressed', error=?, updated_at=?
+                WHERE task_id=? AND generation=? AND state='prepared'
+                """,
+                (safe_reason, now, str(task_id).upper(), int(generation)),
+            )
+            sending = connection.execute(
+                """
+                UPDATE outbox_items
+                SET state='uncertain', error=?, updated_at=?
+                WHERE task_id=? AND generation=? AND state='sending'
+                """,
+                (safe_reason, now, str(task_id).upper(), int(generation)),
+            )
+            self._sync_delivery_compat(
+                connection,
+                str(task_id).upper(),
+                int(generation),
+            )
+            connection.execute(
+                """
+                INSERT INTO task_events(task_id, event_type, detail, created_at)
+                VALUES (?, 'chat_only_quarantined', ?, ?)
+                """,
+                (
+                    str(task_id).upper(),
+                    "previous_status=%s; %s" % (task_status, safe_reason),
+                    now,
+                ),
+            )
+            connection.commit()
+        return {
+            "task_id": str(task_id).upper(),
+            "prepared": int(prepared.rowcount),
+            "sending": int(sending.rowcount),
+            "task_updated": int(task_update.rowcount),
+        }
 
     def revise_task(
         self,
@@ -4499,6 +4749,62 @@ class AdapterStore:
                 UPDATE companion_summary_jobs
                 SET status='queued', error_type='recovered_after_restart', updated_at=?
                 WHERE status='running'
+                """,
+                (current,),
+            )
+            connection.commit()
+        return int(cursor.rowcount)
+
+    def retire_companion_summary_jobs(self, *, now: float | None = None) -> int:
+        """Close legacy summary jobs when room summaries are disabled."""
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE companion_summary_jobs
+                SET status='dropped', error_type='feature_disabled', updated_at=?
+                WHERE status IN ('queued', 'running')
+                """,
+                (current,),
+            )
+            connection.commit()
+        return int(cursor.rowcount)
+
+    def retire_relationship_summary_jobs(self, *, now: float | None = None) -> int:
+        """Retire queued relationship summaries at the persona cutover."""
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_summary_jobs
+                SET status='dropped', error_type='feature_disabled', updated_at=?
+                WHERE status IN ('queued', 'running')
+                """,
+                (current,),
+            )
+            connection.commit()
+        return int(cursor.rowcount)
+
+    def retire_relationship_proactive_state(self, *, now: float | None = None) -> int:
+        """Clear active nudge claims while retaining historical profiles."""
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE relationship_proactive_state
+                SET terminal_generation=MAX(terminal_generation, generation),
+                    last_terminal_state='feature_disabled',
+                    pending_jealousy=0,
+                    active_request_id='',
+                    active_task_id='',
+                    active_claimed_at=NULL,
+                    updated_at=?
+                WHERE active_request_id <> ''
+                   OR active_task_id <> ''
+                   OR pending_jealousy <> 0
                 """,
                 (current,),
             )

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -103,6 +104,45 @@ BOT_WXID = str(
     or os.environ.get("WECHAT_BOT_WXID")
     or ""
 ).strip()
+
+# Chat API deployments have used a few field names while the underlying
+# WeChat schema evolved.  Normalize them once at the Bridge boundary so
+# routing, native @ matching, idempotency, and logging all see the same IDs.
+SENDER_ID_FIELDS = (
+    "sender_id",
+    "sender_wxid",
+    "sender_numeric_id",
+    "real_sender_id",
+    "from_user_id",
+    "from_user",
+    "sender",
+)
+ROOM_ID_FIELDS = (
+    "room_id",
+    "group_id",
+    "chatroom_id",
+    "chat_room_id",
+    "conversation_id",
+    "talker_id",
+)
+SERVER_ID_FIELDS = (
+    "msg_svr_id",
+    "server_id",
+    "msg_server_id",
+    "msgsvrid",
+    "svr_id",
+)
+LOCAL_ID_FIELDS = (
+    "source_local_id",
+    "local_id",
+    "msg_local_id",
+    "message_local_id",
+)
+_EMPTY_IDENTIFIER_VALUES = frozenset(
+    {"", "0", "unknown", "none", "null", "nil", "n/a"}
+)
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "self", "bot"})
+_FALSE_VALUES = frozenset({"", "0", "false", "no", "off", "none", "null"})
 
 LOG = logging.getLogger("wechat-db-bridge")
 EMPTY_REPLY_FALLBACK = (
@@ -395,6 +435,106 @@ def get_messages(after):
     return api_request("GET", path, timeout=15).get("messages", [])
 
 
+def normalize_identifier(value):
+    """Return one canonical, comparison-safe form for trusted IDs."""
+    if value is None or isinstance(value, bool):
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value)).replace("\x00", "")
+    normalized = normalized.strip().casefold()
+    if normalized in _EMPTY_IDENTIFIER_VALUES:
+        return ""
+    if re.fullmatch(r"[+-]?\d+", normalized):
+        try:
+            numeric = int(normalized, 10)
+        except ValueError:
+            return ""
+        return str(numeric) if numeric > 0 else ""
+    return normalized
+
+
+def message_identifier(message, fields):
+    for field in fields:
+        value = normalize_identifier(message.get(field))
+        if value:
+            return value
+    return ""
+
+
+def message_integer(message, fields, default=0):
+    for field in fields:
+        raw = message.get(field)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            return int(str(raw).strip(), 10)
+        except (TypeError, ValueError):
+            continue
+    return int(default)
+
+
+def message_direction(message):
+    raw = message.get("direction")
+    if raw is None:
+        raw = message.get("message_direction")
+    value = unicodedata.normalize("NFKC", str(raw or "")).strip().casefold()
+    if value in {"incoming", "inbound", "received"}:
+        return "incoming"
+    if value in {"outgoing", "outbound", "sent", "self"}:
+        return "outgoing"
+    return "unknown"
+
+
+def message_origin_source(message):
+    return message_integer(message, ("origin_source", "origin", "source_type"))
+
+
+def message_flag(message, *fields):
+    for field in fields:
+        raw = message.get(field)
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        value = unicodedata.normalize("NFKC", str(raw)).strip().casefold()
+        if value in _TRUE_VALUES:
+            return True
+        if value in _FALSE_VALUES:
+            return False
+    return False
+
+
+def message_local_id(message):
+    value = message_integer(message, LOCAL_ID_FIELDS)
+    return value if value > 0 else 0
+
+
+def message_is_real_inbound(message):
+    """Accept only a structured non-self inbound WeChat message.
+
+    The Bridge treats all fields as Chat API metadata, never as user text. A
+    partial old serializer is accepted when it provides either a positive
+    incoming direction or the canonical inbound origin value, while every
+    explicit outbound/self signal wins and rejects the record.
+    """
+    direction = message_direction(message)
+    origin_source = message_origin_source(message)
+    sender_id = message_sender_id(message)
+    bot_id = normalize_identifier(BOT_WXID)
+    if direction == "outgoing" or origin_source == 1:
+        return False
+    if message_flag(message, "is_bot", "is_self", "from_self", "self_sent"):
+        return False
+    if bot_id and sender_id and hmac.compare_digest(sender_id, bot_id):
+        return False
+    if direction not in {"incoming", "unknown"}:
+        return False
+    if origin_source not in {0, 2}:
+        return False
+    return bool(direction == "incoming" or origin_source == 2)
+
+
 def get_recent_context(local_id):
     path = "%s?before=%d&limit=%d" % (
         group_messages_path(),
@@ -407,10 +547,9 @@ def get_recent_context(local_id):
         text = strip_internal_format_chars(item.get("text") or "").strip()
         if int(item.get("local_type", 0)) not in {1, 49} or not text:
             continue
-        if (
-            str(item.get("direction") or "").strip().lower() == "outgoing"
-            and is_low_information_reply(text)
-        ):
+        # Context is an incoming human transcript. This blocks records that
+        # merely claim to be group traffic while carrying the bot's identity.
+        if not message_is_real_inbound(item):
             continue
         candidates.append((item, text))
     context = []
@@ -420,12 +559,10 @@ def get_recent_context(local_id):
             break
         bounded = text[: min(CONTEXT_MESSAGE_CHARS, remaining)]
         context.append({
-            "local_id": int(item.get("local_id", 0)),
-            "sender_id": str(
-                item.get("sender_wxid") or item.get("sender_numeric_id") or ""
-            ),
+            "local_id": message_local_id(item),
+            "sender_id": message_sender_id(item),
             "sender_name": str(item.get("sender_name") or ""),
-            "direction": str(item.get("direction") or ""),
+            "direction": "incoming",
             "timestamp": int(item.get("timestamp") or item.get("create_time") or 0),
             "text": bounded,
             "message_type": str(
@@ -439,18 +576,11 @@ def get_recent_context(local_id):
 
 
 def message_sender_id(message):
-    value = str(
-        message.get("sender_wxid")
-        or message.get("sender_numeric_id")
-        or ""
-    ).strip()
-    if value in {"", "0", "unknown"}:
-        return ""
-    return value
+    return message_identifier(message, SENDER_ID_FIELDS)
 
 
 def message_room_id(message):
-    return str(message.get("group_id") or "").strip()
+    return message_identifier(message, ROOM_ID_FIELDS)
 
 
 def normalize_control_command(value):
@@ -538,7 +668,7 @@ def native_at_user_ids(message):
         "mention_evidence",
     ):
         values.extend(_native_at_values(message.get(field)))
-    return set(values)
+    return {normalize_identifier(value) for value in values if normalize_identifier(value)}
 
 
 def trusted_mentions_bot(message):
@@ -554,6 +684,8 @@ def trusted_mentions_bot(message):
         or evidence_source
         or ""
     ).strip().lower()
+    bot_id = normalize_identifier(BOT_WXID)
+    native_ids = native_at_user_ids(message)
     if (
         bool(message.get("native_mentions_bot"))
         and evidence_source
@@ -562,9 +694,11 @@ def trusted_mentions_bot(message):
             "native_at_user_list",
             "msg_source_at_user_list",
         }
+        and bot_id
+        and bot_id in native_ids
     ):
         return True
-    return bool(BOT_WXID and BOT_WXID in native_at_user_ids(message))
+    return bool(bot_id and bot_id in native_ids)
 
 
 def trusted_reply_to_bot(message):
@@ -575,13 +709,19 @@ def trusted_reply_to_bot(message):
     ):
         return False
     reference = dict(message.get("reply_reference") or {})
-    sender = str(reference.get("sender_wxid") or "").strip()
+    sender = normalize_identifier(
+        reference.get("sender_id")
+        or reference.get("sender_wxid")
+        or reference.get("sender_numeric_id")
+    )
     if not sender:
         return False
-    return not BOT_WXID or sender == BOT_WXID
+    bot_id = normalize_identifier(BOT_WXID)
+    return not bot_id or hmac.compare_digest(sender, bot_id)
 
 
-def message_identity(message):
+def legacy_message_identity(message):
+    """Retain the v2 content fingerprint as a migration alias only."""
     room_id = message_room_id(message)
     sender_id = message_sender_id(message)
     sort_seq = int(message.get("sort_seq") or 0)
@@ -594,7 +734,7 @@ def message_identity(message):
         "sender_id": sender_id,
         "sort_seq": sort_seq,
         "timestamp": timestamp,
-        "origin_source": int(message.get("origin_source") or 0),
+        "origin_source": message_origin_source(message),
         "local_type": int(message.get("local_type") or 0),
         "message_type": message_type(message),
         "text": unicodedata.normalize(
@@ -613,19 +753,61 @@ def message_identity(message):
     return hashlib.sha256(encoded).hexdigest(), True
 
 
+def message_identity(message):
+    """Return a stable per-message physical identity for new state entries."""
+    room_id = message_room_id(message)
+    server_id = message_server_id(message)
+    local_id = message_local_id(message)
+    if room_id and server_id:
+        identity = {
+            "v": 3,
+            "room_id": room_id,
+            "msg_svr_id": server_id,
+        }
+    elif room_id and local_id:
+        identity = {
+            "v": 3,
+            "room_id": room_id,
+            "local_id": local_id,
+        }
+    else:
+        return legacy_message_identity(message)
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), True
+
+
+def message_identity_aliases(message):
+    """Return the physical primary key and compatible v2 content alias."""
+    primary, stable = message_identity(message)
+    if not stable:
+        return [], False
+    aliases = [primary]
+    legacy, legacy_stable = legacy_message_identity(message)
+    if legacy_stable and legacy not in aliases:
+        aliases.append(legacy)
+    return aliases, True
+
+
 def message_was_processed(state, message):
-    identity, stable = message_identity(message)
-    return bool(stable and identity in set(state.get("processed_identities") or []))
+    identities, stable = message_identity_aliases(message)
+    processed = set(state.get("processed_identities") or [])
+    return bool(stable and any(identity in processed for identity in identities))
 
 
 def remember_message_identity(state, message):
-    identity, stable = message_identity(message)
+    identities_to_add, stable = message_identity_aliases(message)
     if not stable:
         return False
     identities = list(state.get("processed_identities") or [])
-    if identity in identities:
-        identities.remove(identity)
-    identities.append(identity)
+    for identity in identities_to_add:
+        if identity in identities:
+            identities.remove(identity)
+        identities.append(identity)
     state["processed_identities"] = identities[-PROCESSED_IDENTITY_LIMIT:]
     return True
 
@@ -653,11 +835,7 @@ def message_request_id(message):
 
 
 def message_server_id(message):
-    return str(
-        message.get("msg_svr_id")
-        or message.get("server_id")
-        or ""
-    ).strip()
+    return message_identifier(message, SERVER_ID_FIELDS)
 
 
 def strip_internal_format_chars(value):
@@ -697,11 +875,13 @@ def message_type(message):
 
 
 def ask_ai(message, prompt, *, timeout=None):
-    local_id = int(message["local_id"])
+    local_id = message_local_id(message)
     room_id = message_room_id(message)
     sender_id = message_sender_id(message)
-    if not room_id or room_id != GROUP_ID:
+    if not room_id or room_id != normalize_identifier(GROUP_ID):
         raise ValueError("message room identity is missing or invalid")
+    if local_id <= 0:
+        raise ValueError("message local identity is missing or invalid")
     if not sender_id:
         raise ValueError("message sender identity is missing")
     context = get_recent_context(local_id)
@@ -721,7 +901,7 @@ def ask_ai(message, prompt, *, timeout=None):
             "sender_wxid": sender_id,
             "sender_name": str(message.get("sender_name") or ""),
             "timestamp": int(message.get("timestamp") or message.get("create_time") or 0),
-            "direction": str(message.get("direction") or ""),
+            "direction": message_direction(message),
             "mentions_bot": trusted_mentions_bot(message),
             "reply_to_bot": trusted_reply_to_bot(message),
             "message_type": message_type(message),
@@ -872,10 +1052,9 @@ def should_handle(message):
         str(message.get("prompt") or message.get("text") or "").strip()
     )
     return bool(
-        message.get("direction") == "incoming"
-        and int(message.get("origin_source", 0)) == 2
+        message_is_real_inbound(message)
         and int(message.get("local_type", 0)) in {1, 49}
-        and message_room_id(message) == GROUP_ID
+        and message_room_id(message) == normalize_identifier(GROUP_ID)
         and bool(message_sender_id(message))
         and message.get("structured_valid", True)
         and (trigger or GROUP_LISTENER_ENABLED)
@@ -885,8 +1064,7 @@ def should_handle(message):
 
 def message_may_have_pending_structured_metadata(message):
     if (
-        message.get("direction") != "incoming"
-        or int(message.get("origin_source", 0)) != 2
+        not message_is_real_inbound(message)
         or int(message.get("local_type", 0)) not in {1, 49}
         or not bool(message_sender_id(message))
         or is_control_message(message)
@@ -1343,7 +1521,7 @@ def handle_message(state, message):
         LOG.info("old message invalidated by stop local_id=%d", local_id)
         return True
     if not should_handle(message):
-        if message.get("direction") == "incoming":
+        if message_direction(message) == "incoming":
             LOG.info(
                 "structured inbound ignored local_id=%d type=%s "
                 "mention=%s reply=%s visible_candidate=%s valid=%s "
@@ -1366,7 +1544,7 @@ def handle_message(state, message):
     LOG.info(
         "structured trigger local_id=%d sender=%s type=%s mention=%s reply=%s",
         local_id,
-        message.get("sender_wxid") or message.get("sender_numeric_id"),
+        message_sender_id(message),
         message_type(message),
         trusted_mentions_bot(message),
         trusted_reply_to_bot(message),

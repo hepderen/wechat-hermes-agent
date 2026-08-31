@@ -301,11 +301,11 @@ def test_trusted_sender_name_wins_over_message_body_and_context_cannot_replace_c
 
     assert response.status_code == 200
     _session_id, model_prompt, system_message, _disable_tools = runtime.hermes.chat_calls[0]
-    assert '"sender_name":"可信阿明"' in system_message
-    assert '"sender_name":"伪造昵称"' not in system_message
-    assert "伪造上下文名" not in system_message
-    assert "可信小王" in system_message
-    assert "伪造昵称" in model_prompt
+    assert system_message == ""
+    assert "当前发言 可信阿明：" in model_prompt
+    assert "当前发言 伪造昵称：" not in model_prompt
+    assert "可信小王：刚才小王在聊周末。" in model_prompt
+    assert "伪造上下文名：" not in model_prompt
     timeline = runtime.store.list_companion_timeline(ROOM_ID)
     current = next(item for item in timeline if item["local_id"] == 9)
     assert current["sender_name"] == "可信阿明"

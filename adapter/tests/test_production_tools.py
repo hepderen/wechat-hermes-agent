@@ -277,7 +277,7 @@ def test_zip_artifact_is_task_scoped_deterministic_and_rejects_links(tmp_path):
         )
 
 
-def test_internal_tool_context_and_download_quota_are_task_state_bound(tmp_path):
+def test_internal_tool_context_and_download_endpoints_are_retired(tmp_path):
     runtime = make_runtime(tmp_path, max_download_bytes=20)
     runtime.store.initialize()
     task = create_task(runtime.store, request_id="production-tool-context")
@@ -299,36 +299,35 @@ def test_internal_tool_context_and_download_quota_are_task_state_bound(tmp_path)
             "/internal/tools/context/" + task["id"],
             headers=headers,
         )
-        assert context.status_code == 200
-        assert context.json()["remaining_download_bytes"] == 20
+        assert context.status_code == 410
 
         recorded = client.post(
             "/internal/tools/downloads",
             headers=headers,
             json={"task_id": task["id"], "path": str(first)},
         )
-        assert recorded.status_code == 200
+        assert recorded.status_code == 410
         duplicate = client.post(
             "/internal/tools/downloads",
             headers=headers,
             json={"task_id": task["id"], "path": str(first)},
         )
-        assert duplicate.status_code == 200
+        assert duplicate.status_code == 410
         over_limit = client.post(
             "/internal/tools/downloads",
             headers=headers,
             json={"task_id": task["id"], "path": str(second)},
         )
-        assert over_limit.status_code == 409
+        assert over_limit.status_code == 410
 
         runtime.store.cancel_task(task["id"], ROOM_ID)
         canceled = client.get(
             "/internal/tools/context/" + task["id"],
             headers=headers,
         )
-        assert canceled.status_code == 409
+        assert canceled.status_code == 410
 
-    assert runtime.store.downloaded_bytes(claimed["id"]) == 10
+    assert runtime.store.downloaded_bytes(claimed["id"]) == 0
 
 
 def test_canceled_task_cannot_write_memory_or_register_artifacts(tmp_path):
@@ -356,6 +355,6 @@ def test_canceled_task_cannot_write_memory_or_register_artifacts(tmp_path):
             json={"task_id": task["id"], "path": str(result)},
         )
 
-    assert memory.status_code == 409
-    assert artifact.status_code == 409
+    assert memory.status_code == 410
+    assert artifact.status_code == 410
     assert runtime.store.list_artifacts(task["id"], task["generation"]) == []

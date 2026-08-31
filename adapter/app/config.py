@@ -281,8 +281,8 @@ class Settings:
                 os.getenv("HERMES_OUTPUT_TOKEN_COST_PER_MILLION", "15")
             ),
             wechat_session_generation=(
-                os.getenv("HERMES_WECHAT_SESSION_GENERATION", "1").strip()
-                or "1"
+                os.getenv("HERMES_WECHAT_SESSION_GENERATION", "14").strip()
+                or "14"
             ),
             allow_private_chat=env_bool("ALLOW_PRIVATE_WECHAT_CHAT", False),
             worker_poll_seconds=max(

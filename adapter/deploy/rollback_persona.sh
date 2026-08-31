@@ -111,7 +111,7 @@ if metadata.st_uid != 0 or metadata.st_mode & 0o077:
     raise SystemExit("adapter environment must be a non-symlink root-private file")
 
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "14",
+    "HERMES_WECHAT_SESSION_GENERATION": "15",
 }
 lines = path.read_text(encoding="utf-8").splitlines()
 seen = set()
@@ -156,4 +156,4 @@ wechat_pid=$(pgrep -x wechat || true)
 rollback_succeeded=1
 rm -f -- "$env_backup"
 trap - EXIT
-printf 'previous Adapter persona restored with generation 14; room-scoped context only\n'
+printf 'previous Adapter persona restored with generation 15; room-scoped context only\n'

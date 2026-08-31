@@ -239,7 +239,7 @@ def signed_artifact_path(runtime, task, artifact) -> str:
     return parsed.path + "?" + parsed.query
 
 
-def test_immutable_artifact_download_and_changed_content_rejection(tmp_path):
+def test_immutable_artifact_download_is_retired_in_chat_only_release(tmp_path):
     runtime = make_runtime(tmp_path)
     task = create_running_planned_task(runtime, "artifact-download", "生成文件")
     path, artifact = register_file(runtime, task, "result.txt", b"immutable")
@@ -250,14 +250,10 @@ def test_immutable_artifact_download_and_changed_content_rejection(tmp_path):
         client=("127.0.0.1", 50000),
     ) as client:
         success = client.get(request_path)
-        assert success.status_code == 200
-        assert success.content == b"immutable"
+        assert success.status_code == 410
+        assert "chat-only" in success.json()["detail"]
 
-        path.write_bytes(b"changed-content")
-        changed = client.get(request_path)
-        assert changed.status_code == 409
-
-    assert runtime.store.get_artifact(artifact["artifact_id"])["verified"] == 0
+    assert runtime.store.get_artifact(artifact["artifact_id"])["verified"] == 1
 
 
 def test_stale_generation_artifact_download_returns_410(tmp_path):

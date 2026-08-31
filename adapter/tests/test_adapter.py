@@ -257,14 +257,14 @@ def make_settings(tmp_path: Path, **changes) -> Settings:
         budget_timezone="Asia/Shanghai",
         input_token_cost_per_million=3,
         output_token_cost_per_million=15,
-        wechat_session_generation="1",
+        wechat_session_generation="14",
         allow_private_chat=False,
         worker_poll_seconds=0.2,
         cleanup_status_path=tmp_path / "cleanup-status.json",
         delivery_reconcile_attempts=2,
         delivery_reconcile_delay_seconds=0.001,
-        # Legacy relationship tests explicitly exercise the compatibility
-        # implementation. Production defaults remain disabled in Settings.
+        # These legacy flags stay enabled in the fixture to prove that the
+        # immutable chat-only release gate cannot reopen them.
         relationship_memory_enabled=True,
         relationship_proactive_enabled=True,
     )
@@ -295,7 +295,7 @@ def test_settings_use_production_budget_and_initial_session_defaults(
     monkeypatch.delenv("HERMES_WECHAT_SESSION_GENERATION", raising=False)
     settings = Settings.from_env()
     assert settings.daily_token_limit == 10_000_000
-    assert settings.wechat_session_generation == "1"
+    assert settings.wechat_session_generation == "14"
     assert settings.input_token_cost_per_million == 3
     assert settings.output_token_cost_per_million == 15
 
@@ -350,27 +350,27 @@ def test_runtime_skills_are_detached_but_legacy_registry_is_preserved(tmp_path):
 
     assert removed_endpoint.status_code == 404
     assert queued.status_code == 200
-    task = runtime.store.get_task(queued.json()["task_id"])
-    assert task is not None
-    assert task["skill_snapshot"] == []
+    assert queued.json()["status"] == "succeeded"
+    assert queued.json()["task_id"] is None
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert runtime.hermes.chat_calls[0][3] is True
     assert runtime.store.get_skill("legacy-only") is not None
     assert "wechat_install_skill" not in SESSION_SYSTEM_PROMPT
     assert "Skills" not in SESSION_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(
-    ("remote_status", "expected_state"),
+    "remote_status",
     [
-        ("confirmed", "confirmed"),
-        ("not_submitted", "prepared"),
-        ("uncertain", "uncertain"),
-        ("suppressed", "suppressed"),
+        "confirmed",
+        "not_submitted",
+        "uncertain",
+        "suppressed",
     ],
 )
 def test_lifespan_reconciles_sending_outbox_before_ready(
     tmp_path,
     remote_status,
-    expected_state,
 ):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
@@ -404,16 +404,11 @@ def test_lifespan_reconciles_sending_outbox_before_ready(
         assert client.get("/health").json()["ready"] is True
 
     recovered = runtime.store.list_outbox(task["id"], task["generation"])
-    assert recovered[0]["state"] == expected_state
-    expected_checks = (
-        runtime.settings.delivery_reconcile_attempts
-        if remote_status == "uncertain"
-        else 1
-    )
-    assert len(runtime.chat_api.delivery_checks) == expected_checks
-    if expected_state == "confirmed":
-        assert recovered[0]["confirmed_local_id"] == 88
-        assert runtime.store.get_task(task["id"])["final_sent"] is True
+    # A historical sending item is never reconciled through the Chat API in
+    # this release. It is retained for audit but made terminal and silent.
+    assert recovered[0]["state"] == "uncertain"
+    assert runtime.chat_api.delivery_checks == []
+    assert runtime.store.get_task(task["id"])["delivery_suppressed"] is True
 
 
 def test_lifespan_never_retries_when_delivery_reconciliation_fails(tmp_path):
@@ -530,8 +525,8 @@ def test_sync_chat_is_idempotent_and_uses_trusted_metadata(tmp_path):
             runtime.hermes.chat_calls[0]
         )
         assert session_id == stable_session_id(ROOM_ID, "someone-else")
-        assert "wxid_real" in system_message
-        assert '"room_id":"' + ROOM_ID + '"' in system_message
+        assert system_message == ""
+        assert "wxid_real" not in user_text
         assert "wxid_fake" not in system_message
         assert "wxid_fake" in user_text
         assert disable_tools is True
@@ -626,8 +621,7 @@ def test_passive_group_listener_can_join_a_plain_name_chat_without_tasks(tmp_pat
     assert len(runtime.hermes.chat_calls) == 1
     _, _, system_message, disable_tools = runtime.hermes.chat_calls[0]
     assert disable_tools is True
-    assert "旁听式群聊" in system_message
-    assert "[[NO_REPLY]]" in system_message
+    assert system_message == ""
     state = runtime.store.get_group_listener_state(ROOM_ID)
     assert state is not None
     assert state["last_reply_local_id"] == 201
@@ -889,7 +883,7 @@ def test_session_title_is_bounded_for_long_external_identities():
     assert title.endswith("]")
 
 
-def test_diagnostic_session_requires_both_tokens_and_rejects_execution(tmp_path):
+def test_diagnostic_session_requires_both_tokens_and_stays_chat_only(tmp_path):
     runtime = make_runtime(tmp_path)
     payload = {
         "message": "你好",
@@ -911,8 +905,11 @@ def test_diagnostic_session_requires_both_tokens_and_rejects_execution(tmp_path)
         )
 
     assert missing_internal.status_code == 401
-    assert execution.status_code == 400
-    assert runtime.hermes.chat_calls == []
+    assert execution.status_code == 200
+    assert execution.json()["status"] == "succeeded"
+    assert execution.json()["task_id"] is None
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
     assert runtime.store.list_tasks(ROOM_ID) == []
 
 
@@ -941,7 +938,7 @@ def test_chat_only_diagnostic_execution_language_stays_in_chat(tmp_path):
     assert runtime.store.list_tasks(ROOM_ID) == []
     assert len(runtime.hermes.chat_calls) == 1
     assert runtime.hermes.chat_calls[0][3] is True
-    assert "纯聊天模式" in runtime.hermes.chat_calls[0][2]
+    assert runtime.hermes.chat_calls[0][2] == ""
 
 
 def test_diagnostic_sessions_are_isolated_and_do_not_pollute_room_session(tmp_path):
@@ -1015,7 +1012,7 @@ def test_diagnostic_session_is_part_of_the_idempotency_fingerprint(tmp_path):
     assert conflict.status_code == 409
 
 
-def test_async_request_is_idempotently_queued(tmp_path):
+def test_execution_wording_is_idempotently_handled_as_plain_chat(tmp_path):
     runtime = make_runtime(tmp_path)
     app = create_app(runtime, start_worker=False)
     payload = {
@@ -1030,13 +1027,14 @@ def test_async_request_is_idempotently_queued(tmp_path):
         first = post_chat(client, payload)
         second = post_chat(client, payload)
     assert first.status_code == 200
-    assert first.json()["status"] == "queued"
-    assert second.json()["task_id"] == first.json()["task_id"]
-    assert len(runtime.store.list_tasks(ROOM_ID)) == 1
-    assert runtime.hermes.chat_calls == []
+    assert first.json()["status"] == "succeeded"
+    assert second.json() == first.json()
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
 
 
-def test_colloquial_social_search_is_queued_as_a_research_run(tmp_path):
+def test_colloquial_social_search_stays_plain_chat(tmp_path):
     runtime = make_runtime(tmp_path)
     payload = {
         "message": "上推特帮我搜一搜今天的 AI 热点新闻",
@@ -1051,12 +1049,10 @@ def test_colloquial_social_search_is_queued_as_a_research_run(tmp_path):
         response = post_chat(client, payload)
 
     assert response.status_code == 200
-    assert response.json()["status"] == "queued"
-    task = runtime.store.list_tasks(ROOM_ID)[0]
-    assert task["kind"] == "run"
-    assert task["plan"]["task_type"] == "research"
-    assert task["plan"]["required_tools"] == ["research"]
-    assert runtime.hermes.chat_calls == []
+    assert response.json()["status"] == "succeeded"
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
 
 
 @pytest.mark.parametrize(
@@ -1070,7 +1066,7 @@ def test_colloquial_social_search_is_queued_as_a_research_run(tmp_path):
         "帮我看看这个链接 https://example.com/report",
     ],
 )
-def test_api_routes_explicit_research_variants_to_runs(tmp_path, message):
+def test_api_routes_explicit_research_variants_to_plain_chat(tmp_path, message):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
         response = post_chat(
@@ -1088,12 +1084,10 @@ def test_api_routes_explicit_research_variants_to_runs(tmp_path, message):
         )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "queued"
-    task = runtime.store.list_tasks(ROOM_ID)[0]
-    assert task["kind"] == "run"
-    assert task["plan"]["task_type"] == "research"
-    assert task["plan"]["max_tool_calls"] == 12
-    assert runtime.hermes.chat_calls == []
+    assert response.json()["status"] == "succeeded"
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
 
 
 @pytest.mark.parametrize(
@@ -1106,7 +1100,7 @@ def test_api_routes_explicit_research_variants_to_runs(tmp_path, message):
         "What is the latest Python release?",
     ],
 )
-def test_api_routes_time_sensitive_facts_to_research_without_search_verbs(
+def test_api_routes_time_sensitive_facts_to_plain_chat_without_search_verbs(
     tmp_path,
     message,
 ):
@@ -1127,12 +1121,10 @@ def test_api_routes_time_sensitive_facts_to_research_without_search_verbs(
         )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "queued"
-    task = runtime.store.list_tasks(ROOM_ID)[0]
-    assert task["kind"] == "run"
-    assert task["plan"]["task_type"] == "research"
-    assert task["plan"]["required_tools"] == ["research"]
-    assert runtime.hermes.chat_calls == []
+    assert response.json()["status"] == "succeeded"
+    assert runtime.store.list_tasks(ROOM_ID) == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
 
 
 @pytest.mark.parametrize(
@@ -1198,12 +1190,12 @@ def test_api_bounds_untrusted_group_context_before_calling_hermes(tmp_path):
     assert response.status_code == 200
     user_text = runtime.hermes.chat_calls[0][1]
     system_message = runtime.hermes.chat_calls[0][2]
-    assert "marker-04:" not in system_message
-    assert "marker-05:" in system_message
-    assert "marker-20:" in system_message
-    assert system_message.count("marker-") == 16
-    assert "marker-" not in user_text
-    assert len(system_message) < 32_000
+    assert system_message == ""
+    assert "marker-04:" not in user_text
+    assert "marker-05:" in user_text
+    assert "marker-20:" in user_text
+    assert user_text.count("marker-") == 16
+    assert len(user_text) < 32_000
 
 
 @pytest.mark.parametrize(
@@ -1241,7 +1233,7 @@ def test_media_stop_phrases_only_suppress_media(message):
     assert command.task_id is None
 
 
-def test_room_stop_cancels_active_tasks_and_suppresses_pending_delivery(tmp_path):
+def test_room_stop_ignores_bare_command_after_legacy_tasks_are_quarantined(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
     running = create_task(runtime.store, request_id="room-stop-running")
@@ -1265,7 +1257,9 @@ def test_room_stop_cancels_active_tasks_and_suppresses_pending_delivery(tmp_path
         )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "canceled"
+    assert response.json()["status"] == "ignored"
+    assert response.json()["reply"] == ""
+    assert runtime.chat_api.barriers == []
     assert runtime.hermes.stop_calls == ["run-room-stop"]
     running_after = runtime.store.get_task(running["id"])
     queued_after = runtime.store.get_task(queued["id"])
@@ -1303,11 +1297,11 @@ def test_private_chat_isolated_and_forces_zero_tools(tmp_path):
         assert response.json()["reply"] == "真实同步回复"
     assert enabled.hermes.chat_calls[0][0] == stable_session_id(None, "wxid_private")
     assert enabled.hermes.chat_calls[0][3] is True
-    assert "服务端已强制移除所有工具" in enabled.hermes.ensure_calls[0][2]
+    assert enabled.hermes.ensure_calls[0][2] == SESSION_SYSTEM_PROMPT
     assert enabled.store.list_tasks("private:wxid_private") == []
 
 
-def test_private_execution_and_task_commands_are_blocked_locally(tmp_path):
+def test_private_execution_wording_chats_and_task_commands_stay_disabled(tmp_path):
     runtime = make_runtime(tmp_path, allow_private_chat=True)
     app = create_app(runtime, start_worker=False)
     with TestClient(app) as client:
@@ -1328,11 +1322,11 @@ def test_private_execution_and_task_commands_are_blocked_locally(tmp_path):
             },
         )
     assert execution.status_code == 200
-    assert execution.json()["status"] == "failed"
-    assert "未执行" in execution.json()["reply"]
+    assert execution.json()["status"] == "succeeded"
     assert command.status_code == 200
     assert command.json()["status"] == "failed"
-    assert runtime.hermes.chat_calls == []
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
     assert runtime.store.list_tasks("private:wxid_private") == []
 
 
@@ -1354,12 +1348,12 @@ def test_legacy_three_field_chat_is_compatible_and_forces_zero_tools(tmp_path):
     )
     assert session_id.startswith("wechat:")
     assert "legacy-client-session" not in session_id
-    assert '"scope":"legacy"' in system_message
+    assert system_message == ""
     assert disable_tools is True
-    assert "服务端已强制移除所有工具" in runtime.hermes.ensure_calls[0][2]
+    assert runtime.hermes.ensure_calls[0][2] == SESSION_SYSTEM_PROMPT
 
 
-def test_legacy_execution_is_blocked_without_model_or_task(tmp_path):
+def test_legacy_execution_wording_stays_chat_without_a_task(tmp_path):
     runtime = make_runtime(tmp_path)
     app = create_app(runtime, start_worker=False)
     with TestClient(app) as client:
@@ -1372,9 +1366,9 @@ def test_legacy_execution_is_blocked_without_model_or_task(tmp_path):
             },
         )
     assert response.status_code == 200
-    assert response.json()["status"] == "failed"
-    assert "未执行" in response.json()["reply"]
-    assert runtime.hermes.chat_calls == []
+    assert response.json()["status"] == "succeeded"
+    assert len(runtime.hermes.chat_calls) == 1
+    assert runtime.hermes.chat_calls[0][3] is True
     assert runtime.store.has_execution_backlog() is False
 
 
@@ -1528,7 +1522,7 @@ def test_legacy_media_marker_is_removed_and_never_sends_media(tmp_path):
     ]
 
 
-def test_media_only_barrier_does_not_cancel_text_task(tmp_path):
+def test_media_only_barrier_never_reactivates_a_legacy_task(tmp_path):
     runtime = make_runtime(tmp_path)
     runtime.store.initialize()
     task = create_task(runtime.store, request_id="stop-between-text-media")
@@ -1552,10 +1546,11 @@ def test_media_only_barrier_does_not_cancel_text_task(tmp_path):
     assert response.status_code == 200
     assert response.json()["status"] == "succeeded"
     assert runtime.chat_api.barriers[0]["mode"] == "media_only"
-    assert runtime.hermes.stop_calls == []
+    assert runtime.hermes.stop_calls == ["run-media-only"]
     stored = runtime.store.get_task(task["id"])
-    assert stored["status"] == "running"
-    assert stored["cancel_requested"] is False
+    assert stored["status"] == "canceled"
+    assert stored["cancel_requested"] is True
+    assert stored["delivery_suppressed"] is True
 
 
 def test_uncertain_media_send_is_never_retried(tmp_path):
@@ -1878,14 +1873,11 @@ def test_internal_task_list_and_artifact_registration(tmp_path):
             json={"task_id": task["id"], "path": str(image)},
             headers=headers,
         )
-        assert registered.status_code == 200
-        artifact = registered.json()["artifact"]
-        assert artifact["mime_type"] == "image/png"
-        assert artifact["size_bytes"] == image.stat().st_size
+        assert registered.status_code == 410
 
         rejected = client.post(
             "/internal/artifacts/register",
             json={"task_id": task["id"], "path": str(outside)},
             headers=headers,
         )
-        assert rejected.status_code == 400
+        assert rejected.status_code == 410

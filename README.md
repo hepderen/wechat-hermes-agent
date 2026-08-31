@@ -1,171 +1,98 @@
 # WeChat Hermes Agent
 
-把 Linux 微信群聊接入 Hermes Agent 的生产级适配层。入站消息来自微信数据库的结构化记录和 XML 元数据，不依赖截图或 OCR 判断发送者、群 ID、`@` 和引用关系。
+把 Linux 微信群聊接入 Hermes 的结构化纯聊天适配层。入站消息来自微信数据库记录和 XML 元数据，发送者、群 ID、原生 `@`、引用关系与消息 ID 均不依赖截图或 OCR。
 
-该仓库由一套实际运行的云端系统整理而来，重点解决群聊 Agent 最容易出错的部分：可信身份、重复消息、停止竞态、异步任务、工具证据、媒体幂等和服务恢复。
+当前发布目标是让群里的“小格”稳定参与聊天。它使用固定版本的孙笑川章节作为唯一人格来源，群内显示名称仍为“小格”。
 
-## 核心能力
+## 当前运行契约
 
-- 结构化消息入口：按 `room_id`、`sender_id`、`local_id` 和 `msg_svr_id` 建立可信消息身份。
-- 房间白名单：配置群内成员权限相同，生产工具不对未知群开放。
-- 同步与异步路由：代码保留普通问答和生产任务链路；当前云端发布将 `HERMES_WECHAT_CHAT_ONLY=true`，所有消息只走 Hermes Session 文字聊天，不启动搜索、文件、终端、浏览器、媒体或异步任务。
-- 常态群聊：指定群的结构化文字消息会进入本地低信号过滤与房间级节流；被真实 `@`、回复机器人或直接叫“小格”时优先处理，其余消息由模型决定是否自然插话。未点名消息永远不创建任务。
-- 本地控制命令：`任务`、`取消`、`重试`、`补充`、`修改`、`停止` 和 `只要文字` 不等待模型处理。
-- 停止栅栏：停止消息先提交到 Chat API，旧结果在 UI 提交前再次检查并被抑制。
-- 逐项 Outbox：文字、图片、视频和文件分别持久化状态与幂等键；状态不确定的媒体不会自动重发。
-- 完成门禁：模型结束生成不等于任务成功，Verifier 根据工具退出码、来源和 Artifact 元数据判定结果。
-- Artifact 校验：限制任务目录、路径穿越、软链接、真实 MIME、扩展名、大小和 SHA-256。
-- 记忆治理：当前聊天只使用按群隔离的短期时间线和共享摘要；不创建或注入成员级关系档案。
-- 受控工具：生产工具接口仍保留用于后续恢复；纯聊天发布会在 Adapter 路由层和 Hermes 会话层同时关闭这些能力。
-- WeirdoTV 孙笑川人格：固定归档 MIT 许可的 CCV3 规范与 `BeamusWayne/WeirdoTV-Skill` 的孙笑川章节。只加载一张固定角色卡；不加载旧猫系、Humanizer、动态 Skill 或卡片代码。
-- 国内外检索：Bing HTML/RSS、Bing News 与搜狗、360、百度结果合并，按意图、主题覆盖、来源质量、时效和区域多样性重排；SearXNG 可选合并。
-- 可观测性：`/health`、`/metrics`、结构化 ID 日志、清理状态和恢复门禁。
-
-## 架构
+- 链路固定为 `Chat API :8765 -> db_bridge.py -> Adapter :8000 -> Hermes`，服务只监听服务器回环地址。
+- Chat API 为每条消息输出统一的 `room_id`、`sender_id`、`source_local_id`、`msg_svr_id`、`is_bot`、`is_self`、原生 `@` 与引用字段。
+- Bridge 统一规范化字段别名、Unicode、大小写和数字 ID；去重优先使用 `room_id + msg_svr_id`，再使用 `room_id + local_id`。旧内容指纹仅用于滚动升级兼容。
+- 自发消息、机器人身份记录和伪装为入站的记录不会触发聊天，也不会进入群聊上下文。
+- 每个群保存最近 24 小时、最多 120 条时间线；每轮只给模型最近 16 条自然格式的 `昵称：内容` 记录与当前可信消息。
+- 模型会话系统提示只包含“小格”名称协议和固定孙笑川章节。没有角色卡、关系档案、群摘要、示范对话、服务 JSON 或其他人格文本。
+- 每轮聊天前后都会清理 Adapter 自有 Hermes Session，避免服务端持久历史绕过 16 条时间线边界。
+- 所有 Hermes 聊天请求使用 `disable_tools=true`。搜索、终端、文件、浏览器、异步作业、媒体自动交付和主动私聊均未启用。
+- 常态监听由本地低信号过滤、去重和房间级节流控制。真实 `@`、回复小格、或直接叫“小格”会优先进入对话。
+- 停止栅栏、消息节流、入站账本和发送状态仍保留。旧任务与旧 Outbox 在启动时隔离，历史任务查询保持只读。
 
 ```mermaid
 flowchart LR
-    WXDB["WeChat message database"] --> API["Chat API :8765"]
-    API --> BRIDGE["Structured Bridge"]
-    BRIDGE --> ADAPTER["Adapter :8000"]
-    ADAPTER --> HERMES["Hermes :8642"]
-    HERMES --> TOOLS["Controlled cloud tools and MCP"]
+    DB[WeChat message database] --> API[Chat API :8765]
+    API --> BRIDGE[Structured Bridge]
+    BRIDGE --> ADAPTER[Adapter :8000]
+    ADAPTER --> HERMES[Hermes :8642]
     BRIDGE --> API
-    ADAPTER --> API
-    API --> WXUI["WeChat UI send and DB confirmation"]
-    ADAPTER --> STATE["SQLite task ledger and Outbox"]
+    API --> WXUI[WeChat UI]
 ```
 
-所有 HTTP 服务默认只监听 `127.0.0.1`。Chat API 同时负责结构化读取、发送栅栏、微信 UI 提交和数据库确认；Adapter 负责权限、任务、证据、Artifact 与交付状态；Hermes 负责对话和真实工具执行。
+## 固定人格资源
 
-更完整的状态机和信任边界见 [架构说明](docs/architecture.md)。
+运行时只加载来自 [WeirdoTV-Skill](https://github.com/BeamusWayne/WeirdoTV-Skill) 的固定提交：
 
-## 快速验证
+| 项目 | 值 |
+| --- | --- |
+| 提交 | `1635aceebf4e84b32db37ccd00244ca0dcc04574` |
+| 加载章节 | `### 😂 孙笑川 Sun Xiaochuan` |
+| 章节 SHA-256 | `b1fa3a4d08206c0210edd527dd2ef30e5ef36bd4eec7401881de873aa75fa922` |
+| 上游 `SKILL.md` SHA-256 | `471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305` |
+| 许可证 | MIT，归档并校验 SHA-256 |
+| 人格版本 | `weirdotv@1.0.0+sunxiaochuan@2.0.0` |
 
-本地模拟栈会启动假的 Hermes 和 Chat API，只验证 Adapter 全链路，不接触真实微信、群聊或生产数据库。需要 Python 3.10 或 3.11。
+资源文件位于 [`adapter/personas/sunxiaochuan.section.md`](adapter/personas/sunxiaochuan.section.md)，来源锁位于 [`adapter/personas/SOURCE.lock.json`](adapter/personas/SOURCE.lock.json)。校验失败时 Adapter 进入 `degraded`，不会启动泛化人格会话。
 
-### Linux / macOS
+## 配置
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r adapter/requirements-dev.txt
-.venv/bin/python adapter/scripts/live_fake_stack.py
+从 [`adapter/deploy/adapter.env.example`](adapter/deploy/adapter.env.example) 和 `chat-api/*.example` 创建服务器私有环境文件。四个令牌保持不同值，环境文件权限设为 `0600`。
+
+关键项：
+
+```text
+ALLOWED_WECHAT_ROOM_IDS=ROOM_ID
+WECHAT_BOT_WXID=BOT_WXID
+HERMES_WECHAT_CHAT_ONLY=true
+HERMES_WECHAT_GROUP_LISTENER_ENABLED=true
+HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12
+HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3
+HERMES_WECHAT_GROUP_LISTENER_NAMES=小格,Hermes
+HERMES_WECHAT_SESSION_GENERATION=14
 ```
 
-### Windows PowerShell
+`ALLOWED_WECHAT_ROOM_IDS` 仅列出明确开放的小群。群外消息和未授权私聊不会进入生产聊天会话。
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -r adapter\requirements-dev.txt
-.\.venv\Scripts\python adapter\scripts\live_fake_stack.py
-```
+## 本地验证
 
-成功时脚本输出 `"status": "ok"`，并验证连续三次结构化 `@`、有/无工具证据、停止顺序、媒体 `uncertain` 和重启后不重复发送。详见 [快速开始](docs/quickstart.md)。
-
-## 群内命令
-
-| 命令 | 行为 |
-| --- | --- |
-| `任务` / `任务 T-XXXXXXXX` | 当前纯聊天发布只提示任务功能关闭 |
-| `取消 T-XXXXXXXX` | 仍可取消遗留任务并提交任务级栅栏 |
-| `重试 T-XXXXXXXX` | 当前纯聊天发布不创建新执行代次 |
-| `补充 T-XXXXXXXX ...` | 当前纯聊天发布不启动任务 |
-| `修改 T-XXXXXXXX ...` | 当前纯聊天发布不启动任务 |
-| `停止` / `别发了` | 在满足触发条件时停止本群旧任务与旧发送 |
-| `不要图片` / `只要文字` | 只抑制旧媒体，保留允许返回的文字 |
-| `记住 ...` / `忘记 ...` | 当前纯聊天发布不写入持久记忆 |
-
-任务编号只能在所属群或私聊会话中访问。同一白名单群内的成员可以管理该群任务。
-纯聊天模式下只有停止、取消和媒体抑制这类控制指令保留；普通执行型话术会作为文字问题交给模型。
-
-## 仓库结构
-
-| 目录 | 内容 |
-| --- | --- |
-| `adapter/` | FastAPI Adapter、SQLite 状态机、Outbox、Verifier 和 MCP 工具 |
-| `chat-api/` | 微信数据库结构化读取、发送控制、Bridge 和 systemd 单元 |
-| `web-research/` | Hermes 搜索插件、SearXNG 配置、候选发布与回滚脚本 |
-| `docs/` | 架构、快速开始和生产部署说明 |
-
-生产配置显式禁用 Hermes 的动态 `skills` 工具集。Adapter 原生加载经过哈希锁定的 CCV3 规范、`sunxiaochuan.card.json` 和 WeirdoTV 的 MIT 孙笑川章节归档；运行时不执行上游代码，不加载其他人格、Humanizer、语音、主动发送、todo、Telegram 唤醒或原生 memory。卡片或来源锁校验失败时 Adapter 进入 `degraded`，不会静默切回泛化人格。当前发布使用纯聊天模式，生产工具和任务队列保留在代码中但不会被消息路由触发。旧数据库中的 Skill 注册表、成员关系表和快照字段仅作为升级兼容数据保留，不参与当前聊天会话，也不会继续写入新的成员关系记录。
-
-### 人格模式
-
-| 信号 | 行为 |
-| --- | --- |
-| 默认娱乐陪聊 | 小格按 WeirdoTV 孙笑川章节、示范对话和当前群节奏接话；短话可以一句，正常互动允许 1 至 3 个短段落、最多 420 字，不机械压成一句 |
-| 常态监听 | 忽略纯表情、`哈哈`、`666` 等低信号消息；普通聊天至少间隔 12 秒和 3 个群消息，模型可用 `[[NO_REPLY]]` 保持安静；直接叫“小格”不受该节流限制 |
-| 当前云端模式 | 只根据当前对话回复文字；执行型话题给判断或说明，不创建任务、不调用工具 |
-| 停止、取消、不要图片、只要文字 | 使用标准控制回复，不玩梗 |
-
-人格规则由 [`persona.py`](adapter/app/persona.py) 从固定的 [`sunxiaochuan.card.json`](adapter/personas/sunxiaochuan.card.json) 加载，风格来源归档在 [`weirdotv-sunxiaochuan`](adapter/skills/weirdotv-sunxiaochuan)。CCV3 规范锁定到 `f3a86af019fbd99f788f7a1155f399655b34ab35`，WeirdoTV 锁定到 `1635aceebf4e84b32db37ccd00244ca0dcc04574`；规范、许可证、角色卡和来源锁均校验 SHA-256。每个群保存最近 24 小时、最多 120 条原文，并在每轮注入最近 16 条；房间共享状态最长保留 30 天。当前人格只根据群级时间线、共享梗和眼前对话形成亲近感，不按 `(room_id, sender_id)` 建立关系档案，也不发送成员定向主动消息。旧关系表和兼容命令实现保留在代码中，但生产开关固定关闭。
-
-## 生产部署
-
-生产链路依赖现有 Linux 微信桌面进程、可读取的消息数据库及密钥、Hermes Agent 运行时和 systemd。`adapter/deploy/install_cloud.sh` 是面向既有部署的原地迁移工具，包含固定 Ubuntu 路径、受保护文件哈希/inode 检查和旧服务回滚前提，不是新机器一键安装器。
-
-开始前至少要准备：
-
-1. `chat-api/config.json`：从 `chat-api/config.example.json` 创建，填入数据库、密钥文件、群 ID、机器人 wxid 和窗口参数。
-2. `chat-api/db-config.json`：从 `chat-api/db-config.example.json` 创建。
-3. `/etc/wechat-hermes/adapter.env`、`hermes.env`、`chat-api.env`、`bridge.env`：使用四个独立随机令牌，权限设为 `0600`。
-4. `ALLOWED_WECHAT_ROOM_IDS`：只列出明确开放完整 Agent 能力的群。
-5. 独立端口模拟测试、受保护文件基线和不重启微信的回滚步骤。
-
-当前聊天发布使用 `HERMES_WECHAT_CHAT_ONLY=true`，模型目标为 `gpt-5.4-mini`。`HERMES_WECHAT_GROUP_LISTENER_ENABLED=true` 必须同时写入 Bridge 和 Adapter 环境，才会让小格常态参与已白名单群的结构化文字聊天；可用 `HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS`、`HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES` 和 `HERMES_WECHAT_GROUP_LISTENER_NAMES` 调整节奏。生产默认关闭成员关系记忆和主动消息，只由群级时间线与共享摘要承接上下文。模型凭据只通过服务器上的私有环境文件和轮换脚本写入，不放进仓库或日志。
-
-完整前置条件、配置表、搜索候选构建、切换和回滚流程见 [生产部署](docs/production-deployment.md)。当前 WeirdoTV 发布使用会话 generation `13`；人格发布可用 `rollback_persona.sh PREVIOUS_RELEASE_ID` 切回上一版 Adapter，它会将会话 generation 提升到 `14`，并继续只使用群级上下文、保留发送状态。
-
-仓库同时提供可选的 [`sshd-wechat-hermes.conf`](adapter/deploy/sshd-wechat-hermes.conf)。它只保留 `ubuntu` 公钥登录，并收紧未认证连接的占用时间和并发上限；应用前必须先用第二个全新 SSH 会话验证生产密钥，避免把管理入口锁死。
-
-## 默认资源限制
-
-| 限制 | 默认值 |
-| --- | ---: |
-| 全局 Hermes 并发 | 1 |
-| 单任务时长 | 30 分钟 |
-| 单任务执行代次 | 3 |
-| 工具调用 | 80 次 |
-| Artifact 数量 | 10 |
-| Artifact 总量 | 500 MB |
-| 单日估算费用 | 20 USD |
-| Artifact 保留 | 7 天 |
-| 任务与审计记录保留 | 30 天 |
-
-这些值可在 `adapter/deploy/adapter.env.example` 中调整。
-
-## 测试
+需要 Python 3.10 或 3.11。
 
 ```bash
 python -m pip install -r requirements-ci.txt
 
-cd adapter && python -m pytest -q
-cd ../chat-api && python -m pytest -q
-cd ../web-research && python -m pytest -q
+cd adapter
+python -m pytest -q
+
+cd ../chat-api
+python -m pytest -q
+
+cd ..
+python adapter/scripts/live_fake_stack.py
 ```
 
-测试使用临时数据库、假 Hermes 和假发送端，不向真实群发送内容。CI 还运行模拟全链路、Shell 语法和密钥扫描。
+测试仅使用临时数据库、假 Hermes 与假发送端，不会向真实群发送测试内容。
 
-## 安全与隐私
+## 部署与回滚
 
-- 仓库不应提交 `.env`、`config.json`、数据库、消息快照、日志、Artifact、浏览器资料、密钥文件或生产状态。
-- Bridge 元数据属于可信输入，用户正文中的伪造 JSON/XML 字段不会覆盖身份。
-- Hermes Worker 使用独立非 root 用户，systemd 限制可写路径并屏蔽微信状态、SSH 密钥、Docker Socket 和云元数据地址。
-- Adapter 数据库会保存任务提示和结果以支持恢复；默认终态任务在 30 天后清理。部署前应阅读 [隐私说明](PRIVACY.md) 和 [安全策略](SECURITY.md)。
+- 生产发布使用 [`adapter/deploy/install_cloud.sh`](adapter/deploy/install_cloud.sh) 或 [`adapter/deploy/deploy_ccv3_adapter_release.sh`](adapter/deploy/deploy_ccv3_adapter_release.sh)。脚本名称为历史兼容，发布内容是孙笑川单人格纯聊天版本。
+- 发布前记录微信 PID、服务状态和 `db-state*`、`send-state*`、`bot.db` 的 inode 与哈希。
+- 发布只重启 Adapter 与必要 Hermes 组件，不重启微信，不改动上述状态文件。
+- 回滚使用 [`adapter/deploy/rollback_persona.sh`](adapter/deploy/rollback_persona.sh)，会提升会话代次并保留 SQLite、游标与发送状态。
 
-## 已知限制
+完整步骤见 [生产部署](docs/production-deployment.md) 和 [架构说明](docs/architecture.md)。
 
-- 微信数据库格式、加密方式和桌面 UI 坐标会随客户端版本变化，需要在升级微信前重新验收。
-- 发送仍通过本机微信 UI 完成，数据库用于确认，Chat API 不是微信官方协议接口。
-- 全局并发固定为 1，长任务会形成队列。
-- 模型供应商仍可能成为单点；费用统计使用配置费率估算。
-- 定时任务协议已预留，通用调度器尚未纳入本仓库。
-- 生产安装器针对既有 Ubuntu 目录布局，新部署需要按实际环境适配路径和服务账户。
+## 隐私
 
-## 参与贡献
+仓库不应包含 `.env`、`config.json`、数据库快照、日志、真实群 ID、wxid、令牌、消息正文或生产状态文件。Adapter 日志记录 ID、状态、耗时和错误类型，避免记录消息正文与密钥。参见 [PRIVACY.md](PRIVACY.md) 和 [SECURITY.md](SECURITY.md)。
 
-提交前请运行三组测试和模拟栈，并确认改动未包含真实群 ID、wxid、IP、令牌、消息正文或运行状态。参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+## 许可证
 
-## 许可证与声明
-
-本项目采用 [Apache License 2.0](LICENSE)。微信/WeChat 与 Hermes Agent 是各自权利人的商标或项目；本仓库与其官方团队没有隶属关系。
+本项目采用 [Apache License 2.0](LICENSE)。固定人格来源保留其 MIT 许可证与署名。

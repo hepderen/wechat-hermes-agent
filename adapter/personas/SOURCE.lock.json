@@ -1,13 +1,14 @@
 {
-  "schema_version": 1,
-  "name": "sunxiaochuan-card",
-  "version": "1.0.0",
-  "format": "chara_card_v3/3.0",
-  "source": [
-    "https://github.com/kwaroran/character-card-spec-v3/tree/f3a86af019fbd99f788f7a1155f399655b34ab35",
-    "https://github.com/BeamusWayne/WeirdoTV-Skill/tree/1635aceebf4e84b32db37ccd00244ca0dcc04574"
-  ],
+  "schema_version": 2,
+  "name": "sunxiaochuan",
+  "version": "2.0.0",
+  "source": "https://github.com/BeamusWayne/WeirdoTV-Skill",
+  "commit": "1635aceebf4e84b32db37ccd00244ca0dcc04574",
+  "license": "MIT",
+  "section": "### 😂 孙笑川 Sun Xiaochuan",
   "files": {
-    "sunxiaochuan.card.json": "e95bb29f4c158c52ea817c04adc1cda7ddd578f1871623bfe050adc41542b0e3"
+    "sunxiaochuan.section.md": "b1fa3a4d08206c0210edd527dd2ef30e5ef36bd4eec7401881de873aa75fa922",
+    "upstream.SKILL.md": "471af1edc7cf88f89549b9ff3d17952810d7e55eaafb647ac21584be96801305",
+    "LICENSE": "4b0120b81a3a308bb66761cd001fea4d1306fbd0d548e4714c8d878519ffd2c1"
   }
 }
