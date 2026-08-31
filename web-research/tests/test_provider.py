@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import time
 import types
+from datetime import date
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -677,6 +678,11 @@ def test_strict_query_supplements_irrelevant_bing_volume_with_searx(
     provider_module,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: date(2026, 8, 12),
+    )
     monkeypatch.setenv("WECHAT_WEB_BING_HTML_ENABLED", "true")
     monkeypatch.setenv("WECHAT_WEB_BING_RSS_ENABLED", "false")
     monkeypatch.setenv("WECHAT_WEB_SEARX_MERGE_ENABLED", "false")
@@ -2305,6 +2311,11 @@ def test_search_ranks_out_irrelevant_result_flood_before_dns_checks(
     provider_module,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        provider_module,
+        "_current_search_date",
+        lambda: date(2026, 8, 12),
+    )
     rows = [
         {
             "title": "Unrelated flight promotion %d" % index,

@@ -9,7 +9,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -237,14 +237,65 @@ FORBIDDEN_ASSISTANT_PHRASES = (
 )
 
 
-async def probe(adapter_env_path: Path) -> dict[str, Any]:
+class TransientPersonaProbeError(RuntimeError):
+    """A model-side failure that merits a bounded diagnostic retry."""
+
+
+async def retry_diagnostic_case(
+    name: str,
+    operation: Callable[[int], Awaitable[dict[str, Any]]],
+    *,
+    attempts: int,
+    initial_delay_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    if initial_delay_seconds < 0:
+        raise ValueError("initial delay must not be negative")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await operation(attempt), attempt
+        except TransientPersonaProbeError as exc:
+            if attempt >= attempts:
+                raise RuntimeError(
+                    "%s failed after %d diagnostic attempts" % (name, attempts)
+                ) from exc
+            delay = initial_delay_seconds * (2 ** (attempt - 1))
+            print(
+                json.dumps(
+                    {
+                        "status": "retrying",
+                        "probe": name,
+                        "attempt": attempt,
+                        "next_attempt": attempt + 1,
+                        "delay_seconds": delay,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            await asyncio.sleep(delay)
+
+    raise AssertionError("unreachable")
+
+
+async def probe(
+    adapter_env_path: Path,
+    *,
+    attempts: int = 3,
+    initial_delay_seconds: float = 15,
+    inter_case_delay_seconds: float = 4,
+) -> dict[str, Any]:
+    if inter_case_delay_seconds < 0:
+        raise ValueError("inter-case delay must not be negative")
     environment = runtime_env(adapter_env_path)
     adapter_url = environment["HERMES_WECHAT_ADAPTER_URL"]
     room_id = environment["ALLOWED_WECHAT_ROOM_IDS"].split(",", 1)[0]
     bridge_token = environment["BRIDGE_TOKEN"]
     internal_token = environment["HERMES_WECHAT_INTERNAL_TOKEN"]
     diagnostic_id = "persona-probe-%d" % time.time_ns()
-    base_local_id = int(time.time()) * 100
+    base_local_id = time.time_ns() // 100
     results: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=10)) as client:
@@ -280,36 +331,67 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
 
         for index, case in enumerate(CASES):
             started = time.monotonic()
-            response = await client.post(
-                adapter_url + "/api/chat",
-                headers={
-                    "X-Bridge-Token": bridge_token,
-                    "X-Internal-Token": internal_token,
-                },
-                json={
-                    "message": case["message"],
-                    "request_id": "%s:%d" % (diagnostic_id, index),
-                    "diagnostic_session_id": diagnostic_id,
-                    "room_id": room_id,
-                    "sender_id": case["sender_id"],
-                    "sender_name": case["sender_name"],
-                    "timestamp": int(time.time()),
-                    "direction": "incoming",
-                    "source_local_id": base_local_id + index,
-                    "msg_svr_id": "%s:%d" % (diagnostic_id, index),
-                    "mentions_bot": True,
-                    "reply_to_bot": False,
-                    "message_type": "text",
-                },
+
+            async def request_case(attempt: int) -> dict[str, Any]:
+                request_suffix = "%s:%d:%d" % (diagnostic_id, index, attempt)
+                try:
+                    response = await client.post(
+                        adapter_url + "/api/chat",
+                        headers={
+                            "X-Bridge-Token": bridge_token,
+                            "X-Internal-Token": internal_token,
+                        },
+                        json={
+                            "message": case["message"],
+                            "request_id": request_suffix,
+                            "diagnostic_session_id": diagnostic_id,
+                            "room_id": room_id,
+                            "sender_id": case["sender_id"],
+                            "sender_name": case["sender_name"],
+                            "timestamp": int(time.time()),
+                            "direction": "incoming",
+                            "source_local_id": base_local_id + (index * 10) + attempt,
+                            "msg_svr_id": request_suffix,
+                            "mentions_bot": True,
+                            "reply_to_bot": False,
+                            "message_type": "text",
+                        },
+                    )
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    raise TransientPersonaProbeError(
+                        "diagnostic request transport failure"
+                    ) from exc
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        "diagnostic request failed with HTTP %d"
+                        % response.status_code
+                    )
+                try:
+                    payload = response.json()
+                except (TypeError, ValueError) as exc:
+                    raise TransientPersonaProbeError(
+                        "diagnostic response was invalid JSON"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise TransientPersonaProbeError(
+                        "diagnostic response was not an object"
+                    )
+                if payload.get("status") == "failed":
+                    raise TransientPersonaProbeError(
+                        "diagnostic response reported a model failure"
+                    )
+                if payload.get("status") != "succeeded":
+                    raise RuntimeError(
+                        "diagnostic response was not succeeded"
+                    )
+                return payload
+
+            payload, used_attempt = await retry_diagnostic_case(
+                case["scenario"],
+                request_case,
+                attempts=attempts,
+                initial_delay_seconds=initial_delay_seconds,
             )
-            if response.status_code != 200:
-                raise RuntimeError(
-                    "diagnostic request failed with HTTP %d: %s"
-                    % (response.status_code, response.text[:200])
-                )
-            payload = response.json()
-            if payload.get("status") != "succeeded":
-                raise RuntimeError("diagnostic response was not succeeded")
             if payload.get("task_id") or payload.get("media_data") or payload.get("media_url"):
                 raise RuntimeError("diagnostic response attempted delivery")
             reply = str(payload.get("reply") or "")
@@ -337,8 +419,11 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
                     "reply": reply,
                     "reply_chars": len(reply),
                     "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "attempt": used_attempt,
                 }
             )
+            if index + 1 < len(CASES) and inter_case_delay_seconds:
+                await asyncio.sleep(inter_case_delay_seconds)
 
     repeated = {}
     for item in results:
@@ -350,6 +435,8 @@ async def probe(adapter_env_path: Path) -> dict[str, Any]:
     return {
         "status": "ok",
         "mode": "diagnostic-no-delivery",
+        "attempts_per_case": attempts,
+        "inter_case_delay_seconds": inter_case_delay_seconds,
         "persona": {
             "version": persona.get("version"),
             "source": persona.get("source"),
@@ -367,8 +454,24 @@ def main() -> int:
         type=Path,
         default=Path("/etc/wechat-hermes/adapter.env"),
     )
+    parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument("--initial-delay-seconds", type=float, default=15)
+    parser.add_argument("--inter-case-delay-seconds", type=float, default=4)
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(probe(args.adapter_env)), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            asyncio.run(
+                probe(
+                    args.adapter_env,
+                    attempts=args.attempts,
+                    initial_delay_seconds=args.initial_delay_seconds,
+                    inter_case_delay_seconds=args.inter_case_delay_seconds,
+                )
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

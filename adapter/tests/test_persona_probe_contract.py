@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import runpy
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 
 def test_persona_probe_uses_at_least_24_non_delivery_weirdotv_scenarios():
@@ -20,3 +22,37 @@ def test_persona_probe_uses_at_least_24_non_delivery_weirdotv_scenarios():
     source = script.read_text(encoding="utf-8")
     assert "weirdo-tv-sunxiaochuan" in source
     assert 'set(skills) != {"weirdo-tv-sunxiaochuan"}' in source
+
+
+def test_persona_probe_retries_only_transient_model_failures():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "probe_persona_cloud.py"
+    )
+    values = runpy.run_path(str(script))
+    retry = values["retry_diagnostic_case"]
+    transient = values["TransientPersonaProbeError"]
+    calls = 0
+
+    async def operation(attempt):
+        nonlocal calls
+        calls += 1
+        if attempt < 3:
+            raise transient("provider is temporarily unavailable")
+        return {"status": "succeeded"}
+
+    with patch.object(values["asyncio"], "sleep", new_callable=AsyncMock) as sleep:
+        payload, used_attempt = asyncio.run(
+            retry(
+                "persona",
+                operation,
+                attempts=3,
+                initial_delay_seconds=2,
+            )
+        )
+
+    assert payload == {"status": "succeeded"}
+    assert calls == 3
+    assert used_attempt == 3
+    assert [call.args[0] for call in sleep.await_args_list] == [2, 4]
