@@ -256,8 +256,9 @@ def test_apply_rotation_rejects_writable_backup_root(tmp_path):
 
 
 def test_redaction_removes_provider_keys():
-    value = "request failed for sk-abcdefghijklmnop and " + TEST_KEY
+    provider_fixture = "sk-" + "x" * 16
+    value = "request failed for " + provider_fixture + " and " + TEST_KEY
     cleaned = redact(value, TEST_KEY)
-    assert "sk-abcdefghijklmnop" not in cleaned
+    assert provider_fixture not in cleaned
     assert TEST_KEY not in cleaned
     assert cleaned.count("[REDACTED]") == 2

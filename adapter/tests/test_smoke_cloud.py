@@ -114,7 +114,7 @@ def test_model_mcp_probe_rejects_unexpected_tool():
 
 
 def test_smoke_request_error_redacts_response_body():
-    secret = "Bearer cloud-secret-token"
+    secret = "TEST_BEARER_VALUE"
     client = FakeRequestClient(FakeRequestResponse(500, secret))
     with pytest.raises(RuntimeError) as caught:
         asyncio.run(
@@ -129,7 +129,7 @@ def test_smoke_request_error_redacts_response_body():
 
 
 def test_model_mcp_probe_redacts_failed_event_payload():
-    secret = "internal-tool-output"
+    secret = "TEST_TOOL_OUTPUT"
     with pytest.raises(RuntimeError) as caught:
         run_probe(
             [

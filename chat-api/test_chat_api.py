@@ -3979,7 +3979,7 @@ class BridgeWorkflowTests(unittest.TestCase):
 
     def test_empty_ai_reply_does_not_expose_response_data(self):
         bridge = self.load_bridge(stub_ai=False)
-        secret = "internal-prompt-and-token"
+        secret = "TEST_PROMPT_VALUE"
 
         class Response:
             def __enter__(self):
@@ -4008,7 +4008,7 @@ class BridgeWorkflowTests(unittest.TestCase):
     def test_retry_state_and_logs_redact_exception_details(self):
         bridge = self.load_bridge()
         state = {"last_local_id": 10, "retry": None, "pending": None}
-        secret = "Bearer persisted-secret-token"
+        secret = "TEST_PERSISTED_BEARER"
         with mock.patch.object(bridge, "atomic_save_state"):
             with self.assertLogs("wechat-db-bridge", level="ERROR") as captured:
                 bridge.record_failure(
