@@ -1023,6 +1023,16 @@ class ChatApiClient:
             )
         return results
 
+    async def group_messages_after(self, room_id: str, source_local_id: int) -> list[dict[str, Any]]:
+        room = urllib.parse.quote(str(room_id), safe="")
+        data = await self._get(
+            "/groups/%s/messages" % room,
+            {"after": int(source_local_id), "limit": 200},
+            15,
+        )
+        messages = data.get("messages")
+        return [item for item in messages if isinstance(item, dict)] if isinstance(messages, list) else []
+
     async def send_image(
         self,
         room_id: str,

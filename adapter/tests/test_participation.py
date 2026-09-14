@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.participation import choose_participation
+from app.persona import compact_chat_reply
 from app.store import AdapterStore
 from tests.test_adapter import ROOM_ID, make_runtime, post_chat
 
@@ -148,3 +149,13 @@ def test_closed_group_is_rejected_before_any_model_work(tmp_path):
     with TestClient(create_app(runtime, start_worker=False)) as client:
         result = post_chat(client, body(1, "大家一起吃饭？", room_id="other@chatroom"))
     assert result.status_code == 403 and not runtime.hermes.chat_calls
+
+
+@pytest.mark.parametrize("suffix", ["计划群", "娱乐代理", "乐彩", "<|im_end|>"])
+def test_unrelated_provider_tail_is_removed_without_erasing_normal_reply(suffix):
+    # Explicit enumerated regressions, not a broad ban on topics or vocabulary.
+    assert compact_chat_reply("那就火锅呗" + suffix, "我想吃火锅") == "那就火锅呗"
+
+
+def test_discussion_of_promo_terms_is_preserved():
+    assert compact_chat_reply("这个就是所谓计划群", "所谓计划群是什么") == "这个就是所谓计划群"

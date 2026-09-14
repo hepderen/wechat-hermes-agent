@@ -649,6 +649,13 @@ def _truncate_fragment(value: str, limit: int) -> str:
 
 def compact_chat_reply(reply: str, message: str) -> str:
     original = strip_internal_format_chars(reply).strip()
+    # Some provider replies have appended unrelated promo fragments. Trim only
+    # a terminal fragment absent from the user's actual request; preserve normal
+    # discussion of those words and never silently rewrite the whole response.
+    original = re.sub(r"<\|(?:im_end|endoftext|eot_id|fim_suffix)\|>\s*$", "", original).strip()
+    promo = re.search(r"(计划群|彩票论坛|棋牌游戏官网|娱乐代理|乐彩|彩票开户|彩票平台注册)[。.!！\s]*$", original)
+    if promo and promo.start() > 0 and promo.group(1) not in message:
+        original = original[:promo.start()].rstrip()
     if original == "[[NO_REPLY]]":
         return ""
     if "[[NO_REPLY]]" in original:

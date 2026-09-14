@@ -429,6 +429,19 @@ class AdapterStore:
                         room_id TEXT PRIMARY KEY,
                         until_ts REAL NOT NULL
                     );
+                    CREATE TABLE IF NOT EXISTS group_followups (
+                        room_id TEXT NOT NULL,
+                        source_local_id INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        main_text TEXT NOT NULL DEFAULT '',
+                        ready_at REAL NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'prepared',
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY(room_id, source_local_id),
+                        CHECK(status IN ('prepared','sending','confirmed','uncertain','suppressed','failed'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_group_followups_due
+                    ON group_followups(status, ready_at);
 
                     CREATE TABLE IF NOT EXISTS relationship_summary_jobs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4239,6 +4252,91 @@ class AdapterStore:
             ).rowcount
             connection.commit()
             return bool(inserted)
+
+    def prepare_group_followup(self, room_id: str, source_local_id: int,
+                               text: str, *, main_text: str = '', delay_seconds: float = 14,
+                               now: float | None = None) -> bool:
+        self.initialize()
+        room = self._group_listener_room_id(room_id)
+        value = str(text or "").strip()[:420]
+        local_id = int(source_local_id)
+        current = time.time() if now is None else float(now)
+        if local_id <= 0 or (not value and not str(main_text or '').strip()):
+            return False
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            count = connection.execute(
+                "SELECT COUNT(*) FROM group_followups WHERE room_id=? AND created_at>?",
+                (room, current - 600),
+            ).fetchone()[0]
+            if count >= 2:
+                connection.commit()
+                return False
+            result = connection.execute(
+                "INSERT OR IGNORE INTO group_followups "
+                "(room_id,source_local_id,text,main_text,ready_at,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                (room, local_id, value, str(main_text or '').strip()[:420],
+                 current + max(5.0, float(delay_seconds)), "prepared", current),
+            )
+            connection.commit()
+        return bool(result.rowcount)
+
+    def next_group_followup(self, *, now: float | None = None) -> dict[str, Any] | None:
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM group_followups WHERE created_at < ?", (current - 30 * 86400,))
+            connection.execute("UPDATE group_followups SET text='', main_text='' WHERE created_at < ?", (current - 86400,))
+            # A process crash must never replay an item whose UI submission was
+            # already in flight. It is reconciled as uncertain instead.
+            connection.execute("UPDATE group_followups SET status='uncertain' WHERE status='sending'")
+            row = connection.execute(
+                "SELECT * FROM group_followups WHERE status='prepared' AND ready_at<=? ORDER BY ready_at,created_at LIMIT 1",
+                (current,),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            connection.execute(
+                "UPDATE group_followups SET status='sending' WHERE room_id=? AND source_local_id=? AND status='prepared'",
+                (row["room_id"], row["source_local_id"]),
+            )
+            connection.commit()
+            result = dict(row)
+            result["status"] = "sending"
+            return result
+
+    def finish_group_followup(self, room_id: str, source_local_id: int,
+                              status: str, *, now: float | None = None) -> None:
+        if status not in {"confirmed", "uncertain", "suppressed", "failed"}:
+            raise ValueError("invalid group followup status")
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE group_followups SET status=? WHERE room_id=? AND source_local_id=? AND status='sending'",
+                (status, self._group_listener_room_id(room_id), int(source_local_id)),
+            )
+            connection.commit()
+
+    def set_group_followup_text(self, room_id: str, source_local_id: int, text: str) -> None:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE group_followups SET text=? WHERE room_id=? AND source_local_id=? AND status='sending'",
+                (str(text or '').strip()[:420], self._group_listener_room_id(room_id), int(source_local_id)),
+            )
+            connection.commit()
+
+    def suppress_group_followups(self, room_id: str) -> int:
+        self.initialize()
+        with self._lock, closing(self._connect()) as connection:
+            result = connection.execute(
+                "UPDATE group_followups SET status='suppressed' WHERE room_id=? AND status='prepared'",
+                (self._group_listener_room_id(room_id),),
+            )
+            connection.commit()
+        return int(result.rowcount)
 
     @staticmethod
     def _companion_room_id(room_id: str) -> str:

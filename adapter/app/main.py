@@ -1083,6 +1083,152 @@ def restricted_execution_response(scope: str) -> ChatResponse:
     )
 
 
+def split_group_followup(raw: object) -> tuple[str, str]:
+    """Extract the optional second thought from one model generation."""
+    value = strip_internal_format_chars(raw).strip()
+    marker = "[[FOLLOW_UP]]"
+    if marker not in value:
+        return value, ""
+    first, second = value.split(marker, 1)
+    return first.strip(), second.split(marker, 1)[0].strip()
+
+
+def normalize_delivery_text(value: object) -> str:
+    return re.sub(r"\s+", "", strip_internal_format_chars(value)).strip()
+
+
+async def deliver_group_followup(runtime: Runtime, item: dict[str, Any]) -> None:
+    """Deliver one delayed thought only after the first reply is visible in the DB."""
+    room_id = str(item["room_id"])
+    source_local_id = int(item["source_local_id"])
+    if (
+        not runtime.settings.group_participation_enabled
+        or room_id not in runtime.settings.allowed_room_ids
+        or time.time() - float(item["created_at"]) > 120
+    ):
+        runtime.store.finish_group_followup(room_id, source_local_id, "suppressed")
+        return
+    try:
+        if not str(item.get("text") or "").strip():
+            generated = await generate_group_followup(runtime, item)
+            if not generated:
+                runtime.store.finish_group_followup(room_id, source_local_id, "suppressed")
+                return
+            item["text"] = generated
+            runtime.store.set_group_followup_text(room_id, source_local_id, generated)
+        messages: list[dict[str, Any]] = []
+        for _ in range(4):
+            messages = await runtime.chat_api.group_messages_after(room_id, source_local_id)
+            human_arrival = any(
+                int(message.get("local_id") or 0) > source_local_id
+                and not bool(message.get("is_self") or message.get("is_bot")
+                              or str(message.get("direction") or "").lower() == "outgoing")
+                for message in messages
+            )
+            if human_arrival:
+                runtime.store.finish_group_followup(room_id, source_local_id, "suppressed")
+                return
+            own_reply = any(
+                bool(message.get("is_self") or message.get("is_bot")
+                     or str(message.get("direction") or "").lower() == "outgoing")
+                and normalize_delivery_text(message.get("text") or message.get("prompt"))
+                and normalize_delivery_text(message.get("text") or message.get("prompt"))
+                    == normalize_delivery_text(item["main_text"])
+                for message in messages
+            )
+            if own_reply:
+                break
+            await asyncio.sleep(1)
+        else:
+            runtime.store.finish_group_followup(room_id, source_local_id, "uncertain")
+            return
+        request_id = "followup:%s:%d" % (
+            hashlib.sha256((room_id + ":" + str(source_local_id)).encode()).hexdigest()[:20],
+            source_local_id,
+        )
+        result = await runtime.chat_api.send_text_item(
+            room_id,
+            str(item["text"]),
+            request_id,
+            source_local_id=source_local_id,
+            task_id="followup-%d" % source_local_id,
+            generation=int(runtime.settings.wechat_session_generation),
+        )
+        status = str(result.get("status") or "").lower()
+        runtime.store.finish_group_followup(
+            room_id,
+            source_local_id,
+            {"sent": "confirmed", "suppressed": "suppressed", "failed": "failed"}.get(status, "uncertain"),
+        )
+        if status == "sent":
+            runtime.store.record_companion_bot_reply(room_id, source_local_id, str(item["text"]))
+            runtime.store.mark_group_listener_reply(room_id, source_local_id)
+    except (RemoteAPIError, TimeoutError, asyncio.TimeoutError):
+        runtime.store.finish_group_followup(room_id, source_local_id, "uncertain")
+
+
+async def generate_group_followup(runtime: Runtime, item: dict[str, Any]) -> str:
+    """Generate a second conversational beat only after the first beat is confirmed."""
+    if runtime.execution_lock.locked():
+        return ""
+    room_id = str(item["room_id"])
+    source_local_id = int(item["source_local_id"])
+    messages = await runtime.chat_api.group_messages_after(room_id, source_local_id)
+    if any(
+        int(message.get("local_id") or 0) > source_local_id
+        and not bool(message.get("is_self") or message.get("is_bot")
+                      or str(message.get("direction") or "").lower() == "outgoing")
+        for message in messages
+    ):
+        return ""
+    timeline = runtime.store.list_companion_timeline(room_id, limit=16)
+    transcript = "\n".join(
+        "%s：%s" % (
+            _prompt_sender_name(entry.get("sender_name"), outgoing=str(entry.get("direction") or "").lower() == "outgoing"),
+            strip_internal_format_chars(entry.get("text") or "").replace("\n", " ")[:1200],
+        )
+        for entry in timeline
+    )
+    snapshot = await runtime.dynamic_persona.current()
+    system = CHAT_ONLY_TURN_SYSTEM_PROMPT + dynamic_persona_system_block(
+        snapshot.text if snapshot is not None else PERSONA_SYSTEM_PROMPT
+    ) + ACTIVE_CHAT_PROTOCOL + (
+        "\n这是上一条群聊回复的延续生成。第一条已经发出：%s。"
+        "结合最新群聊，只补一个新的自然想法、追问或反应；不要复述第一条，不要自言自语，"
+        "不值得补充时只输出 [[NO_REPLY]]。只输出可直接发送的文字，不要前缀、标签或解释。"
+        % str(item.get("main_text") or "")[:420]
+    )
+    session = "wechat-followup:%s:%d" % (
+        hashlib.sha256((room_id + ":" + str(source_local_id)).encode()).hexdigest()[:20],
+        source_local_id,
+    )
+    async with runtime.execution_lock:
+        try:
+            await runtime.hermes.delete_session(session)
+            await runtime.hermes.ensure_session(session, "group followup", system)
+            output, _usage = await asyncio.wait_for(
+                runtime.hermes.chat(
+                    session,
+                    "群聊最近对话：\n" + transcript,
+                    system,
+                    timeout_seconds=runtime.settings.sync_chat_timeout_seconds,
+                    disable_tools=True,
+                ),
+                timeout=runtime.settings.sync_chat_timeout_seconds,
+            )
+        finally:
+            try:
+                await runtime.hermes.delete_session(session)
+            except RemoteAPIError:
+                pass
+    text = compact_chat_reply(output, "群聊续话")
+    if not text or text == "[[NO_REPLY]]" or is_low_information_reply(text):
+        return ""
+    if normalize_delivery_text(text) == normalize_delivery_text(str(item.get("main_text") or "")):
+        return ""
+    return text[:420]
+
+
 def budget_limit_reason(settings: Settings, store: AdapterStore) -> str | None:
     usage = store.today_usage(settings.budget_timezone)
     if (
@@ -1177,6 +1323,7 @@ async def handle_command(
         tasks = runtime.store.cancel_room_tasks(room_id)
         if runtime.settings.group_participation_enabled:
             runtime.store.pause_group_participation(room_id)
+            runtime.store.suppress_group_followups(room_id)
         active = [
             task
             for task in tasks
@@ -3831,7 +3978,16 @@ async def worker_loop(runtime: Runtime) -> None:
     while not runtime.stopping:
         if chat_only_release_enabled(runtime.settings):
             # The worker stays alive for health supervision, but the pure chat
-            # release has no task, summary, recovery, or Outbox work to do.
+            # release has no task or legacy Outbox work. Delayed second thoughts
+            # are bounded chat deliveries and remain enabled here.
+            followup = runtime.store.next_group_followup()
+            if followup is not None:
+                try:
+                    await deliver_group_followup(runtime, followup)
+                except Exception as exc:
+                    runtime.store.finish_group_followup(followup["room_id"], followup["source_local_id"], "uncertain")
+                    log_event("group_followup_failed", error_type=type(exc).__name__)
+                continue
             try:
                 await asyncio.wait_for(
                     runtime.wake_event.wait(),
@@ -4509,6 +4665,8 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             and room_id is not None
             and not diagnostic_session
         ):
+            if runtime.settings.group_participation_enabled:
+                runtime.store.suppress_group_followups(room_id)
             try:
                 companion_timeline = record_companion_ingress(
                     runtime,
@@ -4858,8 +5016,13 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                                     timeout_seconds=runtime.settings.sync_chat_timeout_seconds,
                                     disable_tools=True,
                                 )
+                                main_raw_reply, followup_text = split_group_followup(raw_reply)
                                 reply = compact_chat_reply(
-                                    raw_reply,
+                                    main_raw_reply,
+                                    payload.message,
+                                )
+                                followup_text = compact_chat_reply(
+                                    followup_text,
                                     payload.message,
                                 )
                                 recent_reply_timeline = companion_timeline
@@ -4898,6 +5061,30 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                                     reply = ""
                                 if passive_listener_kind:
                                     reply = listener_reply_or_silence(reply)
+                                auto_followup = bool(
+                                    participation_choice is not None
+                                    and participation_choice.kind in {
+                                        "continuation", "question", "invitation",
+                                        "experience", "open_question",
+                                    }
+                                )
+                                if (
+                                    passive_listener_kind
+                                    and runtime.settings.group_participation_enabled
+                                    and reply
+                                    and (followup_text or auto_followup)
+                                    and (not followup_text or followup_text != reply)
+                                    and (not followup_text or not repeats_recent_listener_reply(
+                                        followup_text,
+                                        companion_timeline,
+                                    ))
+                                ):
+                                    runtime.store.prepare_group_followup(
+                                        room_id,
+                                        source_local_id or 0,
+                                        followup_text,
+                                        main_text=reply,
+                                    )
                                 # Repetition control belongs to the delivery path,
                                 # not just passive listening. Direct @ turns and
                                 # replies to 小格 use the same check before a reply

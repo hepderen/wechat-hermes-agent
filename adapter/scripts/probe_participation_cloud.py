@@ -6,6 +6,7 @@ All Adapter storage is temporary; no requests reach the WeChat sending API.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -19,11 +20,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from app.config import Settings
-from app.main import build_runtime, create_app
+from app.main import build_runtime, create_app, deliver_group_followup
 
 
 class InertSender:
     sends = 0
+
+    def __init__(self):
+        self.messages = []
+        self.fake_deliveries = []
+
+    async def group_messages_after(self, *_args):
+        return self.messages
+
+    async def send_text_item(self, room, text, request_id, **kwargs):
+        self.fake_deliveries.append((room, text, request_id))
+        return {"status": "sent"}
 
     async def commit_barrier(self, *_args, **_kwargs):
         return {"ok": True}
@@ -90,6 +102,9 @@ def main():
                 response = client.post("/api/chat", json=payload, headers={"X-Bridge-Token": settings.bridge_token})
                 assert response.status_code == 200, response.status_code
                 data = response.json()
+                assert not any(data["reply"].endswith(suffix) for suffix in (
+                    "计划群", "娱乐代理", "<|im_end|>",
+                )), "unexpected provider tail"
                 result = {"case": n, "status": data["status"], "reply": data["reply"],
                           "seconds": round(time.monotonic() - started, 2)}
                 results.append(result)
@@ -100,6 +115,11 @@ def main():
             assert first["status"] == "succeeded" and first["reply"]
             again = client.post("/api/chat", json=payload, headers={"X-Bridge-Token": settings.bridge_token})
             assert again.json() == first and len(model_calls) == 1
+            item = runtime.store.next_group_followup(now=time.time() + 15)
+            if item:
+                runtime.chat_api.messages = [{"local_id": 2, "is_self": True,
+                                              "direction": "outgoing", "text": first["reply"]}]
+                asyncio.run(deliver_group_followup(runtime, item))
             assert send(2, "队友全程挂机")[0]["status"] == "succeeded"
             assert send(3, "大家晚上想吃啥？", "bob", "小王")[0]["status"] == "succeeded"
             assert send(4, "其实我想吃火锅", "bob", "小王")[0]["status"] == "succeeded"
@@ -123,6 +143,7 @@ def main():
     assert baseline_pid == Path("/proc/97414/stat").read_text().split()[21]
     assert before == after, "protected state changed during probes"
     print(json.dumps({"ok": True, "cases": len(results), "model_calls": len(model_calls),
+                      "fake_followup_deliveries": len(runtime.chat_api.fake_deliveries),
                       "real_wechat_sends": 0, "protected_state_unchanged": True}), flush=True)
 
 
