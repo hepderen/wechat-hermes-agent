@@ -29,6 +29,7 @@ from .clients import (
 )
 from .config import Settings
 from .dynamic_persona import DynamicPersonaProvider, dynamic_persona_system_block
+from .participation import ACTIVE_CHAT_PROTOCOL, choose_participation, focus_context
 from .evidence import (
     build_execution_plan,
     enabled_toolsets_for_plan,
@@ -495,6 +496,8 @@ def runtime_health_snapshot(
         },
         "group_listener": {
             "enabled": bool(runtime.settings.group_listener_enabled),
+            "participation_enabled": runtime.settings.group_participation_enabled,
+            "passive_attempts_per_10_minutes": runtime.settings.group_participation_limit,
             "min_reply_gap_seconds": (
                 runtime.settings.group_listener_min_reply_gap_seconds
             ),
@@ -1172,6 +1175,8 @@ async def handle_command(
                 status="failed",
             )
         tasks = runtime.store.cancel_room_tasks(room_id)
+        if runtime.settings.group_participation_enabled:
+            runtime.store.pause_group_participation(room_id)
         active = [
             task
             for task in tasks
@@ -1193,7 +1198,9 @@ async def handle_command(
             for task in tasks
         )
         pending_count = len(tasks) - active_count
-        if not tasks:
+        if runtime.settings.group_participation_enabled and chat_only_release_enabled(runtime.settings):
+            reply = "行，先安静十分钟。叫我我再接话。"
+        elif not tasks:
             reply = "当前没有正在执行、排队或待发送的任务；不会继续发送旧任务结果。"
         else:
             reply = (
@@ -4574,6 +4581,10 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                     payload.mentions_bot
                     or payload.reply_to_bot
                     or runtime.store.has_room_activity(room_id)
+                    or (
+                        runtime.settings.group_participation_enabled
+                        and time.time() - float((runtime.store.get_group_listener_state(room_id) or {}).get("last_reply_at") or 0) < 180
+                    )
                 )
             ):
                 response = ChatResponse(reply="", status="ignored")
@@ -4631,6 +4642,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 return completed_response
 
         passive_listener_kind = ""
+        participation_choice = None
         if passive_group_message:
             if (
                 not runtime.settings.group_listener_enabled
@@ -4654,6 +4666,16 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                         runtime.settings.group_listener_min_turns_between_replies
                     ),
                 )
+                if runtime.settings.group_participation_enabled:
+                    participation_choice = choose_participation(
+                        payload.message, payload.message_type,
+                        runtime.settings.group_listener_names, listener_state,
+                        companion_timeline, sender_id=sender_id,
+                        sender_name=payload.sender_name or "", timestamp=payload.timestamp,
+                        gap_seconds=runtime.settings.group_listener_min_reply_gap_seconds,
+                        turns=runtime.settings.group_listener_min_turns_between_replies,
+                    )
+                    listener_decision = participation_choice
                 if listener_decision.should_call:
                     passive_listener_kind = listener_decision.kind
                     response = None
@@ -4753,6 +4775,30 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                 else:
                     try:
                         async def run_sync_chat():
+                            nonlocal participation_choice
+                            # Recheck after acquiring the global model lock. Another
+                            # group turn may have finished while this one waited.
+                            if runtime.settings.group_participation_enabled and passive_group_message:
+                                fresh_timeline = runtime.store.list_companion_timeline(
+                                    room_id, before_local_id=source_local_id,
+                                )
+                                fresh_state = runtime.store.get_group_listener_state(room_id) or {}
+                                if int(fresh_state.get("last_reply_local_id") or 0) >= source_local_id:
+                                    return "", "", {}, "", ""
+                                participation_choice = choose_participation(
+                                    payload.message, payload.message_type,
+                                    runtime.settings.group_listener_names, fresh_state,
+                                    fresh_timeline, sender_id=sender_id,
+                                    sender_name=payload.sender_name or "", timestamp=payload.timestamp,
+                                    gap_seconds=runtime.settings.group_listener_min_reply_gap_seconds,
+                                    turns=runtime.settings.group_listener_min_turns_between_replies,
+                                )
+                                if not participation_choice.should_call:
+                                    return "", "", {}, "", ""
+                                if participation_choice.kind != "addressed" and not runtime.store.claim_group_participation(
+                                    room_id, source_local_id, runtime.settings.group_participation_limit,
+                                ):
+                                    return "", "", {}, "", ""
                             # Hermes Session Chat stores history server-side.
                             # Reset the Adapter-owned session around every
                             # foreground turn so the bounded trusted timeline
@@ -4800,6 +4846,11 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
                                         snapshot.text if snapshot is not None else ""
                                     ),
                                 )
+                                if runtime.settings.group_participation_enabled and identity.scope == "room":
+                                    system_message += ACTIVE_CHAT_PROTOCOL
+                                    if participation_choice is not None:
+                                        # Member names and quotes stay in the data channel.
+                                        model_prompt = focus_context(participation_choice).strip() + "\n\n" + model_prompt
                                 raw_reply, usage = await runtime.hermes.chat(
                                     stable_session,
                                     model_prompt,

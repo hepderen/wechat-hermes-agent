@@ -419,6 +419,17 @@ class AdapterStore:
                     CREATE INDEX IF NOT EXISTS idx_group_listener_state_updated
                     ON group_listener_state(updated_at);
 
+                    CREATE TABLE IF NOT EXISTS group_participation_slots (
+                        room_id TEXT NOT NULL,
+                        source_local_id INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY(room_id, source_local_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS group_participation_pause (
+                        room_id TEXT PRIMARY KEY,
+                        until_ts REAL NOT NULL
+                    );
+
                     CREATE TABLE IF NOT EXISTS relationship_summary_jobs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         room_id TEXT NOT NULL,
@@ -4190,6 +4201,44 @@ class AdapterStore:
                 "SELECT COUNT(*) AS count FROM group_listener_state"
             ).fetchone()
         return int(row["count"] or 0) if row is not None else 0
+
+    def pause_group_participation(self, room_id: str, *, now: float | None = None) -> None:
+        self.initialize()
+        current = time.time() if now is None else float(now)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO group_participation_pause VALUES (?, ?) "
+                "ON CONFLICT(room_id) DO UPDATE SET until_ts=MAX(until_ts, excluded.until_ts)",
+                (self._group_listener_room_id(room_id), current + 600),
+            )
+            connection.commit()
+
+    def claim_group_participation(self, room_id: str, source_local_id: int,
+                                  limit: int = 8, *, now: float | None = None) -> bool:
+        """Bound passive attempts across retries/restarts, independent of timeline trimming."""
+        self.initialize()
+        room = self._group_listener_room_id(room_id)
+        current = time.time() if now is None else float(now)
+        if source_local_id <= 0 or limit <= 0:
+            raise ValueError("participation source and limit must be positive")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM group_participation_slots WHERE created_at < ?", (current - 86400,))
+            connection.execute("DELETE FROM group_participation_pause WHERE until_ts <= ?", (current,))
+            pause = connection.execute("SELECT until_ts FROM group_participation_pause WHERE room_id=?", (room,)).fetchone()
+            count = connection.execute(
+                "SELECT COUNT(*) FROM group_participation_slots WHERE room_id=? AND created_at>?",
+                (room, current - 600),
+            ).fetchone()[0]
+            if pause or count >= limit:
+                connection.commit()
+                return False
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO group_participation_slots VALUES (?, ?, ?)",
+                (room, int(source_local_id), current),
+            ).rowcount
+            connection.commit()
+            return bool(inserted)
 
     @staticmethod
     def _companion_room_id(room_id: str) -> str:

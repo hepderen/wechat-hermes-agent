@@ -73,6 +73,8 @@ class Settings:
     dynamic_persona_url: str = ""
     dynamic_persona_token: str = ""
     dynamic_persona_refresh_seconds: float = 300.0
+    group_participation_enabled: bool = False
+    group_participation_limit: int = 8
 
     def validate_startup(self) -> None:
         credentials = {
@@ -168,6 +170,7 @@ class Settings:
             "dynamic_persona_refresh_seconds": (
                 self.dynamic_persona_refresh_seconds
             ),
+            "group_participation_limit": self.group_participation_limit,
         }
         for name, value in positive_limits.items():
             if not isfinite(float(value)) or float(value) <= 0:
@@ -451,6 +454,8 @@ class Settings:
             or ("小格", "Hermes"),
             dynamic_persona_url=os.getenv("WXMEMORY_PERSONA_URL", "").rstrip("/"),
             dynamic_persona_token=os.getenv("WXMEMORY_PERSONA_TOKEN", ""),
+            group_participation_enabled=env_bool("HERMES_WECHAT_GROUP_PARTICIPATION_ENABLED", False),
+            group_participation_limit=int(os.getenv("HERMES_WECHAT_GROUP_PARTICIPATION_LIMIT", "8")),
             dynamic_persona_refresh_seconds=max(
                 30.0,
                 min(

@@ -15,7 +15,9 @@
 - 每轮会话保留“小格”名称协议和群聊规则；当前最佳人设随回合注入。角色卡、关系档案、群摘要、服务 JSON 与其他人物章节保持在运行时之外。
 - 每轮聊天前后都会清理 Adapter 自有 Hermes Session，避免服务端持久历史绕过 16 条时间线边界。
 - 所有 Hermes 聊天请求使用 `disable_tools=true`。搜索、终端、文件、浏览器、异步作业、媒体自动交付和主动私聊均未启用。
-- 常态监听由本地低信号过滤、去重和房间级节流控制。真实 `@`、回复小格、或直接叫“小格”会优先进入对话。
+- 常态监听会优先接问题、邀约、经历分享与当前对话伙伴的续句。普通聊天每两条有内容的消息可接一次；正常间隔 6 秒，正在聊天的同一成员续句可缩短至 2 秒。它能承接另一位群友近期未回答的问题，沿用可信昵称接话，不会自动发原生 `@` 通知。
+- 自动插话每群每 10 分钟最多尝试 8 次，计数跨重启保留；真实 `@`、回复小格、或直接叫“小格”会优先进入对话。群里安静时不会凭空发送新消息。
+- 小格刚参与聊天后，裸“停止”也会落发送栅栏并暂停自动插话 10 分钟；期间明确叫名和 `@` 仍可回应。Luna 的群聊超时为 25 秒。
 - 停止栅栏、消息节流、入站账本和发送状态仍保留。旧任务与旧 Outbox 在启动时隔离，历史任务查询保持只读。
 
 ```mermaid
@@ -57,10 +59,13 @@ ALLOWED_WECHAT_ROOM_IDS=ROOM_ID
 WECHAT_BOT_WXID=BOT_WXID
 HERMES_WECHAT_CHAT_ONLY=true
 HERMES_WECHAT_GROUP_LISTENER_ENABLED=true
-HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12
-HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3
+HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=6
+HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=2
+HERMES_WECHAT_GROUP_PARTICIPATION_ENABLED=true
+HERMES_WECHAT_GROUP_PARTICIPATION_LIMIT=8
+HERMES_WECHAT_SYNC_TIMEOUT_SECONDS=25
 HERMES_WECHAT_GROUP_LISTENER_NAMES=小格,Hermes
-HERMES_WECHAT_SESSION_GENERATION=17
+HERMES_WECHAT_SESSION_GENERATION=18
 WXMEMORY_PERSONA_URL=http://127.0.0.1:8790
 WXMEMORY_PERSONA_TOKEN=WXMEMORY_TOKEN
 WXMEMORY_PERSONA_REFRESH_SECONDS=300

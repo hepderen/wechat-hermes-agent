@@ -266,11 +266,13 @@ def test_environment_examples_match_production_generation_and_budget():
     root = Path(__file__).resolve().parents[1]
     for relative_path in ("deploy/adapter.env.example",):
         example = (root / relative_path).read_text(encoding="utf-8")
-        assert "HERMES_WECHAT_SESSION_GENERATION=17" in example
+        assert "HERMES_WECHAT_SESSION_GENERATION=18" in example
         assert "HERMES_WECHAT_CHAT_ONLY=true" in example
         assert "HERMES_WECHAT_GROUP_LISTENER_ENABLED=true" in example
-        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12" in example
-        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=6" in example
+        assert "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=2" in example
+        assert "HERMES_WECHAT_GROUP_PARTICIPATION_ENABLED=true" in example
+        assert "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS=25" in example
         assert "HERMES_WECHAT_DAILY_TOKEN_LIMIT=10000000" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_ATTEMPTS=5" in example
         assert "HERMES_WECHAT_DELIVERY_RECONCILE_DELAY_SECONDS=0.75" in example
@@ -331,7 +333,7 @@ def test_single_persona_adapter_release_keeps_the_runtime_pinned_and_reversible(
     assert "weirdotv@1.0.0+sunxiaochuan@3.0.0" in CCV3_ADAPTER_RELEASE
     assert "skills/humanizer-zh-next" in CCV3_ADAPTER_RELEASE
     assert "skills/sophia" in CCV3_ADAPTER_RELEASE
-    assert '"HERMES_WECHAT_SESSION_GENERATION": "17"' in CCV3_ADAPTER_RELEASE
+    assert '"HERMES_WECHAT_SESSION_GENERATION": "18"' in CCV3_ADAPTER_RELEASE
     assert '"WXMEMORY_PERSONA_URL": "http://127.0.0.1:8790"' in CCV3_ADAPTER_RELEASE
     assert 'persona.get("active_source") != "wx-chat-memory"' in CCV3_ADAPTER_RELEASE
     assert "Retired relationship environment values are removed" in CCV3_ADAPTER_RELEASE

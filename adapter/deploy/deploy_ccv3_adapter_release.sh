@@ -180,6 +180,8 @@ if not dynamic.get("sha256") or int(dynamic.get("chars") or 0) < 24:
     raise SystemExit(1)
 if group_listener.get("enabled") is not True:
     raise SystemExit(1)
+if group_listener.get("participation_enabled") is not True:
+    raise SystemExit(1)
 '
 }
 
@@ -315,11 +317,14 @@ memory_token = memory_values.get("WXMEMORY_TOKEN", "").strip()
 if not memory_token:
     raise SystemExit("WXMEMORY_TOKEN is missing")
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "17",
+    "HERMES_WECHAT_SESSION_GENERATION": "18",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
-    "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
-    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "3",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "6",
+    "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "2",
+    "HERMES_WECHAT_GROUP_PARTICIPATION_ENABLED": "true",
+    "HERMES_WECHAT_GROUP_PARTICIPATION_LIMIT": "8",
+    "HERMES_WECHAT_SYNC_TIMEOUT_SECONDS": "25",
     "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
     "WXMEMORY_PERSONA_URL": "http://127.0.0.1:8790",
     "WXMEMORY_PERSONA_TOKEN": memory_token,
