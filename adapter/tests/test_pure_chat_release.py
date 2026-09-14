@@ -43,7 +43,7 @@ DIAGNOSTIC_PROBES = (
 )
 
 
-def test_chat_turn_has_only_fixed_persona_transcript_and_trusted_current_turn(tmp_path):
+def test_chat_turn_uses_fallback_persona_when_dynamic_persona_is_disabled(tmp_path):
     runtime = make_runtime(tmp_path)
     with TestClient(create_app(runtime, start_worker=False)) as client:
         response = post_chat(
@@ -74,7 +74,7 @@ def test_chat_turn_has_only_fixed_persona_transcript_and_trusted_current_turn(tm
     ensure_session = runtime.hermes.ensure_calls[0]
     chat_call = runtime.hermes.chat_calls[0]
     assert ensure_session[2] == CHAT_ONLY_SESSION_SYSTEM_PROMPT
-    assert PERSONA_SYSTEM_PROMPT in ensure_session[2]
+    assert PERSONA_SYSTEM_PROMPT not in ensure_session[2]
     assert chat_call[2] == CHAT_ONLY_TURN_SYSTEM_PROMPT
     assert PERSONA_SYSTEM_PROMPT in chat_call[2]
     assert "不是替别人拟回复的助手" in chat_call[2]

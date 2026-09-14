@@ -296,7 +296,7 @@ def test_settings_use_production_budget_and_initial_session_defaults(
     monkeypatch.delenv("HERMES_WECHAT_SESSION_GENERATION", raising=False)
     settings = Settings.from_env()
     assert settings.daily_token_limit == 10_000_000
-    assert settings.wechat_session_generation == "16"
+    assert settings.wechat_session_generation == "17"
     assert settings.input_token_cost_per_million == 3
     assert settings.output_token_cost_per_million == 15
 

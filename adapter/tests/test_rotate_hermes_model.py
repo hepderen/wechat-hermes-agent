@@ -116,11 +116,14 @@ def test_provider_preflight_resolves_alias_without_exposing_content():
             )
         payload = json.loads(request.content)
         assert payload["model"] == "gpt-5.6-sol"
+        assert request.url.path.endswith("/responses")
         return httpx.Response(
             200,
             json={
                 "model": "gpt-5.6-sol",
-                "choices": [{"message": {"content": "OK"}}],
+                "output": [
+                    {"content": [{"type": "output_text", "text": "OK"}]}
+                ],
                 "usage": {"total_tokens": 42},
             },
         )
@@ -166,7 +169,9 @@ def test_provider_preflight_rejects_silent_model_reroute():
             200,
             json={
                 "model": "gpt-5.6-terra",
-                "choices": [{"message": {"content": "OK"}}],
+                "output": [
+                    {"content": [{"type": "output_text", "text": "OK"}]}
+                ],
             },
         )
 

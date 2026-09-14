@@ -148,6 +148,7 @@ import sys
 payload = json.load(sys.stdin)
 persona = payload.get("persona") or {}
 group_listener = payload.get("group_listener") or {}
+dynamic = persona.get("dynamic") or {}
 if payload.get("ready") is not True or payload.get("degraded") is True:
     raise SystemExit(1)
 if persona.get("version") != "weirdotv@1.0.0+sunxiaochuan@3.0.0":
@@ -170,6 +171,12 @@ if bundle.get("loaded_sections") != [
     "single-person source rules (adapted)",
     "Xiaoge group-chat expression rules",
 ]:
+    raise SystemExit(1)
+if persona.get("active_source") != "wx-chat-memory":
+    raise SystemExit(1)
+if dynamic.get("enabled") is not True or dynamic.get("status") != "ready":
+    raise SystemExit(1)
+if not dynamic.get("sha256") or int(dynamic.get("chars") or 0) < 24:
     raise SystemExit(1)
 if group_listener.get("enabled") is not True:
     raise SystemExit(1)
@@ -291,13 +298,32 @@ if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
 
 # Retired relationship environment values are removed from the active
 # environment. Historical SQLite data remains untouched.
+memory_path = Path("/etc/wx-chat-memory.env")
+memory_meta = memory_path.stat()
+if (
+    memory_path.is_symlink()
+    or memory_meta.st_uid != 0
+    or stat.S_IMODE(memory_meta.st_mode) != 0o600
+):
+    raise SystemExit("wx-chat-memory environment must be root-private 0600")
+memory_values = {}
+for line in memory_path.read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if separator:
+        memory_values[key] = value
+memory_token = memory_values.get("WXMEMORY_TOKEN", "").strip()
+if not memory_token:
+    raise SystemExit("WXMEMORY_TOKEN is missing")
 updates = {
-    "HERMES_WECHAT_SESSION_GENERATION": "16",
+    "HERMES_WECHAT_SESSION_GENERATION": "17",
     "HERMES_WECHAT_CHAT_ONLY": "true",
     "HERMES_WECHAT_GROUP_LISTENER_ENABLED": "true",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS": "12",
     "HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES": "3",
     "HERMES_WECHAT_GROUP_LISTENER_NAMES": "小格,Hermes",
+    "WXMEMORY_PERSONA_URL": "http://127.0.0.1:8790",
+    "WXMEMORY_PERSONA_TOKEN": memory_token,
+    "WXMEMORY_PERSONA_REFRESH_SECONDS": "300",
 }
 lines = path.read_text(encoding="utf-8").splitlines()
 seen = set()
@@ -333,10 +359,10 @@ mv -Tf -- "$next_link" "$ADAPTER_ROOT"
 systemctl restart wechat-hermes-adapter.service
 systemctl is-active --quiet wechat-hermes-adapter.service ||
   fail "Adapter did not restart"
-wait_for_adapter_ready || fail "Adapter did not become Sun Xiaochuan-ready"
+wait_for_adapter_ready || fail "Adapter did not become dynamic-persona-ready"
 assert_baseline
 
 deployment_succeeded=1
 trap - EXIT
-printf 'Sun Xiaochuan Adapter release %s is active; previous environment saved at %s\n' \
+printf 'Dynamic-persona Adapter release %s is active; previous environment saved at %s\n' \
   "$RELEASE_ID" "$env_backup"

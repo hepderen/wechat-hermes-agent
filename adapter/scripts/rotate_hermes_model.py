@@ -250,18 +250,39 @@ def preflight_provider(
             if available
             else secret.requested_model
         )
+        use_responses = resolved_model.lower().startswith("gpt-")
+        if use_responses:
+            preflight_path = "/responses"
+            preflight_payload = {
+                "model": resolved_model,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "Return the exact text OK.",
+                            }
+                        ],
+                    }
+                ],
+                "max_output_tokens": 32,
+            }
+        else:
+            preflight_path = "/chat/completions"
+            preflight_payload = {
+                "model": resolved_model,
+                "messages": [
+                    {"role": "user", "content": "Return the exact text OK."}
+                ],
+                "max_tokens": 32,
+                "stream": False,
+            }
         try:
             chat_response = client.post(
-                base_url + "/chat/completions",
+                base_url + preflight_path,
                 headers=headers,
-                json={
-                    "model": resolved_model,
-                    "messages": [
-                        {"role": "user", "content": "Return the exact text OK."}
-                    ],
-                    "max_tokens": 32,
-                    "stream": False,
-                },
+                json=preflight_payload,
             )
         except httpx.HTTPError as exc:
             raise RotationError(
@@ -279,15 +300,27 @@ def preflight_provider(
             chat_payload = chat_response.json()
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RotationError("provider chat preflight returned invalid JSON") from exc
-        choices = chat_payload.get("choices") if isinstance(chat_payload, dict) else []
-        if not isinstance(choices, list) or not choices:
-            raise RotationError("provider chat preflight returned no choices")
-        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
-        if not isinstance(message, dict):
-            message = {}
-        content_nonempty = bool(
-            message.get("content") or message.get("reasoning_content")
-        )
+        if use_responses:
+            output = chat_payload.get("output") if isinstance(chat_payload, dict) else []
+            content_nonempty = bool(
+                any(
+                    part.get("text")
+                    for item in output if isinstance(item, dict)
+                    for part in list(item.get("content") or [])
+                    if isinstance(part, dict)
+                    and part.get("type") in {"output_text", "text"}
+                )
+            )
+        else:
+            choices = chat_payload.get("choices") if isinstance(chat_payload, dict) else []
+            if not isinstance(choices, list) or not choices:
+                raise RotationError("provider chat preflight returned no choices")
+            message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+            if not isinstance(message, dict):
+                message = {}
+            content_nonempty = bool(
+                message.get("content") or message.get("reasoning_content")
+            )
         if not content_nonempty:
             raise RotationError("provider chat preflight returned empty content")
         returned_model = str(chat_payload.get("model") or "")

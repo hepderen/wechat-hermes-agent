@@ -2,7 +2,7 @@
 
 把 Linux 微信群聊接入 Hermes 的结构化纯聊天适配层。入站消息来自微信数据库记录和 XML 元数据，发送者、群 ID、原生 `@`、引用关系与消息 ID 均不依赖截图或 OCR。
 
-当前发布目标是让群里的“小格”稳定参与聊天。它使用固定版本的孙笑川运行时组合包作为唯一人格来源，群内显示名称仍为“小格”。
+当前发布目标是让群里的“小格”稳定参与聊天。正常回复使用服务器本地聊天记忆库导出的“小格最佳人设”，群内显示名称仍为“小格”；固定孙笑川运行时组合包仅在记忆服务冷启动或暂时不可用时作为兜底。
 
 ## 当前运行契约
 
@@ -11,7 +11,8 @@
 - Bridge 统一规范化字段别名、Unicode、大小写和数字 ID；去重优先使用 `room_id + msg_svr_id`，再使用 `room_id + local_id`。旧内容指纹仅用于滚动升级兼容。
 - 自发消息、机器人身份记录和伪装为入站的记录不会触发聊天，也不会进入群聊上下文。
 - 每个群保存最近 24 小时、最多 120 条时间线；每轮只给模型最近 16 条自然格式的 `昵称：内容` 记录与当前可信消息。
-- 模型会话系统提示包含“小格”名称协议、孙笑川章节、共享流行语库和单人聊天规则。角色卡、关系档案、群摘要、服务 JSON 与其他人物章节保持在运行时之外。
+- Adapter 每 5 分钟从同机 `wx-chat-memory` 的认证回环接口读取一次最佳人设快照；快照只影响用词、节奏和接梗方式，永远不能改变群身份、工具关闭、发送链路或系统协议。
+- 每轮会话保留“小格”名称协议和群聊规则；当前最佳人设随回合注入。角色卡、关系档案、群摘要、服务 JSON 与其他人物章节保持在运行时之外。
 - 每轮聊天前后都会清理 Adapter 自有 Hermes Session，避免服务端持久历史绕过 16 条时间线边界。
 - 所有 Hermes 聊天请求使用 `disable_tools=true`。搜索、终端、文件、浏览器、异步作业、媒体自动交付和主动私聊均未启用。
 - 常态监听由本地低信号过滤、去重和房间级节流控制。真实 `@`、回复小格、或直接叫“小格”会优先进入对话。
@@ -27,9 +28,9 @@ flowchart LR
     API --> WXUI[WeChat UI]
 ```
 
-## 固定人格资源
+## 人格来源与兜底
 
-运行时只加载来自 [WeirdoTV-Skill](https://github.com/BeamusWayne/WeirdoTV-Skill) 固定提交的孙笑川相关组合资源：
+正常运行时加载 `wx-chat-memory` 的最佳人设快照。该服务只监听 `127.0.0.1:8790`，Adapter 通过 root 私有令牌读取导出内容，并限制长度、去除控制字符与指令型行。导出服务短暂异常时继续使用最后一个有效快照；没有任何有效快照时才加载来自 [WeirdoTV-Skill](https://github.com/BeamusWayne/WeirdoTV-Skill) 固定提交的孙笑川相关组合资源：
 
 | 项目 | 值 |
 | --- | --- |
@@ -59,7 +60,10 @@ HERMES_WECHAT_GROUP_LISTENER_ENABLED=true
 HERMES_WECHAT_GROUP_LISTENER_MIN_REPLY_GAP_SECONDS=12
 HERMES_WECHAT_GROUP_LISTENER_MIN_TURNS_BETWEEN_REPLIES=3
 HERMES_WECHAT_GROUP_LISTENER_NAMES=小格,Hermes
-HERMES_WECHAT_SESSION_GENERATION=16
+HERMES_WECHAT_SESSION_GENERATION=17
+WXMEMORY_PERSONA_URL=http://127.0.0.1:8790
+WXMEMORY_PERSONA_TOKEN=WXMEMORY_TOKEN
+WXMEMORY_PERSONA_REFRESH_SECONDS=300
 ```
 
 `ALLOWED_WECHAT_ROOM_IDS` 仅列出明确开放的小群。群外消息和未授权私聊不会进入生产聊天会话。

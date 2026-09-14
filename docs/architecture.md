@@ -65,7 +65,7 @@ sequenceDiagram
 
 ## 会话与恢复
 
-`HERMES_WECHAT_SESSION_GENERATION=16` 是当前人格代次。提升该值会隔离旧的 Session 标识；前台聊天本身是逐轮临时会话，历史只由 Adapter 的受限群时间线提供。
+`HERMES_WECHAT_SESSION_GENERATION=17` 是当前人格代次。提升该值会隔离旧的 Session 标识；前台聊天本身是逐轮临时会话，历史只由 Adapter 的受限群时间线提供。
 
 Adapter 启动时获取单进程锁，初始化 SQLite，隔离上一版未完成记录，校验固定人格资源，然后才将 `/health` 标记为 `ready=true`。`/health` 输出 `live`、`ready`、`degraded`；`/metrics` 只输出计数、状态和耗时。
 

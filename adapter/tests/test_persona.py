@@ -168,10 +168,10 @@ def test_legacy_card_entrypoints_are_empty_or_point_to_the_single_section():
     assert chat_turn_prompt("随便聊两句") == ""
 
 
-def test_chat_only_session_contains_name_protocol_and_complete_bundle():
+def test_chat_only_session_contains_name_protocol_without_stale_persona():
     assert CHAT_ONLY_SESSION_SYSTEM_PROMPT.startswith("你是微信群里的小格。")
-    assert PERSONA_SYSTEM_PROMPT in CHAT_ONLY_SESSION_SYSTEM_PROMPT
-    assert len(CHAT_ONLY_SESSION_SYSTEM_PROMPT) >= 1_300
+    assert PERSONA_SYSTEM_PROMPT not in CHAT_ONLY_SESSION_SYSTEM_PROMPT
+    assert "当前风格资料" in CHAT_ONLY_SESSION_SYSTEM_PROMPT
     for marker in ("room_id", "sender_id", "Adapter", "Bridge", "关系档案", "服务端"):
         assert marker not in CHAT_ONLY_SESSION_SYSTEM_PROMPT
 

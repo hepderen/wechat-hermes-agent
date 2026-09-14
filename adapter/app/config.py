@@ -70,6 +70,9 @@ class Settings:
     group_listener_min_reply_gap_seconds: float = 12.0
     group_listener_min_turns_between_replies: int = 3
     group_listener_names: tuple[str, ...] = ("小格", "Hermes")
+    dynamic_persona_url: str = ""
+    dynamic_persona_token: str = ""
+    dynamic_persona_refresh_seconds: float = 300.0
 
     def validate_startup(self) -> None:
         credentials = {
@@ -104,6 +107,22 @@ class Settings:
                 or parsed.fragment
             ):
                 raise ValueError("%s must be an HTTP loopback URL" % name)
+
+        if bool(self.dynamic_persona_url) != bool(self.dynamic_persona_token):
+            raise ValueError(
+                "WXMEMORY_PERSONA_URL and WXMEMORY_PERSONA_TOKEN must be configured together"
+            )
+        if self.dynamic_persona_url:
+            parsed = urlparse(self.dynamic_persona_url)
+            if (
+                parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("WXMEMORY_PERSONA_URL must be an HTTP loopback URL")
 
         if not self.allowed_room_ids:
             raise ValueError("ALLOWED_WECHAT_ROOM_IDS must not be empty")
@@ -145,6 +164,9 @@ class Settings:
             ),
             "relationship_proactive_timeout_seconds": (
                 self.relationship_proactive_timeout_seconds
+            ),
+            "dynamic_persona_refresh_seconds": (
+                self.dynamic_persona_refresh_seconds
             ),
         }
         for name, value in positive_limits.items():
@@ -281,8 +303,8 @@ class Settings:
                 os.getenv("HERMES_OUTPUT_TOKEN_COST_PER_MILLION", "15")
             ),
             wechat_session_generation=(
-                os.getenv("HERMES_WECHAT_SESSION_GENERATION", "16").strip()
-                or "16"
+                os.getenv("HERMES_WECHAT_SESSION_GENERATION", "17").strip()
+                or "17"
             ),
             allow_private_chat=env_bool("ALLOW_PRIVATE_WECHAT_CHAT", False),
             worker_poll_seconds=max(
@@ -427,4 +449,18 @@ class Settings:
                 if value.strip()
             )
             or ("小格", "Hermes"),
+            dynamic_persona_url=os.getenv("WXMEMORY_PERSONA_URL", "").rstrip("/"),
+            dynamic_persona_token=os.getenv("WXMEMORY_PERSONA_TOKEN", ""),
+            dynamic_persona_refresh_seconds=max(
+                30.0,
+                min(
+                    3600.0,
+                    float(
+                        os.getenv(
+                            "WXMEMORY_PERSONA_REFRESH_SECONDS",
+                            "300",
+                        )
+                    ),
+                ),
+            ),
         )
